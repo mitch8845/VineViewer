@@ -31,17 +31,32 @@ void main() {
 
   group('comparison', () {
     test('orders by major, then minor, then patch', () {
-      expect(const Version(1, 0, 0).isNewerThan(const Version(0, 9, 9)), isTrue);
-      expect(const Version(0, 2, 0).isNewerThan(const Version(0, 1, 9)), isTrue);
-      expect(const Version(0, 1, 2).isNewerThan(const Version(0, 1, 1)), isTrue);
+      expect(
+        const Version(1, 0, 0).isNewerThan(const Version(0, 9, 9)),
+        isTrue,
+      );
+      expect(
+        const Version(0, 2, 0).isNewerThan(const Version(0, 1, 9)),
+        isTrue,
+      );
+      expect(
+        const Version(0, 1, 2).isNewerThan(const Version(0, 1, 1)),
+        isTrue,
+      );
     });
 
     test('equal versions are not newer', () {
-      expect(const Version(1, 2, 3).isNewerThan(const Version(1, 2, 3)), isFalse);
+      expect(
+        const Version(1, 2, 3).isNewerThan(const Version(1, 2, 3)),
+        isFalse,
+      );
     });
 
     test('older versions are not newer', () {
-      expect(const Version(1, 2, 3).isNewerThan(const Version(2, 0, 0)), isFalse);
+      expect(
+        const Version(1, 2, 3).isNewerThan(const Version(2, 0, 0)),
+        isFalse,
+      );
     });
 
     test('compares numerically, not lexicographically', () {
