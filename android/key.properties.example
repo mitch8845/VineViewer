@@ -1,0 +1,13 @@
+# Copy to android/key.properties and fill in real values.
+#
+# key.properties itself is gitignored and MUST NEVER be committed, along with
+# the .jks file it points at. Losing the keystore means no existing install can
+# ever be updated again -- users would have to uninstall and reinstall, losing
+# local data. Keep an offline backup.
+#
+# storeFile is resolved relative to android/app/.
+
+storeFile=vineviewer-release.jks
+storePassword=CHANGE_ME
+keyAlias=vineviewer
+keyPassword=CHANGE_ME

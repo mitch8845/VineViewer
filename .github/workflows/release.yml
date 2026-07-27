@@ -1,0 +1,122 @@
+name: Release
+
+# Tag-driven. Push a tag like v0.1.1 and this builds, signs, and publishes.
+# The tag must match the `version:` in pubspec.yaml -- the job fails otherwise
+# rather than shipping an APK whose in-app version contradicts its release.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          # Pinned to match local development. Bump deliberately, not implicitly.
+          flutter-version: '3.44.8'
+          channel: stable
+          cache: true
+
+      - name: Resolve version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PUBSPEC=$(grep -m1 '^version:' pubspec.yaml | sed 's/version:[[:space:]]*//' | tr -d '[:space:]')
+          PUBSPEC_VERSION="${PUBSPEC%%+*}"
+          echo "tag=$TAG"                       >> "$GITHUB_OUTPUT"
+          echo "full=$PUBSPEC"                  >> "$GITHUB_OUTPUT"
+          echo "pubspec=$PUBSPEC_VERSION"       >> "$GITHUB_OUTPUT"
+
+          if [ "$TAG" != "$PUBSPEC_VERSION" ]; then
+            echo "::error::Tag v$TAG does not match pubspec.yaml version $PUBSPEC_VERSION."
+            echo "::error::Update pubspec.yaml and re-tag so the shipped APK reports the right version."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      - name: Restore signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::KEYSTORE_BASE64 secret is not set. See android/key.properties.example."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/vineviewer-release.jks
+          cat > android/key.properties <<EOF
+          storeFile=vineviewer-release.jks
+          storePassword=$KEYSTORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+
+      - name: Build signed APK
+        run: flutter build apk --release
+
+      - name: Verify the APK is release-signed
+        run: |
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          # Guards against silently shipping a debug-signed APK, which cannot
+          # update a release-signed install on the tablet.
+          if "$BUILD_TOOLS/apksigner" verify --print-certs "$APK" | grep -qi "CN=Android Debug"; then
+            echo "::error::APK is DEBUG-signed. The keystore was not applied."
+            exit 1
+          fi
+          "$BUILD_TOOLS/apksigner" verify --print-certs "$APK"
+
+      - name: Stage release assets
+        run: |
+          VERSION="${{ steps.version.outputs.pubspec }}"
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-release.apk "dist/VineViewer-v$VERSION.apk"
+
+          APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/VineViewer-v$VERSION.apk"
+          NOTES=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")
+
+          # Consumed by the in-app updater.
+          jq -n \
+            --arg version "$VERSION" \
+            --arg apk_url "$APK_URL" \
+            --arg notes "$NOTES" \
+            '{version: $version, apk_url: $apk_url, notes: $notes, min_supported_db: 1}' \
+            > dist/version.json
+
+          cat dist/version.json
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/*.apk dist/version.json \
+            --title "VineViewer ${GITHUB_REF_NAME}" \
+            --generate-notes
