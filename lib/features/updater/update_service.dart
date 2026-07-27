@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -88,17 +89,32 @@ class UpdateService {
     }
 
     try {
-      final res = await _dio.get<dynamic>(
+      // Fetch as plain text and decode by hand. GitHub serves release assets
+      // as application/octet-stream, and Dio's ResponseType.json only decodes
+      // when the content type looks like JSON -- otherwise it hands back a
+      // String, which every type check downstream then rejects as malformed.
+      final res = await _dio.get<String>(
         versionJsonUrl,
-        options: Options(responseType: ResponseType.json),
+        options: Options(responseType: ResponseType.plain),
       );
 
-      final body = res.data;
-      if (body is! Map) {
+      final raw = res.data;
+      if (raw == null || raw.isEmpty) {
+        return const UpdateCheckFailed('Empty version.json.');
+      }
+
+      final Object? decoded;
+      try {
+        decoded = jsonDecode(raw);
+      } on FormatException {
         return const UpdateCheckFailed('Malformed version.json.');
       }
 
-      final info = UpdateInfo.fromJson(Map<String, dynamic>.from(body));
+      if (decoded is! Map) {
+        return const UpdateCheckFailed('Malformed version.json.');
+      }
+
+      final info = UpdateInfo.fromJson(Map<String, dynamic>.from(decoded));
       if (info == null) {
         return const UpdateCheckFailed('Malformed version.json.');
       }

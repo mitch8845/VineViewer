@@ -19,6 +19,13 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@v4
+        with:
+          # Annotated tag objects are not fetched at the default depth, so
+          # `git tag -l --format=%(contents)` silently falls back to the commit
+          # message -- which put a commit body and a Co-Authored-By trailer into
+          # the user-facing release notes.
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Java
         uses: actions/setup-java@v4
