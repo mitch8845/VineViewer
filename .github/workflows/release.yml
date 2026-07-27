@@ -101,13 +101,27 @@ jobs:
           "$BUILD_TOOLS/apksigner" verify --print-certs "$APK"
 
       - name: Stage release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${{ steps.version.outputs.pubspec }}"
           mkdir -p dist
           cp build/app/outputs/flutter-apk/app-release.apk "dist/VineViewer-v$VERSION.apk"
 
           APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/VineViewer-v$VERSION.apk"
-          NOTES=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")
+
+          # Read the tag annotation from the API, not the local clone. The
+          # runner's checkout does not reliably materialize annotated tag
+          # objects even with fetch-tags, and `git tag --format=%(contents)`
+          # then silently falls back to the COMMIT message -- which put a full
+          # commit body and a Co-Authored-By trailer into user-facing notes.
+          # Falls back to empty for a lightweight tag (the /git/tags 404s).
+          TAG_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.sha' 2>/dev/null || echo "")
+          NOTES=""
+          if [ -n "$TAG_SHA" ]; then
+            NOTES=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_SHA" --jq '.message' 2>/dev/null || echo "")
+          fi
+          echo "resolved notes: ${NOTES:-(none)}"
 
           # Consumed by the in-app updater.
           jq -n \
