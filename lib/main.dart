@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
+import 'features/updater/update_button.dart';
+
 void main() {
   runApp(const VineViewerApp());
 }
@@ -70,6 +72,8 @@ class _HomePageState extends State<HomePage> {
                 color: theme.colorScheme.onSurfaceVariant,
               ),
             ),
+            const SizedBox(height: 40),
+            const UpdateButton(),
           ],
         ),
       ),

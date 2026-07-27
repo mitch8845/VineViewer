@@ -1,6 +1,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Fetch version.json and download the APK from GitHub Releases.
+         Flutter injects this into debug/profile builds automatically but NOT
+         into release, so the updater would fail only in release without it. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- Hand the downloaded APK to the system package installer. The user must
+         additionally grant "Install unknown apps" to this app on the device;
+         the OS prompts for it on first use. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+
     <application
-        android:label="vine_viewer"
+        android:label="VineViewer"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

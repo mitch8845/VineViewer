@@ -40,6 +40,23 @@ dependencies:
   # the latest release later in Phase 0.
   package_info_plus: ^9.0.0
 
+  # Updater: fetch version.json, download the APK, hand it to the installer.
+  dio: ^5.11.0
+  path_provider: ^2.1.6
+  open_filex: ^4.7.0
+
+dependency_overrides:
+  # path_provider_android 2.3.0 switched to JNI bindings, and jni 1.0.1's
+  # android/build.gradle calls kotlin(), which Flutter 3.44.8 removed in its
+  # built-in-Kotlin migration. The Android build fails to configure:
+  #   Could not find method kotlin() ... on project ':jni'
+  # 2.2.23 is the last release before that migration.
+  #
+  # REMOVE THIS once jni ships a Gradle script compatible with built-in Kotlin
+  # (or Flutter restores kotlin()). Re-test by deleting these two lines and
+  # running `flutter build apk --release`.
+  path_provider_android: 2.2.23
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

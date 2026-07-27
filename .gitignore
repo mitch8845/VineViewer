@@ -44,6 +44,11 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# Gradle build output. The root /build/ rule above does not cover these.
+/android/build/
+/android/app/build/
+/android/.gradle/
+
 # Signing secrets — NEVER commit these.
 # The release keystore is unrecoverable if lost and unrotatable if leaked.
 # Back it up offline; store the CI copy in GitHub Secrets.
