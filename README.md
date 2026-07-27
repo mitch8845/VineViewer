@@ -8,7 +8,24 @@ user-defined data schema to every individual vine with full change history.
 See [VINEYARD_APP_PLAN.md](VINEYARD_APP_PLAN.md) for architecture, decisions,
 and phasing. That document is the source of truth.
 
-**Status:** Phase 0 — foundation & update pipeline.
+**Status:** Phase 0 complete. Next: Phase 1 — data core (drift schema, event log).
+
+## Shipping a release
+
+```sh
+# 1. bump `version:` in pubspec.yaml (BOTH parts, e.g. 0.1.3+4 -> 0.1.4+5)
+# 2. commit and push
+git tag -a v0.1.4 -m "What changed."   # annotation becomes the release notes
+git push origin v0.1.4
+```
+
+The tag fires `.github/workflows/release.yml`, which builds, signs, verifies
+the APK is not debug-signed, and publishes it with `version.json`. The tablet
+picks it up from **Check for updates**.
+
+The tag must match `version:` in pubspec.yaml or the workflow fails before
+building. Bump the build number too — Android compares `versionCode`, not the
+version name, and will refuse an install whose code did not increase.
 
 ## Platforms
 

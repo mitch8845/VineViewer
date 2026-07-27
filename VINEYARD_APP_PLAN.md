@@ -104,13 +104,16 @@ Local dev machine
 - Use `package_info_plus` to read installed version, `dio` to download, `open_filex` or `install_plugin` to trigger install
 - Optional: auto-check on launch, manual "Check for updates" in settings
 
-**Setup checklist:**
-- [ ] Enable "Install unknown apps" for the updater on Fire Max 11
-- [ ] Generate + back up release keystore
-- [ ] GitHub repo (private is fine)
-- [ ] Actions workflow: build + sign + release on tag push
-- [ ] In-app update checker
-- [ ] End-to-end test: push a version bump, confirm tablet updates
+**Setup checklist:** ✅ all complete
+- [x] Enable "Install unknown apps" for the updater on Fire Max 11
+- [x] Generate + back up release keystore
+- [x] GitHub repo — **public**, not private. Release assets on a private repo
+      need an authenticated request, so the updater would have to ship an
+      embedded token: extractable from the APK, and expiring within a year,
+      at which point the updater breaks and cannot ship its own fix.
+- [x] Actions workflow: build + sign + release on tag push
+- [x] In-app update checker
+- [x] End-to-end test: push a version bump, confirm tablet updates
 
 **Alternatives considered:**
 - *ADB over WiFi* — requires same network. Rejected.
@@ -446,15 +449,26 @@ test/
 
 ## 10. Development Phases
 
-### Phase 0 — Foundation & Update Pipeline (1–2 weeks)
+### Phase 0 — Foundation & Update Pipeline ✅ COMPLETE (2026-07-27)
 **Goal: prove you can push a code change from the office and see it on the tablet.**
-- [ ] Flutter installed, Android toolchain, Fire Max 11 in developer mode
-- [ ] Hello-world app sideloaded and running on the tablet
-- [ ] Git repo + GitHub Actions build workflow
-- [ ] Signing keystore generated and backed up
-- [ ] Automated release on tag push
-- [ ] In-app update checker
-- [ ] **Milestone: bump version, push, tablet self-updates over WiFi**
+- [x] Flutter installed, Android toolchain, Fire Max 11 in developer mode
+- [x] Hello-world app sideloaded and running on the tablet
+- [x] Git repo + GitHub Actions build workflow
+- [x] Signing keystore generated and backed up
+- [x] Automated release on tag push
+- [x] In-app update checker
+- [x] **Milestone: bump version, push, tablet self-updates over WiFi**
+      *Verified: tablet went 0.1.2 → 0.1.3 unassisted, download to install.*
+
+**Findings worth carrying forward:**
+- `path_provider_android` is pinned to 2.2.23; 2.3.0 uses JNI bindings whose
+  Gradle script breaks Flutter 3.44.8. Revisit when jni updates.
+- `analysis_options.yaml` must exclude `build/`. Without it `flutter analyze`
+  and `flutter test` walk ~5,000 artifacts and appear to hang forever.
+- Android compares `versionCode`, not the version name, when deciding whether
+  an install is an upgrade. Both must be bumped or the installer refuses.
+- A debug-signed APK cannot update a release-signed install. CI enforces this
+  with `apksigner` before publishing.
 
 ### Phase 1 — Data Core (2–3 weeks)
 - [ ] drift schema, all tables, migration harness
