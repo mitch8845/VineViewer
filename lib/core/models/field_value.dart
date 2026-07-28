@@ -240,29 +240,48 @@ abstract final class FieldValueCodec {
       );
     }
 
-    final utc = parsed.isUtc ? parsed : parsed.toUtc();
+    // A `date` is a calendar date, not an instant, so its components are taken
+    // as written. Converting to UTC first would shift 2026-06-15 to 2026-06-14
+    // for anyone east of Greenwich, because DateTime.tryParse of a bare date
+    // yields LOCAL midnight. A `datetime` is a real instant and is normalised.
+    final normalized = dateOnly
+        ? DateTime.utc(parsed.year, parsed.month, parsed.day)
+        : parsed.toUtc();
 
-    if (config.minDate != null && utc.isBefore(config.minDate!)) {
+    final min = _normalizeBound(config.minDate, dateOnly: dateOnly);
+    final max = _normalizeBound(config.maxDate, dateOnly: dateOnly);
+
+    if (min != null && normalized.isBefore(min)) {
       return FieldValueRejected(
         'Earlier than the allowed minimum of '
-        '${_render(config.minDate!, dateOnly: dateOnly)}.',
+        '${_render(min, dateOnly: dateOnly)}.',
       );
     }
-    if (config.maxDate != null && utc.isAfter(config.maxDate!)) {
+    if (max != null && normalized.isAfter(max)) {
       return FieldValueRejected(
         'Later than the allowed maximum of '
-        '${_render(config.maxDate!, dateOnly: dateOnly)}.',
+        '${_render(max, dateOnly: dateOnly)}.',
       );
     }
 
-    return FieldValueAccepted(_render(utc, dateOnly: dateOnly));
+    return FieldValueAccepted(_render(normalized, dateOnly: dateOnly));
+  }
+
+  static DateTime? _normalizeBound(DateTime? bound, {required bool dateOnly}) {
+    if (bound == null) return null;
+    return dateOnly
+        ? DateTime.utc(bound.year, bound.month, bound.day)
+        : bound.toUtc();
   }
 
   static String _render(DateTime value, {required bool dateOnly}) {
-    final iso = value.toUtc().toIso8601String();
     // Date fields store only the day: keeping a time component would make two
     // records of the same day compare unequal for no reason the user can see.
-    return dateOnly ? iso.substring(0, 10) : iso;
+    if (dateOnly) {
+      String two(int n) => n.toString().padLeft(2, '0');
+      return '${value.year}-${two(value.month)}-${two(value.day)}';
+    }
+    return value.toUtc().toIso8601String();
   }
 
   static FieldValueResult _categorical(Object input, FieldConfig config) {

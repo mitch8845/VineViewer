@@ -218,6 +218,33 @@ void main() {
       expect(message, contains('YYYY-MM-DD'));
     });
 
+    test('a bare date is not shifted by the local timezone', () {
+      // REGRESSION: DateTime.tryParse('2026-06-15') returns LOCAL midnight.
+      // The code used to call .toUtc() on it, which in any zone east of
+      // Greenwich moves it to 2026-06-14 -- a spray date silently recorded a
+      // day early. Neither the developer machine (UTC-4) nor CI (UTC) would
+      // catch it, so it is asserted structurally instead: the stored day must
+      // equal the day that was typed, whatever the host timezone.
+      for (final input in [
+        '2026-01-01', // year boundary, the worst case for an off-by-one day
+        '2026-06-15',
+        '2026-12-31',
+      ]) {
+        expect(
+          accepted(encode(FieldType.date, input)),
+          input,
+          reason: 'input $input in zone ${DateTime.now().timeZoneName}',
+        );
+      }
+    });
+
+    test('a local DateTime keeps its calendar day', () {
+      // Same hazard from the other direction: a DateTime picked in local time
+      // late in the evening must not roll forward a day when stored.
+      final lateEvening = DateTime(2026, 6, 15, 23, 45);
+      expect(accepted(encode(FieldType.date, lateEvening)), '2026-06-15');
+    });
+
     test('enforces configured date bounds', () {
       final config = FieldConfig(
         minDate: DateTime.utc(2026, 1, 1),

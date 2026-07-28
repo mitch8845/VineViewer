@@ -124,8 +124,12 @@ class FieldConfig {
       _ => null,
     };
 
-    DateTime? asDate(Object? v) =>
-        v is String ? DateTime.tryParse(v)?.toUtc() : null;
+    // Deliberately NOT normalised to UTC here. For a `date` field the bound is
+    // a calendar date, and DateTime.tryParse('2026-01-01') yields local
+    // midnight -- converting that to UTC moves it a day in any zone east of
+    // Greenwich. The comparison in FieldValueCodec normalises both sides
+    // appropriately for the field's type instead.
+    DateTime? asDate(Object? v) => v is String ? DateTime.tryParse(v) : null;
 
     return FieldConfig(
       maxLength: asInt(map['max_length']),

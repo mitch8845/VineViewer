@@ -132,19 +132,26 @@ void main() {
     test('watchAll re-emits after a write', () async {
       // The list must not go stale behind a rename or an import, so it is a
       // stream rather than a one-shot read.
-      final emissions = <List<Project>>[];
-      final sub = projects.watchAll().listen(emissions.add);
-      await pumpEventQueue();
+      //
+      // Waits on the stream reaching each expected state rather than pumping
+      // the event queue a fixed number of times. Pumping assumes drift has
+      // delivered by the time the pump returns, which is a race -- it passed
+      // locally and failed intermittently on CI.
+      final appeared = projects
+          .watchAll()
+          .firstWhere((list) => list.length == 1)
+          .timeout(const Duration(seconds: 5));
 
-      await projects.create(name: 'New');
-      await pumpEventQueue();
+      final id = await projects.create(name: 'New');
+      expect((await appeared).single.name, 'New');
 
-      await projects.rename(emissions.last.single.id, 'Renamed');
-      await pumpEventQueue();
-      await sub.cancel();
+      final renamed = projects
+          .watchAll()
+          .firstWhere((list) => list.singleOrNull?.name == 'Renamed')
+          .timeout(const Duration(seconds: 5));
 
-      expect(emissions.first, isEmpty);
-      expect(emissions.last.single.name, 'Renamed');
+      await projects.rename(id, 'Renamed');
+      expect((await renamed).single.name, 'Renamed');
     });
   });
 
