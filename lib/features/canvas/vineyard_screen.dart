@@ -7,6 +7,8 @@ import '../../core/geometry/polyline.dart';
 import '../../core/geometry/row_generation.dart';
 import '../../core/providers.dart';
 import 'canvas_controller.dart';
+import '../data_entry/vine_inspector.dart';
+import '../schema/field_editor_screen.dart';
 import 'frame_stats_overlay.dart';
 import 'viewport.dart';
 import 'vineyard_canvas.dart';
@@ -150,6 +152,15 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
         title: Text(widget.projectName),
         actions: [
           IconButton(
+            tooltip: 'Fields',
+            icon: const Icon(Icons.list_alt),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const FieldListScreen(),
+              ),
+            ),
+          ),
+          IconButton(
             tooltip: _showStats ? 'Hide frame stats' : 'Show frame stats',
             icon: Icon(_showStats ? Icons.speed : Icons.speed_outlined),
             onPressed: () => setState(() => _showStats = !_showStats),
@@ -191,6 +202,15 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
           if (tool == CanvasTool.drawRow) _drawRowBanner(pending),
           if (_showStats)
             const Positioned(top: 8, right: 8, child: FrameStatsOverlay()),
+          // Anchored bottom-left, clear of the toolbar, so the selected vine
+          // stays visible while its values are read or changed -- in the field
+          // you are looking at the plant and the screen at the same time.
+          if (selection.length == 1)
+            Positioned(
+              left: 0,
+              bottom: 90,
+              child: VineInspector(vineId: selection.first),
+            ),
           Positioned(
             left: 0,
             right: 0,
