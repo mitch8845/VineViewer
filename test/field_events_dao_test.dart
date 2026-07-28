@@ -168,6 +168,66 @@ void main() {
       expect(await dao.currentValue(vineId, healthId), 'corrected');
     });
 
+    test('identical timestamps resolve to the later insert', () async {
+      // REGRESSION: two writes inside the same millisecond tie on observed_at
+      // AND recorded_at. With only those two ordering terms SQLite returns
+      // whichever row it likes, so a correction made immediately after an
+      // entry could silently lose -- reading, in the field, as "I fixed that
+      // and it didn't save".
+      //
+      // This is not a contrived case: it is what happens when a user notices a
+      // typo the moment they enter it. It passed on a slower machine and
+      // failed consistently on a faster one, which is exactly how an
+      // intermittent data bug hides.
+      //
+      // Both writes share one explicit timestamp so the tie is guaranteed
+      // rather than dependent on how fast the host is.
+      final sameInstant = DateTime.utc(2026, 6, 15, 10, 30, 0, 0);
+
+      await dao.record(
+        vineId: vineId,
+        fieldDefId: healthId,
+        value: 'typo',
+        observedAt: sameInstant,
+        now: sameInstant,
+      );
+      await dao.record(
+        vineId: vineId,
+        fieldDefId: healthId,
+        value: 'corrected',
+        observedAt: sameInstant,
+        now: sameInstant,
+      );
+
+      expect(await dao.currentValue(vineId, healthId), 'corrected');
+    });
+
+    test('identical timestamps order consistently in bulk reads too', () async {
+      final sameInstant = DateTime.utc(2026, 6, 15, 10, 30);
+      for (final value in ['first', 'second', 'third']) {
+        await dao.record(
+          vineId: vineId,
+          fieldDefId: healthId,
+          value: value,
+          observedAt: sameInstant,
+          now: sameInstant,
+        );
+      }
+
+      // Every read path must agree on which event is current, or the map and
+      // the inspector would show different values for the same vine.
+      expect(await dao.currentValue(vineId, healthId), 'third');
+      expect(
+        (await dao.currentValuesForVine(vineId))[healthId]!.value,
+        'third',
+      );
+      expect(
+        (await dao.currentValuesForField(healthId))[vineId]!.value,
+        'third',
+      );
+      expect((await dao.history(vineId, healthId)).first.value, 'third');
+    });
+
     test('resolution is finer than one second', () async {
       // drift's built-in dateTime() stores whole seconds, which would make
       // these two events tie. Hence the millisecond converter.

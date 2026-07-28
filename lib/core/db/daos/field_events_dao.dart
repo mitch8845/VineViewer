@@ -19,15 +19,25 @@ class FieldEventsDao {
 
   /// Ordering used everywhere a "latest" event is resolved.
   ///
-  /// `observed_at DESC, recorded_at DESC` -- the second term is not cosmetic.
-  /// A bulk edit or an import writes many events sharing one `observed_at`
-  /// (the user picks a single date for the batch). Ordering on `observed_at`
-  /// alone leaves those tied, and SQLite may return any of them, so the
-  /// current value would be nondeterministic and could change between reads
-  /// with no write in between. Breaking the tie on `recorded_at` means the
-  /// most recently *entered* value wins, which is what a user expects after
-  /// correcting a mistake.
-  static const _latestFirst = 'observed_at DESC, recorded_at DESC';
+  /// Three terms, each covering a tie the previous one leaves open:
+  ///
+  /// * `observed_at DESC` -- the value that was true most recently.
+  /// * `recorded_at DESC` -- a bulk edit or import writes many events sharing
+  ///   one `observed_at`, because the user picks a single date for the batch.
+  ///   Without this, a later correction at the same observed date might not
+  ///   win, so the fix would appear not to save.
+  /// * `rowid DESC` -- two writes inside the same millisecond tie on
+  ///   `recorded_at` as well. That is not hypothetical: correcting a value
+  ///   immediately after entering it does exactly this, and it failed on a
+  ///   fast machine while passing on a slow one. SQLite's implicit rowid
+  ///   increases monotonically per insert, so it totally orders the remainder
+  ///   at no storage cost.
+  ///
+  /// The result is a total order. Without the third term, the "current" value
+  /// of a vine could differ between two identical reads with no write between
+  /// them -- the worst kind of data bug, because it is intermittent and looks
+  /// like the user misremembering.
+  static const _latestFirst = 'observed_at DESC, recorded_at DESC, rowid DESC';
 
   /// Appends an event.
   ///
