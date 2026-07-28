@@ -51,7 +51,7 @@ void main() {
         .insert(
           VineRowsCompanion.insert(
             id: 'r1',
-            blockId: 'b1',
+            blockId: const Value('b1'),
             label: '12',
             createdAt: now,
             updatedAt: now,
@@ -63,7 +63,9 @@ void main() {
           .insert(
             VinesCompanion.insert(
               id: id,
-              rowId: 'r1',
+              projectId: 'p1',
+              rowId: const Value('r1'),
+              blockId: const Value('b1'),
               positionIdx: id == vineId ? 6 : 7,
               createdAt: now,
               updatedAt: now,

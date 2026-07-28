@@ -48,15 +48,22 @@ class VinesDao {
 
     addIn('v.id', vines);
     addIn('v.row_id', rows);
-    addIn('r.block_id', blocks);
+    // A vine carries its own block_id, so selecting a block reaches vines that
+    // belong to it without being on any row.
+    addIn('v.block_id', blocks);
 
     final activeOnly = includeInactive ? '' : "AND v.status = 'active' ";
 
+    // LEFT JOIN, not JOIN: an unsnapped vine has a null row_id, and an inner
+    // join would silently drop it from every selection -- including a
+    // select-all, where the user would see vines on screen that no bulk edit
+    // could touch.
     final result = await _db
         .customSelect(
           'SELECT DISTINCT v.id AS id FROM vines v '
-          'JOIN vine_rows r ON r.id = v.row_id '
-          'WHERE v.deleted_at IS NULL AND r.deleted_at IS NULL '
+          'LEFT JOIN vine_rows r ON r.id = v.row_id '
+          'WHERE v.deleted_at IS NULL '
+          'AND (r.id IS NULL OR r.deleted_at IS NULL) '
           '$activeOnly'
           'AND (${clauses.join(' OR ')})',
           variables: variables,

@@ -29,6 +29,34 @@ class Projects extends Table {
   IntColumn get imageWidth => integer().nullable()();
   IntColumn get imageHeight => integer().nullable()();
 
+  /// How the image is placed beneath the layout.
+  ///
+  /// **The layout is authoritative; the image moves to fit it.** Replacing an
+  /// aerial with a newer one framed slightly differently must not shift 3,000
+  /// vines -- so the new photo is dragged and scaled into alignment instead,
+  /// and every stored coordinate stays valid.
+  RealColumn get imageOffsetX => real().withDefault(const Constant(0))();
+  RealColumn get imageOffsetY => real().withDefault(const Constant(0))();
+
+  /// Separate axes so an off-angle photo can be stretched to match. Rotation
+  /// is in radians.
+  RealColumn get imageScaleX => real().withDefault(const Constant(1))();
+  RealColumn get imageScaleY => real().withDefault(const Constant(1))();
+  RealColumn get imageRotation => real().withDefault(const Constant(0))();
+
+  /// Optional real-world scale. The user draws a line over something of known
+  /// length and types that length; these record the pixel length and the real
+  /// length, giving pixels-per-unit.
+  ///
+  /// All null means uncalibrated, and every tool works in pixels. Calibration
+  /// is never required -- the plan's accuracy target is "good enough to
+  /// recognise the vineyard", not survey-grade.
+  RealColumn get scaleRefPx => real().nullable()();
+  RealColumn get scaleRefLength => real().nullable()();
+
+  /// 'ft' or 'm'. Stored rather than assumed so exports can label numbers.
+  TextColumn get scaleUnit => text().nullable()();
+
   IntColumn get createdAt => integer().map(const DateTimeMsConverter())();
   IntColumn get updatedAt => integer().map(const DateTimeMsConverter())();
   IntColumn get deletedAt =>
@@ -61,7 +89,7 @@ class Blocks extends Table {
   Set<Column> get primaryKey => {id};
 }
 
-/// A row of vines within a block.
+/// A row of vines, optionally within a block.
 ///
 /// Named `vine_rows` rather than `rows`: ROWS is a keyword in SQLite's window
 /// function syntax, and an unquoted reference in any hand-written statement
@@ -72,15 +100,24 @@ class VineRows extends Table {
   String get tableName => 'vine_rows';
 
   TextColumn get id => text()();
+
+  /// Nullable: a row can exist before it is assigned to a block, which is what
+  /// makes the label `0.1.1` -- no block, row 1 -- expressible.
   TextColumn get blockId =>
-      text().references(Blocks, #id, onDelete: KeyAction.cascade)();
+      text().nullable().references(Blocks, #id, onDelete: KeyAction.setNull)();
+
   TextColumn get label => text().withLength(min: 1, max: 100)();
 
-  /// Endpoints in image pixel coordinates.
-  RealColumn get startX => real().nullable()();
-  RealColumn get startY => real().nullable()();
-  RealColumn get endX => real().nullable()();
-  RealColumn get endY => real().nullable()();
+  /// The row's shape, as JSON `[[x,y], ...]` in image pixel coordinates.
+  /// At least two points.
+  ///
+  /// A polyline of straight segments, not a curve. Vines are trained on
+  /// stakes, so a row that changes direction does so at a hard angle -- a
+  /// spline would add arc-length maths and control-point UI to model something
+  /// that does not exist in the vineyard.
+  ///
+  /// Null until the row has been drawn.
+  TextColumn get path => text().nullable()();
 
   IntColumn get sortOrder => integer().withDefault(const Constant(0))();
 
@@ -100,16 +137,50 @@ class VineRows extends Table {
 /// renumbering a row can never orphan or misattribute data (plan section 6.3).
 class Vines extends Table {
   TextColumn get id => text()();
-  TextColumn get rowId =>
-      text().references(VineRows, #id, onDelete: KeyAction.cascade)();
 
-  /// The "plant" segment of the label. Not unique by constraint: inserting a
-  /// vine mid-row shifts subsequent indices, and the intermediate states of
-  /// that operation would violate a unique index.
+  /// Always set, because both parents below are nullable and a vine must still
+  /// belong somewhere. Without this an unassigned vine would be unreachable.
+  TextColumn get projectId =>
+      text().references(Projects, #id, onDelete: KeyAction.cascade)();
+
+  /// **Non-null means the vine is physically snapped to that row.** That is
+  /// the whole snap model: there is no separate flag that could disagree with
+  /// reality. Clearing it detaches the vine, which then keeps its own x/y.
+  ///
+  /// `setNull` on delete rather than cascade: deleting a row should orphan its
+  /// vines, not destroy them along with their entire recorded history.
+  TextColumn get rowId => text().nullable().references(
+    VineRows,
+    #id,
+    onDelete: KeyAction.setNull,
+  )();
+
+  /// The vine's block, held directly rather than derived through its row.
+  ///
+  /// A vine can have a block but no row -- the label `1.0.1` -- so the block
+  /// cannot be looked up via the row. When a vine is snapped to a row this is
+  /// kept equal to that row's block.
+  TextColumn get blockId =>
+      text().nullable().references(Blocks, #id, onDelete: KeyAction.setNull)();
+
+  /// The "plant" segment of the label. Unique within its (block, row) scope,
+  /// including the unassigned scope, but **not** enforced by a database
+  /// constraint: inserting a vine mid-row shifts subsequent indices, and the
+  /// intermediate states of that operation would violate a unique index.
+  /// LabelService enforces it inside a transaction instead.
   IntColumn get positionIdx => integer()();
 
   RealColumn get x => real().nullable()();
   RealColumn get y => real().nullable()();
+
+  /// Distance along the row's path from its start, when snapped.
+  ///
+  /// Reshaping or moving a row repositions its vines from this rather than by
+  /// re-projecting their x/y onto the new path. Re-projection loses a little
+  /// accuracy every time and drifts visibly after a few edits; an offset is
+  /// exact and lets a vine keep its place when the far end of a row is
+  /// extended.
+  RealColumn get pathOffset => real().nullable()();
 
   TextColumn get status =>
       textEnum<VineStatus>().withDefault(const Constant('active'))();

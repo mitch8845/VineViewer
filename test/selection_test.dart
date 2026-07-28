@@ -54,17 +54,17 @@ void main() {
           .insert(
             VineRowsCompanion.insert(
               id: row,
-              blockId: block,
+              blockId: Value(block),
               label: row,
               createdAt: t0,
               updatedAt: t0,
             ),
           );
     }
-    for (final (row, prefix) in [
-      ('row-1', 'v-1-1'),
-      ('row-2', 'v-1-2'),
-      ('row-3', 'v-2-3'),
+    for (final (row, block, prefix) in [
+      ('row-1', 'block-1', 'v-1-1'),
+      ('row-2', 'block-1', 'v-1-2'),
+      ('row-3', 'block-2', 'v-2-3'),
     ]) {
       for (var i = 1; i <= 3; i++) {
         await db
@@ -72,7 +72,9 @@ void main() {
             .insert(
               VinesCompanion.insert(
                 id: '$prefix-$i',
-                rowId: row,
+                projectId: 'p1',
+                rowId: Value(row),
+                blockId: Value(block),
                 positionIdx: i,
                 createdAt: t0,
                 updatedAt: t0,

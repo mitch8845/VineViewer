@@ -1,3 +1,4 @@
+import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vine_viewer/core/data/vine_data_service.dart';
@@ -45,7 +46,7 @@ void main() {
         .insert(
           VineRowsCompanion.insert(
             id: 'r1',
-            blockId: 'b1',
+            blockId: const Value('b1'),
             label: '12',
             createdAt: now,
             updatedAt: now,
@@ -56,7 +57,9 @@ void main() {
         .insert(
           VinesCompanion.insert(
             id: 'v1',
-            rowId: 'r1',
+            projectId: projectId,
+            rowId: const Value('r1'),
+            blockId: const Value('b1'),
             positionIdx: 1,
             createdAt: now,
             updatedAt: now,
