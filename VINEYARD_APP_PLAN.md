@@ -42,6 +42,7 @@ A winemaker walking the vineyard with a tablet, making updates on the fly. Also 
 | D10 | **Multiple projects supported** | Each project = one vineyard, own image, own schema, own vines. |
 | D11 | **Import format: `.xlsx`, first column `plantID`** | Subsequent columns must match existing field names and types, or the row/column is rejected. |
 | D12 | **Image source: user-uploaded raster** | Google Maps screenshot expected. No tiling/GIS pipeline. |
+| D13 | **Field events attach to vines only; bulk operations write one event per vine** | The user selects any combination — individual vines, whole rows, whole blocks, or a mix. A mixed selection has no single entity a row-level event could reference, so every selection resolves down to a vine set and writes per-vine. Keeps every read path a single query, keeps a vine's history complete even if it is later moved to another row, and keeps the log uniform for export and sync. Bulk writes share a `batch_id` so they are undoable as a unit. |
 
 ---
 
@@ -547,8 +548,8 @@ test/
 | Q2 | Is archive-based sync sufficient in practice for tablet↔desktop? | Needs pressure-test |
 | Q3 | Should vines support arbitrary position (drag anywhere) or snap to row geometry? | Undecided |
 | Q4 | Multiple background images per project (different years/seasons)? | Undecided |
-| Q5 | Do blocks need their own user-defined fields, or vines only? | Undecided |
-| Q6 | Row-level operations (spray whole row) — bulk-select sugar, or first-class row events? | Undecided — affects schema |
+| Q5 | Do blocks need their own user-defined fields, or vines only? | **Resolved 2026-07-27: vines only for v1.** Adding block scope later is additive (a `scope` column defaulting to `'vine'`), so nothing is foreclosed. |
+| Q6 | Row-level operations (spray whole row) — bulk-select sugar, or first-class row events? | **Resolved 2026-07-27: per-vine events.** See D13. |
 | Q7 | Should `observed_at` support date-only vs. datetime precision per field? | Likely yes |
 | Q8 | Photo attachment per vine — how deferred is this really? Field users tend to want it immediately. | Deferred, but watch |
 

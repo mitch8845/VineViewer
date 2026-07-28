@@ -69,6 +69,56 @@ class FieldEventsDao {
     return id;
   }
 
+  /// Records the same value against many vines as one undoable batch.
+  ///
+  /// This is the write path for every multi-selection: individual vines, whole
+  /// rows, whole blocks, or any mix. The caller resolves the selection to vine
+  /// ids first (see `VinesDao.resolveSelection`), so this does not care what
+  /// shape the selection had.
+  ///
+  /// All events share one `observedAt` **and** one `recordedAt` -- exactly the
+  /// tie that makes the `recorded_at` tie-break in [_latestFirst] necessary.
+  /// A later correction to one vine has a greater `recordedAt` and wins.
+  ///
+  /// Returns the batch id, so the whole edit can be reverted with [undoBatch].
+  /// Bulk edits touch many vines at once and are the easiest way to do large
+  /// accidental damage; making them undoable is not optional.
+  Future<String> recordBulk({
+    required Iterable<String> vineIds,
+    required String fieldDefId,
+    required String? value,
+    DateTime? observedAt,
+    EventSource source = EventSource.bulk,
+    String? batchId,
+    String? note,
+    DateTime? now,
+  }) async {
+    final timestamp = now ?? DateTime.now();
+    final observed = observedAt ?? timestamp;
+    final batch = batchId ?? _uuid.v4();
+
+    // Single batched statement rather than a loop: a row-spray is ~40 vines
+    // and a block operation can be thousands.
+    await _db.batch((b) {
+      b.insertAll(_db.fieldEvents, [
+        for (final vineId in vineIds)
+          FieldEventsCompanion.insert(
+            id: _uuid.v4(),
+            vineId: vineId,
+            fieldDefId: fieldDefId,
+            value: Value(value),
+            observedAt: observed,
+            recordedAt: timestamp,
+            source: Value(source),
+            batchId: Value(batch),
+            note: Value(note),
+          ),
+      ]);
+    });
+
+    return batch;
+  }
+
   /// The event holding a vine's current value for one field, or null if the
   /// field was never recorded.
   ///
