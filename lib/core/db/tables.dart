@@ -101,6 +101,13 @@ class VineRows extends Table {
 
   TextColumn get id => text()();
 
+  /// Always set, for the same reason vines carry one: the block is nullable,
+  /// so a row drawn before it is assigned to a block -- and before it has any
+  /// vines -- would otherwise have no path to a project and would vanish from
+  /// the canvas that just drew it.
+  TextColumn get projectId =>
+      text().references(Projects, #id, onDelete: KeyAction.cascade)();
+
   /// Nullable: a row can exist before it is assigned to a block, which is what
   /// makes the label `0.1.1` -- no block, row 1 -- expressible.
   TextColumn get blockId =>

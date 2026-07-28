@@ -51,6 +51,7 @@ void main() {
         .insert(
           VineRowsCompanion.insert(
             id: 'r1',
+            projectId: 'p1',
             blockId: const Value('b1'),
             label: '12',
             createdAt: now,
