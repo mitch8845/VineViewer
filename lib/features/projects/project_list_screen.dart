@@ -2,7 +2,6 @@ import 'dart:io' show File;
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -192,19 +191,22 @@ class _NameDialogState extends State<_NameDialog> {
   }
 }
 
-/// Picks an aerial image and records its pixel dimensions.
+/// Records an aerial image against a project, reading its pixel dimensions.
 ///
 /// Dimensions are stored rather than read on demand because every coordinate
 /// in the project lives in this image's pixel space, and the canvas needs them
 /// before the image itself has finished decoding.
-Future<void> pickProjectImage(WidgetRef ref, String projectId) async {
-  final result = await FilePicker.pickFiles(
-    type: FileType.image,
-    withData: false,
-  );
-  final path = result?.files.single.path;
-  if (path == null) return;
-
+///
+/// The file-chooser UI that would call this is not wired up yet: file_picker
+/// 11 skips applying the Kotlin plugin under AGP 9, so its Android sources
+/// never compile and the generated registrant cannot find them -- the same
+/// built-in-Kotlin incompatibility that forced the path_provider_android pin.
+/// Taking a path directly keeps this usable and testable in the meantime.
+Future<void> setProjectImage(
+  WidgetRef ref,
+  String projectId,
+  String path,
+) async {
   int? width;
   int? height;
   try {
@@ -217,8 +219,8 @@ Future<void> pickProjectImage(WidgetRef ref, String projectId) async {
     // Only the dimensions are wanted here; the canvas decodes its own copy.
     frame.image.dispose();
   } catch (_) {
-    // An unreadable image still gets recorded, so the path is visible and the
-    // user can see what went wrong rather than the pick silently doing nothing.
+    // An unreadable image is still recorded, so the path stays visible and the
+    // user can see what went wrong rather than the action doing nothing.
   }
 
   await ref

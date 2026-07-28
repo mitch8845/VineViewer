@@ -74,7 +74,6 @@ class VineyardPainter extends CustomPainter {
     ..strokeCap = StrokeCap.round
     ..strokeJoin = StrokeJoin.round;
 
-  static final _vinePaint = Paint()..style = PaintingStyle.fill;
   static final _selectionPaint = Paint()
     ..color = const Color(0xFF5B2C6F)
     ..strokeWidth = 2
@@ -149,20 +148,43 @@ class VineyardPainter extends CustomPainter {
     final selectionWidth = 2 / viewport.scale;
     final drawLabels = scene.showLabels && viewport.scale >= _labelVisibleScale;
 
+    // Grouped by colour and drawn with one call per colour.
+    //
+    // 4,000 individual drawCircle calls measured 17.1ms of raster on the Fire
+    // Max 11 -- over the whole 16.7ms frame budget by itself, at 42fps with
+    // 100% janky frames. Nearly all of that is per-call overhead rather than
+    // pixels: the same dots as a handful of batched drawPoints calls cost a
+    // fraction of it. Round stroke caps make each point render as a dot of
+    // diameter strokeWidth.
+    final byColour = <Color, List<Offset>>{};
     for (final point in onScreen) {
-      final colour = scene.colors[point.id] ?? _defaultVineColor;
-      canvas.drawCircle(point.position, radius, _vinePaint..color = colour);
+      (byColour[scene.colors[point.id] ?? _defaultVineColor] ??= <Offset>[])
+          .add(point.position);
+    }
 
-      if (scene.selection.contains(point.id)) {
-        canvas.drawCircle(
-          point.position,
-          radius * 1.8,
-          _selectionPaint..strokeWidth = selectionWidth,
-        );
-      }
+    for (final entry in byColour.entries) {
+      canvas.drawPoints(
+        ui.PointMode.points,
+        entry.value,
+        Paint()
+          ..color = entry.key
+          ..strokeWidth = radius * 2
+          ..strokeCap = StrokeCap.round,
+      );
+    }
 
-      if (drawLabels) {
-        _paintLabel(canvas, point, radius);
+    // Selection and labels stay per-vine: both are bounded by what a person
+    // can select or read, not by the size of the vineyard.
+    if (scene.selection.isNotEmpty || drawLabels) {
+      for (final point in onScreen) {
+        if (scene.selection.contains(point.id)) {
+          canvas.drawCircle(
+            point.position,
+            radius * 1.8,
+            _selectionPaint..strokeWidth = selectionWidth,
+          );
+        }
+        if (drawLabels) _paintLabel(canvas, point, radius);
       }
     }
   }

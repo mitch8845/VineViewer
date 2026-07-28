@@ -483,7 +483,18 @@ test/
 - [ ] Single vine placement
 - [ ] Row-by-count and row-by-spacing tools
 - [ ] Vine selection and hit-testing
-- [ ] Render 4,000 vines at 60fps on the Fire Max 11 ← **hard performance gate**
+- [x] Render 4,000 vines at 60fps on the Fire Max 11 ← **hard performance gate**
+      **PASSED 2026-07-28.** Worst case (fully zoomed out, all 4,000 visible):
+      11.5ms average frame, 3.6ms raster, 10% jank. Budget is 16.67ms.
+
+      First attempt failed at 23.7ms / 42fps / 100% jank, with raster alone at
+      17.1ms — over the whole budget. The cause was 4,000 individual
+      `drawCircle` calls; grouping by colour and using one batched `drawPoints`
+      call per colour cut raster 3.9x. Nearly all of the cost was per-call
+      overhead, not pixels.
+
+      Build time (7.8ms) is now the larger half. If more headroom is ever
+      needed, that is where to look — not the painting.
 - [ ] Basic vine inspector panel
 
 ### Phase 3 — Layout Tools (3–4 weeks)

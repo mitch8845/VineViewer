@@ -7,6 +7,7 @@ import '../../core/geometry/polyline.dart';
 import '../../core/geometry/row_generation.dart';
 import '../../core/providers.dart';
 import 'canvas_controller.dart';
+import 'frame_stats_overlay.dart';
 import 'viewport.dart';
 import 'vineyard_canvas.dart';
 import 'vineyard_painter.dart';
@@ -25,6 +26,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
   final _canvasKey = GlobalKey<VineyardCanvasState>();
   CanvasViewport _viewport = CanvasViewport.identity;
   bool _fittedOnce = false;
+  bool _showStats = false;
 
   /// Finger-sized tap target, converted to layout units so the tolerance stays
   /// constant on screen at any zoom.
@@ -148,6 +150,11 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
         title: Text(widget.projectName),
         actions: [
           IconButton(
+            tooltip: _showStats ? 'Hide frame stats' : 'Show frame stats',
+            icon: Icon(_showStats ? Icons.speed : Icons.speed_outlined),
+            onPressed: () => setState(() => _showStats = !_showStats),
+          ),
+          IconButton(
             tooltip: showLabels ? 'Hide labels' : 'Show labels',
             icon: Icon(showLabels ? Icons.label : Icons.label_outline),
             onPressed: () =>
@@ -182,6 +189,8 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             onViewportChanged: (v) => _viewport = v,
           ),
           if (tool == CanvasTool.drawRow) _drawRowBanner(pending),
+          if (_showStats)
+            const Positioned(top: 8, right: 8, child: FrameStatsOverlay()),
           Positioned(
             left: 0,
             right: 0,
