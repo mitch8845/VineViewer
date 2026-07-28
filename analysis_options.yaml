@@ -18,8 +18,11 @@ analyzer:
     # missing exclude.
     - build/**
     - android/build/**
-    - "**/*.g.dart"
-    - "**/*.freezed.dart"
+    #
+    # Deliberately NOT excluding **/*.g.dart. It was excluded briefly and hid a
+    # real compile error in drift's generated code -- analyze reported "no
+    # issues" against a tree that would not build. Generated code is still code;
+    # if it does not compile, that should surface in analyze, not at test time.
 
 linter:
   # The lint rules applied to this project can be customized in the

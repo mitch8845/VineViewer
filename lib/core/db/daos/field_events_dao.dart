@@ -1,0 +1,225 @@
+import 'package:drift/drift.dart';
+import 'package:uuid/uuid.dart';
+
+import '../../models/enums.dart';
+import '../database.dart';
+
+/// Reads and writes the event log.
+///
+/// The log is **append-only by intent**. Correcting a value means recording a
+/// new event, not editing an old one; the previous reading stays queryable.
+/// That is what makes "show me last season's health scores" work, and it is
+/// also why a future multi-device sync merges without conflict -- two devices
+/// adding observations simply union.
+class FieldEventsDao {
+  FieldEventsDao(this._db, {Uuid? uuid}) : _uuid = uuid ?? const Uuid();
+
+  final AppDatabase _db;
+  final Uuid _uuid;
+
+  /// Ordering used everywhere a "latest" event is resolved.
+  ///
+  /// `observed_at DESC, recorded_at DESC` -- the second term is not cosmetic.
+  /// A bulk edit or an import writes many events sharing one `observed_at`
+  /// (the user picks a single date for the batch). Ordering on `observed_at`
+  /// alone leaves those tied, and SQLite may return any of them, so the
+  /// current value would be nondeterministic and could change between reads
+  /// with no write in between. Breaking the tie on `recorded_at` means the
+  /// most recently *entered* value wins, which is what a user expects after
+  /// correcting a mistake.
+  static const _latestFirst = 'observed_at DESC, recorded_at DESC';
+
+  /// Appends an event.
+  ///
+  /// A null [value] records that the field was **cleared**, which is different
+  /// from having no event at all: "we looked and there is nothing" versus "we
+  /// never looked".
+  ///
+  /// [observedAt] is when the observation was true and defaults to now;
+  /// `recordedAt` is always now and is never caller-supplied.
+  Future<String> record({
+    required String vineId,
+    required String fieldDefId,
+    required String? value,
+    DateTime? observedAt,
+    EventSource source = EventSource.manual,
+    String? batchId,
+    String? note,
+    DateTime? now,
+  }) async {
+    final timestamp = now ?? DateTime.now();
+    final id = _uuid.v4();
+
+    await _db
+        .into(_db.fieldEvents)
+        .insert(
+          FieldEventsCompanion.insert(
+            id: id,
+            vineId: vineId,
+            fieldDefId: fieldDefId,
+            value: Value(value),
+            observedAt: observedAt ?? timestamp,
+            recordedAt: timestamp,
+            source: Value(source),
+            batchId: Value(batchId),
+            note: Value(note),
+          ),
+        );
+
+    return id;
+  }
+
+  /// The event holding a vine's current value for one field, or null if the
+  /// field was never recorded.
+  ///
+  /// Pass [asOf] to ask what the value was at a past moment -- the query that
+  /// makes year-over-year comparison possible.
+  Future<FieldEvent?> currentEvent(
+    String vineId,
+    String fieldDefId, {
+    DateTime? asOf,
+  }) async {
+    final rows = await _db
+        .customSelect(
+          'SELECT * FROM field_events '
+          'WHERE vine_id = ?1 AND field_def_id = ?2 AND deleted_at IS NULL '
+          '${asOf != null ? 'AND observed_at <= ?3 ' : ''}'
+          'ORDER BY $_latestFirst LIMIT 1',
+          variables: [
+            Variable<String>(vineId),
+            Variable<String>(fieldDefId),
+            if (asOf != null)
+              Variable<int>(asOf.toUtc().millisecondsSinceEpoch),
+          ],
+          readsFrom: {_db.fieldEvents},
+        )
+        .get();
+
+    if (rows.isEmpty) return null;
+    return _db.fieldEvents.map(rows.first.data);
+  }
+
+  /// Convenience wrapper around [currentEvent] returning just the value.
+  ///
+  /// Note this collapses two distinct states -- "never recorded" and
+  /// "explicitly cleared" both yield null. Use [currentEvent] where the
+  /// difference matters.
+  Future<String?> currentValue(
+    String vineId,
+    String fieldDefId, {
+    DateTime? asOf,
+  }) async => (await currentEvent(vineId, fieldDefId, asOf: asOf))?.value;
+
+  /// Every event for one vine and field, newest first.
+  Future<List<FieldEvent>> history(String vineId, String fieldDefId) async {
+    final rows = await _db
+        .customSelect(
+          'SELECT * FROM field_events '
+          'WHERE vine_id = ?1 AND field_def_id = ?2 AND deleted_at IS NULL '
+          'ORDER BY $_latestFirst',
+          variables: [Variable<String>(vineId), Variable<String>(fieldDefId)],
+          readsFrom: {_db.fieldEvents},
+        )
+        .get();
+
+    return rows.map((r) => _db.fieldEvents.map(r.data)).toList();
+  }
+
+  /// Current value of every field for one vine, keyed by field definition id.
+  ///
+  /// One query with a window function rather than N queries. At 4,000 vines a
+  /// per-field round trip is what makes a map repaint feel slow.
+  Future<Map<String, FieldEvent>> currentValuesForVine(
+    String vineId, {
+    DateTime? asOf,
+  }) async {
+    final rows = await _db
+        .customSelect(
+          'SELECT * FROM ('
+          '  SELECT *, ROW_NUMBER() OVER ('
+          '    PARTITION BY field_def_id ORDER BY $_latestFirst'
+          '  ) AS rn'
+          '  FROM field_events'
+          '  WHERE vine_id = ?1 AND deleted_at IS NULL'
+          '${asOf != null ? '    AND observed_at <= ?2' : ''}'
+          ') WHERE rn = 1',
+          variables: [
+            Variable<String>(vineId),
+            if (asOf != null)
+              Variable<int>(asOf.toUtc().millisecondsSinceEpoch),
+          ],
+          readsFrom: {_db.fieldEvents},
+        )
+        .get();
+
+    return {
+      for (final r in rows)
+        r.read<String>('field_def_id'): _db.fieldEvents.map(r.data),
+    };
+  }
+
+  /// Current value of one field across every vine, keyed by vine id.
+  ///
+  /// This is what colour-by-field rendering needs: one query for the whole
+  /// map instead of 4,000.
+  Future<Map<String, FieldEvent>> currentValuesForField(
+    String fieldDefId, {
+    DateTime? asOf,
+  }) async {
+    final rows = await _db
+        .customSelect(
+          'SELECT * FROM ('
+          '  SELECT *, ROW_NUMBER() OVER ('
+          '    PARTITION BY vine_id ORDER BY $_latestFirst'
+          '  ) AS rn'
+          '  FROM field_events'
+          '  WHERE field_def_id = ?1 AND deleted_at IS NULL'
+          '${asOf != null ? '    AND observed_at <= ?2' : ''}'
+          ') WHERE rn = 1',
+          variables: [
+            Variable<String>(fieldDefId),
+            if (asOf != null)
+              Variable<int>(asOf.toUtc().millisecondsSinceEpoch),
+          ],
+          readsFrom: {_db.fieldEvents},
+        )
+        .get();
+
+    return {
+      for (final r in rows)
+        r.read<String>('vine_id'): _db.fieldEvents.map(r.data),
+    };
+  }
+
+  /// Soft-deletes a single event. The prior value becomes current again.
+  Future<void> softDelete(String eventId, {DateTime? now}) async {
+    await (_db.update(_db.fieldEvents)..where((e) => e.id.equals(eventId)))
+        .write(FieldEventsCompanion(deletedAt: Value(now ?? DateTime.now())));
+  }
+
+  /// Soft-deletes every event written by an import batch.
+  ///
+  /// Undoable imports are non-negotiable (plan section 7.1): a bad import can
+  /// write thousands of events, and without this the only recovery is a
+  /// restore from backup.
+  ///
+  /// Returns the number of events reverted.
+  Future<int> undoBatch(String batchId, {DateTime? now}) async {
+    return (_db.update(_db.fieldEvents)
+          ..where((e) => e.batchId.equals(batchId) & e.deletedAt.isNull()))
+        .write(FieldEventsCompanion(deletedAt: Value(now ?? DateTime.now())));
+  }
+
+  /// Moves every event from one vine to another.
+  ///
+  /// Used by the Transfer Data tool (plan section 6.2), typically after a vine
+  /// was recorded against the wrong position.
+  Future<int> transferEvents({
+    required String fromVineId,
+    required String toVineId,
+  }) async {
+    return (_db.update(_db.fieldEvents)
+          ..where((e) => e.vineId.equals(fromVineId) & e.deletedAt.isNull()))
+        .write(FieldEventsCompanion(vineId: Value(toVineId)));
+  }
+}
