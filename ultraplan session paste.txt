@@ -1,0 +1,946 @@
+# VineViewer v3 — generic data engine
+
+## Context
+
+Phases 0–3a shipped: 0.3.0+6 is on the tablet with durable undo, label history,
+an aerial picker, and a row-drawing flow verified against the Five Sisters
+photo. 326 tests pass.
+
+The next job was hand-drawing 75 rows and ~3,025 vines. Before doing it the
+model turned out to be too rigid, and the evidence was already in the
+spreadsheet: its `ID` column is not a stored fact, it is `Block` + `Row` +
+`Plant` joined by `.`. The app hardcoded that one shape — `blocks` and
+`vine_rows` are tables, `LabelService` composes `block.row.plant` in SQL, and
+`nextRowNumber` bakes in "rows restart inside blocks".
+
+**v3 makes nothing structural built in except the plant.** Rows and blocks
+become user-defined *object fields* that the user draws. Terraces, roads,
+fences, irrigation lines become expressible for the first time. The plant
+identifier becomes a user-composed template. Numbering becomes an explicit
+operation over a selection instead of a hierarchy rule.
+
+There is **no migration**: the two existing projects are throwaway (one seeded
+by a button, one holding a single row). v3 is a fresh schema, and Five Sisters
+gets seeded once against the final model.
+
+### Decisions taken this session
+
+| Open question | Resolution |
+|---|---|
+| Q1 — which line does a plant slide along? | Two separate relationships. `vines.carrier_id` is the **one** polyline a plant is physically snapped to (owns `path_offset`, reshape-and-slide). Container **membership** is many, derived from geometry, stored in `plant_memberships`. A plant can be in Row 12 *and* Terrace 3 while sliding along only Row 12. |
+| Q2 — how strictly is overlap prevented? | **Refused at commit.** Draw freely; the naming sheet validates on Create/Save, names the object it overlaps, and keeps the stroke editable. |
+| Q3 — blank container value in an identifier? | **Per-field placeholder**, chosen by the user, defaulting to `0`. Works for attributes too (`Clone` → `none`). An object label or attribute value equal to its own field's placeholder is **flagged and refused**. |
+| Q4 — what does the wizard ask? | Objects and draw types → container flags → attributes → identifier template. The template cannot be composed before its parts exist. |
+| Q5 — do non-container objects get identifiers? | No. Every object has a **label** (its name). Only container-object fields and attribute fields can be identifier parts, so a road has a name and no composed ID. |
+| Q6 — deletion | In scope. Mark as Removed and Replace with New Vine, built against the generic model. No permanent delete, no trash. |
+
+### One rule that recurs
+
+**Any operation that would produce two plants with the same identifier is
+refused, naming the collisions.** It applies to the numbering tool, to renaming
+an object, to editing the template, and to changing an attribute that is an
+identifier part. It is never a warning.
+
+---
+
+## The model
+
+```mermaid
+graph TD
+    subgraph v3["v3 — everything but the plant is user-defined"]
+        FD["<b>field_defs</b><br/>role: attribute │ object<br/>draw_type · is_container<br/>blank_placeholder · tolerance"]
+        MO["<b>map_objects</b><br/>one drawn Row / Block / Road<br/>label + geometry JSON"]
+        PM["<b>plant_memberships</b><br/>derived from geometry<br/>(vine, object, field)"]
+        VN["<b>vines</b> — the plant<br/>position_idx · carrier_id · path_offset"]
+        FE["<b>field_events</b><br/>append-only value log"]
+        PR["<b>projects</b>.identifier_template<br/>ordered parts + delimiter"]
+        FD -->|defines instances of| MO
+        MO -->|"containment ⇒ many"| PM
+        PM --> VN
+        MO -->|"carrier ⇒ at most one"| VN
+        FD --> FE --> VN
+        PR -.->|renders from| PM
+        PR -.-> FE
+        PR -.-> VN
+    end
+```
+
+`blocks` and `vine_rows` are deleted. Want rows? Create a field named Row,
+role `object`, draw type `polyline`, container on. Want blocks? Block, object,
+polygon, container on. Want a road? Road, object, polyline, container **off** —
+it touches no plant and puts no field on anything.
+
+### Derivation, and why membership is stored rather than computed
+
+Membership is recomputed from geometry, but **written to a table** rather than
+resolved at read time. Three reasons, all load-bearing:
+
+1. `plant_memberships` joins `journaledTables`, so the existing SQLite capture
+   triggers record every membership change for free — which is what keeps
+   `LabelService.historyOf` answering "what was this called in 2025?".
+2. Undo replays membership changes generically, with no new inverse code.
+3. Reads stay a join, so the canvas is not running point-in-polygon per frame.
+
+Reconciliation runs **inside the gesture**, after anything that could change
+containment: an object drawn, reshaped, moved, or deleted; a plant created,
+moved, or deleted; a container flag toggled.
+
+---
+
+## Phase order
+
+```mermaid
+graph LR
+    P1["1 · Schema<br/>tables · enums<br/>destructive v3 migration"]
+    P2["2 · Geometry<br/>shapes.dart<br/>containment · intersection"]
+    P3["3 · Derivation & identity<br/>MembershipService<br/>LabelService rewrite<br/>NumberingService"]
+    P4["4 · DAOs<br/>LayoutDao generalised<br/>VinesDao · FieldDefsDao"]
+    P5["5 · Schema UI<br/>field editor · template editor<br/>setup wizard"]
+    P6["6 · Canvas<br/>painter · draw tools<br/>selection · numbering · deletion"]
+    P7["7 · Generative tools<br/>multi-row array · fill"]
+    P8["8 · Reseed<br/>4,000-vine gate<br/>Five Sisters"]
+    P1 --> P3
+    P2 --> P3
+    P3 --> P4 --> P5 --> P6 --> P7 --> P8
+    P4 --> P6
+```
+
+Phases 1 and 2 are independent and can be done in either order. Everything from
+3 onward is a chain. **The app does not compile between phase 1 and phase 4** —
+deleting `blocks`/`vine_rows` breaks `LabelService`, `LayoutDao`, `VinesDao`,
+and the canvas at once. Plan for one long red build and do not try to keep it
+green in between; the type checker is the worklist.
+
+---
+
+## Phase 1 — Schema
+
+### `lib/core/models/enums.dart`
+
+```dart
+/// What a field *is*. An attribute is a value on a plant; an object is drawn.
+enum FieldRole { attribute, object }
+
+/// How an object is drawn. Points are never containers -- a point contains
+/// nothing -- which FieldDefsDao enforces.
+enum DrawType { polyline, polygon, point }
+```
+
+Both persisted by name, per the file's existing convention.
+
+### `lib/core/db/tables.dart`
+
+**Delete** `Blocks` and `VineRows` entirely.
+
+**`FieldDefs`** — five new columns:
+
+```dart
+TextColumn get role =>
+    textEnum<FieldRole>().withDefault(const Constant('attribute'))();
+
+/// Null for attributes. Immutable once created, like `type` (D5): changing a
+/// polyline field to a polygon would invalidate every geometry already drawn.
+TextColumn get drawType => textEnum<DrawType>().nullable()();
+
+/// Objects only. A container puts a derived value on *every* plant, blank or
+/// not. A non-container touches plants not at all.
+BoolColumn get isContainer => boolean().withDefault(const Constant(false))();
+
+/// What an identifier renders where this field has no value -- the generic
+/// form of the old reserved `"0"`. User-chosen per field: `0` for Row, `none`
+/// for Clone. A value equal to this is refused, or `0.12.7` becomes ambiguous
+/// between a real address and an unassigned one.
+TextColumn get blankPlaceholder => text().nullable()();
+
+/// Polyline containers only: how close a plant must be, in layout pixels, to
+/// count as on the line. Defaults to `MembershipService.defaultTolerance`.
+RealColumn get tolerance => real().nullable()();
+```
+
+An object field's `type` is always `FieldType.text` — object labels are text.
+`FieldDefsDao` validates the combination (see phase 4).
+
+**`Projects`** — one new column:
+
+```dart
+/// JSON: {"delimiter":".","parts":[{"field":"<uuid>"},{"plant":true}]}
+/// Null means the project has not composed one yet; identifiers fall back to
+/// the bare plant number so a half-configured project is still usable.
+TextColumn get identifierTemplate => text().nullable()();
+```
+
+`projects` is already journaled, so a template change is undoable and shows up
+in label history without extra work.
+
+**New — `MapObjects` (`map_objects`)**: one drawn instance.
+
+```
+id            TEXT PK (UUID)
+projectId     TEXT → Projects  cascade
+fieldDefId    TEXT → FieldDefs cascade
+label         TEXT 1..100
+geometry      TEXT nullable   -- JSON [[x,y],...]: 1 point / ≥2 polyline / ≥3 polygon
+sortOrder     INTEGER default 0
+createdAt / updatedAt / deletedAt
+```
+
+`geometry` nullable for the same reason `vine_rows.path` was: an object can be
+named before it is drawn.
+
+**New — `PlantMemberships` (`plant_memberships`)**: derived containment.
+
+```
+id            TEXT PK (UUID)     -- required: the capture triggers reference NEW.id
+vineId        TEXT → Vines      cascade
+objectId      TEXT → MapObjects cascade
+fieldDefId    TEXT → FieldDefs  cascade   -- denormalised; every read is "this plant's value for this field"
+createdAt / updatedAt
+```
+
+**No `deletedAt`**, deliberately breaking the file's convention — document it
+inline alongside the journal tables' similar note. Memberships are *derived*:
+any device can recompute them from geometry, so a soft delete carries no
+information a sync would need, and a tombstone per swept plant would balloon
+the table on every boundary edit.
+
+**`Vines`** — replace two columns with one:
+
+```dart
+// REMOVED: blockId, rowId
+
+/// The polyline this plant is physically snapped to, and the only thing
+/// `pathOffset` is measured along. **At most one.** Container membership is a
+/// different relationship entirely (`plant_memberships`) and may be many: a
+/// plant can be in Row 12 and Terrace 3 while sliding along only Row 12.
+TextColumn get carrierId => text().nullable().references(
+      MapObjects, #id, onDelete: KeyAction.setNull)();
+```
+
+`positionIdx`, `pathOffset`, `x`, `y`, `status`, `plantedAt`, `endedAt`,
+`predecessorId` are unchanged. The `id`-never-changes invariant is unchanged.
+
+### `lib/core/db/database.dart`
+
+- `@DriftDatabase(tables: [...])` — drop `Blocks`, `VineRows`; add `MapObjects`,
+  `PlantMemberships`.
+- `journaledTables` — same swap. This is the one line that makes the new tables
+  undoable and history-bearing; both satisfy the triggers' requirement of a
+  column literally named `id` and values only ever `int`/`double`/`String`/NULL.
+- `schemaVersion => 3`.
+- `_createIndexes()` — drop `ix_vines_label_scope`, `ix_rows_block`,
+  `ix_blocks_project`. Add:
+  ```
+  ix_vines_carrier      ON vines (carrier_id, position_idx)
+  ix_objects_field      ON map_objects (field_def_id)
+  ix_objects_project    ON map_objects (project_id)
+  ix_membership_vine    ON plant_memberships (vine_id, field_def_id)
+  ix_membership_object  ON plant_memberships (object_id)
+  ```
+- `onUpgrade` — **destructive, and honest about it**:
+
+  ```dart
+  if (from < 3) {
+    // v3 is a fresh schema, not surgery on v2. Both v2 projects were
+    // throwaway -- one seeded by a button, one holding a single row -- and
+    // writing a real migration for data nobody wants would have cost more
+    // than redrawing it. Documented in the release notes as a wipe.
+    await customStatement('PRAGMA foreign_keys = OFF');
+    for (final t in [...]) await customStatement('DROP TABLE IF EXISTS $t');
+    for (final trigger in ...) await customStatement('DROP TRIGGER IF EXISTS $trigger');
+    await m.createAll();
+    await _createIndexes();
+    await _installUndoJournal();
+    await customStatement('PRAGMA foreign_keys = ON');
+  }
+  ```
+
+  Drop the old triggers explicitly — `jr_blocks_*` and `jr_vine_rows_*` survive
+  a `DROP TABLE` in SQLite only as dangling references, but leaving them named
+  in the schema is a trap for the next migration.
+
+  **Flag in the PR body and release notes:** this is a wipe, and the *next*
+  migration will be the first one written against data anyone wants to keep.
+  That one needs a real fixture.
+
+### Tests
+
+- Delete `test/migration_v1_v2_test.dart`.
+- New `test/migration_v2_v3_test.dart`, modelled on the file it replaces:
+  build a populated v2 database (create the current schema is no longer
+  possible, so hand-write the v2 `CREATE TABLE` statements for
+  `blocks`/`vine_rows`/`vines` in the fixture), reopen at v3, and assert
+  `user_version == 3`, the v2 tables are gone, `undo_context` holds its row,
+  and the capture triggers **fire on the upgraded file** — the specific bug
+  the v1→v2 test exists to catch.
+
+---
+
+## Phase 2 — Geometry
+
+### New: `lib/core/geometry/shapes.dart`
+
+`Polyline` stays exactly as it is — arc-length prefix sums, `pointAt`,
+`closestTo`, `reversed`, `tryParse` — and is wrapped rather than replaced.
+
+```dart
+/// The geometry of one drawn object, tagged by how it is drawn.
+sealed class Shape {
+  factory Shape.polyline(Polyline path);
+  factory Shape.polygon(List<Offset> vertices);   // implicitly closed
+  factory Shape.point(Offset at);
+
+  DrawType get drawType;
+  Rect get bounds;
+  String toJson();                                 // [[x,y],...], as vine_rows.path was
+  static Shape? tryParse(String? raw, DrawType type);  // null, never throws
+}
+```
+
+Same null-on-malformed contract as `Polyline.tryParse`, and for the same
+reason: an unreadable geometry must leave the project openable.
+
+Pure predicates, all in this file, all unit-testable without a database:
+
+```dart
+bool pointInPolygon(Offset p, List<Offset> vertices);      // even-odd ray cast
+bool segmentsIntersect(Offset a1, Offset a2, Offset b1, Offset b2);
+bool polylinesCross(Polyline a, Polyline b);
+bool polygonsOverlap(List<Offset> a, List<Offset> b);
+```
+
+`polygonsOverlap` must be **edge intersection OR either polygon's first vertex
+inside the other** — edge tests alone miss full containment, which is exactly
+the case a user hits by drawing a small block inside a big one.
+
+```dart
+/// The first same-type object [candidate] collides with, or null.
+({String objectId, String label})? findOverlap(
+  Shape candidate,
+  Iterable<({String id, String label, Shape shape})> others,
+);
+```
+
+Bounds-check before the exact test. At 75 polylines and a handful of polygons
+this is already trivial; the bounds pre-filter keeps it trivial at ten times
+that.
+
+Points are exempt: two point objects of the same type may coincide, since a
+point has no interior to be ambiguous about.
+
+### Tests
+
+New `test/shapes_test.dart`: round-trip JSON per draw type; malformed input →
+null; point-in-polygon on a concave shape (the case a convex-only test passes
+wrongly); segment intersection including shared endpoints and collinear
+overlap; polygon-inside-polygon; two rows crossing in an X; two rows that get
+close but never touch.
+
+---
+
+## Phase 3 — Derivation and identity
+
+### New: `lib/core/data/membership_service.dart`
+
+```dart
+class MembershipService {
+  /// Layout pixels. A plant this far from a container polyline counts as on
+  /// it. Overridable per field via `field_defs.tolerance`.
+  static const defaultTolerance = 8.0;
+
+  /// Recomputes memberships and writes the difference.
+  ///
+  /// Call inside the gesture, never outside: the capture triggers turn the
+  /// diff into undo, and a reconcile outside an operation is silently
+  /// unundoable.
+  Future<int> reconcile({
+    required String projectId,
+    Set<String>? vineIds,      // null = every plant
+    Set<String>? objectIds,    // null = every container object
+  });
+}
+```
+
+Rules:
+
+- **Polygon container** — a plant belongs if `pointInPolygon(plant, vertices)`.
+- **Polyline container** — a plant belongs if
+  `path.closestTo(plant).distance <= tolerance`. Note this is *not* "is my
+  carrier", which is what makes two polyline containers through one plant work
+  (Q1): Row is the carrier, Terrace is proximity, both yield a value.
+- **Point objects** — never containers.
+- **Non-container objects** — skipped entirely; they contribute nothing.
+
+Writes the diff, not a delete-all-reinsert: an unchanged membership must not
+produce a journal row, or every plant move would bloat the undo journal with
+3,000 no-op captures.
+
+Cost: full-project reconcile at 3,025 plants against 75 polylines and ~6
+polygons is roughly 900k segment-distance evaluations. Cut it with a bounds
+pre-filter per object (a plant outside an object's inflated bounds cannot
+belong) which reduces it to near-linear. This runs per gesture, never per
+frame. **Measure it once on the tablet during phase 8**; if a boundary edit
+takes longer than a few hundred ms, scope the reconcile to the changed object's
+bounds rather than the project.
+
+### Rewritten: `lib/core/data/label_service.dart`
+
+Keep the file, the class name, and the provider — it still assigns and resolves
+labels, and keeping the name avoids churning six test files and five call sites
+for no gain. Replace the internals.
+
+```dart
+/// One component of a plant identifier.
+sealed class IdPart {}
+class PlantPart extends IdPart {}                    // the plant's own number
+class FieldPart extends IdPart { final String fieldDefId; }
+
+class IdentifierTemplate {
+  final String delimiter;      // "." or "&" or "-" or ""
+  final List<IdPart> parts;
+  String toJson(); static IdentifierTemplate? parse(String?);
+
+  /// The fallback when a project has not composed one: the bare plant number.
+  static const plantOnly = ...;
+}
+
+/// A rendered identifier. Replaces VineLabel.
+class PlantIdentifier {
+  final List<String> parts;    // already placeholder-substituted
+  final String delimiter;
+  String get text => parts.join(delimiter);
+}
+```
+
+Public surface:
+
+| Method | Notes |
+|---|---|
+| `identifiersForProject(projectId)` | One query. Left-joins `plant_memberships` → `map_objects` for container parts, a `ROW_NUMBER() OVER (PARTITION BY field_def_id ...)` latest-event subquery for attribute parts (the shape `FieldEventsDao.currentValuesForVine` already uses), `position_idx` for the plant part. 3,000 round trips per frame is not a budget, it is a freeze — the reason the old one was a single join. |
+| `identifierOf(vineId)` | Same query, one plant. |
+| `renderIdentifiers(rows, template)` | **Pure function** over fetched rows. This is what makes the "this renames 34 plants" prompt possible without writing anything: fetch once, render under the current template and under the proposed change, diff. |
+| `countIdentifierChanges({newTemplate, renamedObjects, movedPlants})` | Built on `renderIdentifiers`. Returns the count *and* any duplicates the change would create. |
+| `problemWithObjectLabel({fieldDef, label})` | Replaces `problemWithLabel`. Refuses: empty; equal to `fieldDef.blankPlaceholder`; containing the project's current delimiter. |
+| `problemWithIdentifierValue({fieldDef, value})` | Same three checks for an *attribute* that is an identifier part — the Clone → `none` case. Called from `VineDataService.setValue`. |
+| `findDuplicateIdentifiers(projectId)` | Uniqueness is app-enforced, not a constraint, so it must be provable. |
+| `historyOf(vineId)` | Same algorithm, four journals instead of three. |
+
+`nextPlantNumber` survives (lowest-unused-in-scope, now scoped by `carrier_id`).
+`nextRowNumber` / `isRowNumberFree` are **replaced** by
+`nextObjectLabel(fieldDefId)` — lowest unused integer among that field's object
+labels, project-wide. The "rows restart inside blocks" rule is gone; if the
+user wants it they draw the blocks and use the numbering tool.
+
+`assignToRow` / `assignToBlock` / `detachFromRow` become `assignToCarrier` /
+`detachFromCarrier`. `renumberRow` is **deleted**, replaced by
+`NumberingService`. `insertAfter` and `countAffectedByShift` survive unchanged
+in spirit, scoped by carrier instead of row.
+
+**`historyOf` rewrite.** The algorithm is unchanged — walk the journal forward,
+emit only transitions, reconcile against reality at the end — but it now merges
+four journals instead of three:
+
+- `vines` (the plant's own `position_idx`, `carrier_id`)
+- `plant_memberships` (containment gained or lost — this is how a polygon
+  reshape that sweeps a plant into Block 2 appears in its history)
+- `map_objects` (an object renamed, which changes every identifier on it
+  without touching a single plant — the generic form of today's row-rename fold)
+- `field_events` (an attribute that is an identifier part changing value)
+
+The two documented limits carry over verbatim: history begins where the journal
+begins, and undone operations are excluded.
+
+### New: `lib/core/data/numbering_service.dart`
+
+Replaces `renumberRow` and the never-built Reverse Row with one general tool.
+
+```dart
+enum NumberingOrder { leftToRight, rightToLeft, topToBottom, bottomToTop }
+
+class NumberingPlan {
+  final Map<String, int> assignments;   // vineId → new position_idx
+  final int startAt;
+  final NumberingOrder order;
+}
+
+sealed class NumberingResult {}
+class NumberingApplied extends NumberingResult { final int count; }
+class NumberingRefused extends NumberingResult {
+  final List<String> collisions;   // the identifiers that would duplicate
+}
+
+class NumberingService {
+  /// Orders the selection and assigns consecutive numbers. Pure; writes nothing.
+  Future<NumberingPlan> plan({
+    required Set<String> vineIds,
+    required int startAt,
+    required NumberingOrder order,
+  });
+
+  /// Writes the plan, or refuses it whole.
+  ///
+  /// **Duplicates are refused, not warned about.** Renders every identifier
+  /// the plan would produce, compares against every plant outside the
+  /// selection, and if any collide writes nothing and returns them.
+  Future<NumberingResult> apply(NumberingPlan plan, {required String projectId});
+}
+```
+
+Ordering sorts on the primary axis, breaks ties on the secondary axis
+ascending, then on vine id — deterministic, so re-running the same numbering
+gives the same answer. A row drawn at a slight angle would otherwise reorder
+between runs.
+
+Note the collision check renders **full identifiers**, not bare numbers: two
+plants may share `position_idx` 7 legitimately when they are in different rows.
+
+### Tests
+
+- New `test/membership_test.dart`: plant inside/outside a polygon; on/off a
+  polyline within tolerance; a plant in two different-typed containers at once;
+  reconcile after a polygon reshape sweeps plants in and out; reconcile writes
+  no journal rows when nothing changed; non-container objects produce no
+  memberships; point objects produce no memberships.
+- New `test/numbering_test.dart`: all four orderings; tie-breaking determinism;
+  `startAt` other than 1; a plan that collides is refused **and writes
+  nothing** (assert the database is unchanged, not just the return value);
+  numbering across two rows at once.
+- New `test/identifier_template_test.dart`: `Block.Row.Plant` reproduces v2
+  output; `Row&Plant`; bare plant; blank placeholders substituted per field;
+  an object labelled with its own placeholder is refused; a label containing
+  the delimiter is refused; changing the delimiter to one that appears in an
+  existing value is refused, naming them.
+- Rewrite `test/label_service_test.dart`, `test/label_history_test.dart`,
+  `test/row_numbering_test.dart`, `test/insert_vine_test.dart`.
+
+---
+
+## Phase 4 — DAOs
+
+### `lib/core/db/daos/layout_dao.dart`
+
+The class invariant generalises to: **a plant with a non-null `carrierId` is
+physically on that polyline; its `x`/`y` is always `path.pointAt(pathOffset)`.**
+Everything that could break it restores it before returning. `_repositionVinesOn`
+survives almost verbatim.
+
+| Old | New |
+|---|---|
+| `createBlock`, `createRow` | `createObject({projectId, fieldDefId, label, Shape? geometry})` |
+| `pathOf(rowId)` | `shapeOf(objectId)` / `carrierPathOf(objectId)` |
+| `updateRowPath` | `updateObjectGeometry(objectId, Shape)` — slides carried plants by offset, then reconciles memberships |
+| `moveRow` | `moveObject(objectId, delta)` |
+| — | `deleteObject(objectId)` — soft delete; carried plants keep x/y and lose `carrierId`; memberships removed |
+| `createVine` | `createPlant` |
+| `placeVinesAlongRow` | `placePlantsAlongCarrier` |
+| `snapVineToRow` / `…KeepingNumber` | `snapPlantToCarrier` / `…KeepingNumber` |
+| `unsnapVine`, `moveVine` | `unsnapPlant`, `movePlant` |
+| `rowsInProject` / `watchRowsInProject` | `objectsInProject` / `watchObjectsInProject` |
+| `retireVine` | `retirePlant` (unchanged), **plus `replacePlant`** |
+
+New, for the commit-time overlap guard:
+
+```dart
+/// The same-type object [shape] would overlap, or null. Called by the naming
+/// sheet before it writes, never mid-stroke.
+Future<({String objectId, String label})?> checkOverlap({
+  required String fieldDefId,
+  required Shape shape,
+  String? ignoringObjectId,   // an object being reshaped does not overlap itself
+});
+```
+
+New, for deletion (Q6):
+
+```dart
+/// Retires [vineId] and plants a successor in its place.
+///
+/// The successor takes the same position, carrier, path offset, and
+/// position_idx -- so the identifier is continuous -- and a fresh UUID, so the
+/// dead plant keeps its entire history. [inheritFieldIds] names the static
+/// fields copied forward: variety yes, plant date no, rootstock ask.
+Future<String> replacePlant({
+  required String vineId,
+  required Set<String> inheritFieldIds,
+  DateTime? now,
+});
+```
+
+`predecessorId` already exists on `Vines` for exactly this. Both retire and
+replace go through `OperationRecorder.run` at the feature layer, so each is one
+press of undo.
+
+### `lib/core/db/daos/vines_dao.dart`
+
+```dart
+Future<Set<String>> resolveSelection({
+  Iterable<String> vineIds = const [],
+  Iterable<String> objectIds = const [],   // was rowIds + blockIds
+  bool includeInactive = false,
+});
+```
+
+An object resolves to its plants via `plant_memberships` **union** `carrier_id`
+— a plant snapped to an unnamed, non-container polyline is still on it, and an
+inner join would silently drop it from a select-all, exactly the trap the
+current `LEFT JOIN` comment warns about. `vinesInRow` → `plantsOnCarrier`.
+
+### `lib/core/db/daos/field_defs_dao.dart`
+
+Extend validation in `create`/`update`. Reject:
+
+- `role == object` with `type != FieldType.text` — object labels are text.
+- `role == object` with `drawType == null`.
+- `role == attribute` with `drawType != null` or `isContainer`.
+- `isContainer` with `drawType == DrawType.point`.
+- A `drawType` change on an existing field — immutable for the same reason
+  `type` is (D5), and `update` should **throw** rather than return a result, as
+  the type check already does: reaching it means a bug, not user error.
+- `blankPlaceholder` empty-or-null on a field that the current template names.
+
+Add `objectFieldsForProject(projectId)` and `containerFieldsForProject(projectId)`,
+both used constantly by the canvas and the derivation.
+
+### `lib/core/data/vine_data_service.dart`
+
+`setValue` gains one check before encoding: if the field is an identifier part,
+run `LabelService.problemWithIdentifierValue` and reject a value equal to the
+placeholder or containing the delimiter. Then, after writing, if the field is
+an identifier part, the *caller* is responsible for having prompted — see
+phase 6.
+
+### `lib/core/providers.dart`
+
+Add `membershipServiceProvider`, `numberingServiceProvider`. Everything else
+keeps its name.
+
+### Tests
+
+Rewrite `test/layout_dao_test.dart`, `test/selection_test.dart`,
+`test/crud_test.dart` against the new surface. Add to `layout_dao_test`:
+reshaping a polygon reconciles memberships; deleting a carrier orphans its
+plants without destroying them; `checkOverlap` finds a contained polygon;
+`replacePlant` preserves `position_idx` and copies only the named static
+fields.
+
+---
+
+## Phase 5 — Schema UI
+
+### `lib/features/schema/field_editor_screen.dart`
+
+The field editor grows a role selector at the top, which switches the rest of
+the form:
+
+- **Attribute** — the nine types and configs it has today.
+- **Object** — draw type (polyline / polygon / point), a container switch with
+  a plain-language explanation of what it does, and — for polyline containers —
+  a tolerance field.
+- **Both** — a blank placeholder field, shown with its consequence spelled out
+  (*"Plants with no Block will read `0` in their ID"*), and required once the
+  field is named in the template.
+
+**Fix the config round-trip bug while here.** `_config` currently rebuilds
+`FieldConfig(options:, optionColors:)` from scratch, so saving an existing
+field silently drops `min`, `max`, `precision`, `pattern`, `labels`,
+`scale_min/max`, `color_ramp`, `true_label`, `false_label`, and
+`date_only_observation`. Start from the parsed existing config and copy-with.
+This matters more now: object fields will be edited routinely.
+
+### New: `lib/features/schema/identifier_template_editor.dart`
+
+A reorderable list of parts, chosen from the container-object fields, the
+attribute fields, and the privileged Plant; plus a delimiter field. Live
+preview against a real plant from the project — a template is much easier to
+judge as `3.12.7` than as a list of field names.
+
+On save, before writing: run `countIdentifierChanges` and show the prompt
+naming how many plant IDs change. Refuse outright if the change would create
+duplicates, or if the new delimiter appears in any existing component value,
+naming them. `LabelService.historyOf` keeps the old identifier queryable, which
+is what makes the change safe to accept.
+
+### New: `lib/features/schema/project_setup_wizard.dart`
+
+Four steps, in the only order that works (Q4):
+
+1. **Objects** — name them, pick draw types. Offered defaults: Row (polyline),
+   Block (polygon). Skippable.
+2. **Containers** — which of those put a field on every plant, and each one's
+   blank placeholder.
+3. **Attributes** — the existing field editor, inline.
+4. **Identifier** — the template editor, now that its parts exist.
+
+Every step reachable again afterwards from the fields screen; the wizard is a
+first-run convenience, not the only path. Offer "skip — I'll set this up later"
+throughout, which leaves `identifierTemplate` null and identifiers as the bare
+plant number. Launched from `ProjectListScreen` on project creation.
+
+---
+
+## Phase 6 — Canvas
+
+`vineyard_screen.dart` is 740 lines and would roughly double. **Extract a
+`lib/features/canvas/tools/` directory** as part of this phase rather than
+after: `draw_object_tool.dart`, `selection_tool.dart`, `new_object_sheet.dart`,
+`numbering_sheet.dart`, `plant_actions_sheet.dart`. `VineyardScreen` keeps the
+scaffold, the toolbar, the `_gesture` wrapper, and the routing between tools.
+
+### `lib/features/canvas/canvas_controller.dart`
+
+`LayoutSnapshot` gains drawn objects:
+
+```dart
+typedef DrawnObject = ({
+  String id, String fieldDefId, String label, Shape shape, bool isContainer,
+});
+
+class LayoutSnapshot {
+  final Map<String, Offset> plants;
+  final SpatialIndex index;
+  final List<DrawnObject> objects;    // was List<Polyline> rows
+  final Rect bounds;
+}
+```
+
+Built in the same stream provider, same place — once per edit, not per frame.
+`bounds` includes every object's bounds, not just polylines, so fit-to-layout
+frames a drawn block.
+
+New providers: `activeObjectFieldProvider` (which object field the draw tool
+creates an instance of), `pendingShapeProvider` (replacing `pendingRowProvider`,
+now carrying a draw type), `marqueeProvider` and `lassoProvider` for the
+in-progress selection gesture.
+
+### `lib/features/canvas/vineyard_painter.dart`
+
+`_paintRows` → `_paintObjects`, dispatching on draw type:
+
+- **polyline** — exactly today's code, unchanged, including the per-object
+  bounds cull and `strokeWidth = 1.5 / viewport.scale`.
+- **polygon** — the same stroked path, closed, plus a ~10% alpha fill.
+- **point** — a small diamond, visually distinct from a plant's round dot.
+
+Colour per object *field* from a fixed palette keyed by the field's
+`sortOrder`, so Rows and Blocks are distinguishable without adding a colour
+column to the schema.
+
+**Do not touch `_paintVines`.** The colour-grouped `drawPoints` batching is the
+whole 4,000-vine gate — 17.1ms of raster became 3.6ms because of it. Objects
+are drawn per-object because there are tens of them, not thousands.
+
+Add marquee/lasso overlay painting: a dashed rect or the in-progress lasso
+path, in screen space above everything.
+
+### `lib/features/canvas/vineyard_canvas.dart`
+
+```dart
+enum CanvasTool { select, lasso, placePlant, insertPlant, drawObject, move, reshape }
+```
+
+The drag callbacks (`onDragStart`/`onDragUpdate`/`onDragEnd`) already exist on
+the widget, are already tested in `canvas_test.dart`, and are already
+documented as "one pointer always belongs to the tool — including select, where
+the drag is a marquee". **`VineyardScreen` simply never passes them.** Wiring
+them is most of the selection work.
+
+### Selection (`tools/selection_tool.dart`)
+
+Four modes, all feeding one `Set<String>`:
+
+- **Box** — drag with `select`. `SpatialIndex.inRect` is exactly this query and
+  already exists, used today only for viewport culling.
+- **Lasso** — drag with `lasso`; collect the path, then `pointInPolygon` from
+  phase 2 against `index.inRect(pathBounds)` as a pre-filter.
+- **Click-to-add** — tap with a modifier, or a sticky "add to selection" toggle
+  on the toolbar. A tablet has no modifier key, so the toggle is the primary
+  path and the modifier is the desktop convenience.
+- **By object** — tap an object's line or fill; resolves through
+  `VinesDao.resolveSelection(objectIds: {...})`.
+
+The painter already draws a selection ring per id from `scene.selection`, so
+N-selection rendering needs no change. The inspector's `selection.length == 1`
+guard becomes a three-way: none, one (inspector), many (bulk bar showing the
+count, Number…, Set field…, Mark as removed).
+
+### Drawing objects (`tools/draw_object_tool.dart`)
+
+Generalises the existing row flow, which is already the right shape:
+
+1. Toolbar picks `drawObject` plus which object field. Tap-to-add-point works
+   as it does today, with the same banner, the same "Undo point", and the same
+   live preview through the scene.
+2. For `polygon`, "Done" closes the ring; for `point`, a single tap completes.
+3. `_NewObjectSheet` — the generalised `_NewRowSheet`. Label (suggested by
+   `nextObjectLabel`, live-validated by `problemWithObjectLabel`), and for
+   polylines the existing which-end-is-plant-1 and by-count / by-spacing
+   controls, unchanged.
+4. **On Create, `checkOverlap` runs.** On a hit, the sheet shows *"This polygon
+   overlaps Block 1. Blocks cannot overlap."*, keeps the drawn stroke, and
+   offers Edit shape / Cancel. The stroke is never discarded — the user has
+   just tapped twelve points.
+5. One `OperationRecorder.run` writes object + plants + membership reconcile, so
+   the whole thing is one press of undo, as drawing a row is today.
+
+Reshape (`CanvasTool.reshape`) drags a vertex, and validates overlap the same
+way on release. `LayoutDao.updateObjectGeometry`, `moveObject`, and `movePlant`
+already exist and are unit-tested but have **no callers in `lib/`** today —
+wiring them is the Move and Reshape tools.
+
+### Numbering (`tools/numbering_sheet.dart`)
+
+Opened from the bulk bar with a selection active. Asks two things: what number
+to start at, and the ordering (four options, as radio buttons with a small
+arrow glyph). Previews *"Plants 1–72, left to right"*.
+
+On apply: `NumberingService.apply`. On `NumberingRefused`, show the colliding
+identifiers and keep the sheet open so the user can change the start number or
+cancel — **never** commit a partial renumber. On success, one operation, one
+undo press.
+
+### Identifier recompute prompts
+
+Four things change identifiers, and all four prompt with a count before writing:
+
+| Trigger | Where |
+|---|---|
+| Template edited | `identifier_template_editor.dart` |
+| Object renamed | object rename sheet |
+| Plant swept into or out of a container by a geometry edit | `draw_object_tool.dart` on reshape/move commit |
+| Identifier-part attribute value changed | `vine_inspector.dart` |
+
+All four use `LabelService.countIdentifierChanges`, and all four refuse
+outright on duplicates. Reuse the shape of the existing `_RenumberDialog`,
+which already gets this right: name the number, name the cost, default nothing.
+
+### Deletion (`tools/plant_actions_sheet.dart`, Q6)
+
+From the inspector or the bulk bar:
+
+- **Mark as Removed** — `retirePlant`, status `removed`, `endedAt` set, history
+  kept, position kept as an empty slot. Painted in a muted colour so an empty
+  slot is visible on the map.
+- **Replace with New Vine** — `replacePlant`, with a checklist of the project's
+  static fields to inherit, each defaulting off except where the value is
+  clearly positional (variety). The prompt names the observation count first,
+  as §6.4 specifies: *"Vine 3.12.7 has 47 recorded observations."*
+- **No permanent delete, no trash.** State this in the sheet, so the absence
+  reads as a decision rather than a missing feature.
+
+### `lib/features/data_entry/vine_inspector.dart`
+
+Three sections instead of one: the composed identifier at the top, then
+container values (read-only — they are derived from geometry, and the way to
+change one is to move the plant or the boundary, which the empty state should
+say), then attributes as today. The label-history sheet needs no change beyond
+rendering `PlantIdentifier` instead of `VineLabel`.
+
+### Tests
+
+- Rewrite `test/canvas_test.dart`: the existing 3,000-vine painter smoke test
+  stays and gains objects of all three draw types; box-select and lasso-select
+  widget tests driving real drags through `VineyardCanvas`.
+- New widget test for the overlap refusal path: draw an overlapping polygon,
+  press Create, assert nothing was written and the sheet is still open with the
+  stroke intact.
+- New test that a numbering refusal writes nothing.
+
+---
+
+## Phase 7 — Generative tools
+
+These are what make 75 rows tractable rather than a week of tapping, which is
+the whole reason this rework happened before the drawing did.
+
+- **Multi-row array** — draw one polyline, then give a perpendicular offset,
+  a count, and a direction; generates N parallel objects of the same field,
+  each planted by the same count-or-spacing rule. Each generated line runs
+  through `checkOverlap` before commit, and the whole array is one operation.
+  `RowGeneration` already owns the along-path maths; the perpendicular
+  generation is new and belongs beside it in `lib/core/geometry/row_generation.dart`.
+- **Fill** — given a container polygon, an angle, a line spacing, and a plant
+  spacing, generate the lines and plants that fill it. Built on multi-row
+  array plus polygon clipping of each generated line to the boundary.
+- **Split / merge carrier** — split cuts a polyline at a point, moving plants
+  past the cut to a new object; merge concatenates two. The three questions
+  deferred in the plan (which half keeps the sequence, which direction wins on
+  merge) now have a general answer: **neither is decided by the tool.** Split
+  and merge only move plants between carriers; if the numbering then looks
+  wrong, the numbering tool fixes it, with duplicates refused. That is the
+  whole benefit of separating numbering from structure.
+- **Reverse** is deleted as a concept. It is `NumberingService` with the
+  opposite ordering.
+
+If time runs short, **fill is the one to drop** — multi-row array covers the
+Five Sisters job on its own.
+
+---
+
+## Phase 8 — Reseed and prove it
+
+1. **Rewrite the 4,000-vine seeder.** `_seedDemo` in
+   `lib/features/projects/project_list_screen.dart:175` builds 75 rows and
+   4,000 vines against `blocks`/`vine_rows`. Rewrite it to create a Row field
+   (object, polyline, container, placeholder `0`), a Block field (object,
+   polygon, container, placeholder `0`), the template `Block . Row . Plant`,
+   and then the objects and plants. Keep `math.Random(42)` and the deliberately
+   non-uniform `9 + random.nextInt(64)` vines per row — a uniform grid flatters
+   the spatial index.
+2. **Re-run the gate on the Fire Max 11.** Fully zoomed out, all 4,000 visible,
+   frame stats overlay on. Budget 16.67ms; the v2 number was 11.5ms average /
+   3.6ms raster / 10% jank. Objects add polygon fills and a second painted
+   layer, so this must be re-measured, not assumed. If build time (already the
+   larger half at 7.8ms) regresses, the `LayoutSnapshot` rebuild is the place
+   to look.
+3. **Measure a reconcile** on that seeded project — reshape a block boundary
+   and time it. Scope the reconcile to changed bounds only if it needs it.
+4. **Seed Five Sisters for real**, against the final model, using multi-row
+   array: 75 rows, ~3,025 plants.
+5. **Update `VINEYARD_APP_PLAN.md`** — D9 (hierarchy fixed at
+   `block.row.plant`) is now superseded and must say so with a dated note, in
+   the style the file already uses for §6.3. Q3 (arbitrary position vs snap) is
+   answered by the carrier/membership split. Q5 (do blocks need their own
+   fields) is reopened by objects having labels. Add the v3 phase list.
+
+---
+
+## Verification
+
+```sh
+dart run build_runner build --delete-conflicting-outputs   # schema changed; *.g.dart is gitignored
+flutter analyze
+flutter test
+dart format --set-exit-if-changed .                        # CI runs this last, on purpose
+flutter build apk --debug
+```
+
+Beyond green tests, prove these by hand — each is a place where the design is
+load-bearing and a passing unit test would not notice:
+
+1. **Undo survives the model change.** Draw a block, force-stop the app,
+   reopen, press undo. The block goes, *and so do the memberships it created*.
+   This is the whole reason `plant_memberships` is a journaled table.
+2. **Label history crosses a boundary edit.** Drag a block boundary so a plant
+   moves from Block 1 to Block 2, then open that plant's history. It must show
+   `1.12.7 → 2.12.7`, dated, with the operation description — even though the
+   plant itself was never touched.
+3. **Two containers, one plant.** Draw a Row and a Terrace crossing the same
+   plant. The inspector shows a value for both; dragging the Terrace's shape
+   does not move the plant; dragging the Row's shape does.
+4. **Overlap refusal keeps the stroke.** Draw a polygon inside an existing
+   block, press Create, get the named refusal, press Edit shape, drag a vertex
+   out, press Create — it succeeds without redrawing.
+5. **Numbering refusal is atomic.** Number a selection so it collides. Nothing
+   changes on the map, and the sheet stays open.
+6. **A project with no objects at all works.** Skip the wizard entirely, place
+   plants, and confirm they get bare integer identifiers and the inspector is
+   coherent. "Want neither? You get neither" has to be true.
+7. **The 4,000-vine gate**, on the tablet, as above.
+
+## Not in scope
+
+Colour-by-field (`VineyardScene.colors` is still never populated), image
+offset/scale/rotation (the columns remain unused by the painter), XLSX
+import/export against the new identifier, and the project archive. All are
+Phase 4–5 of the master plan and none is blocked by this rework — but the XLSX
+importer's `plantID` column now has to parse against a user-defined template,
+which is worth noting before that phase starts.

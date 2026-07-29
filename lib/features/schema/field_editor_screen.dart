@@ -169,6 +169,10 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
   final _optionInput = TextEditingController();
   List<String> _problems = const [];
 
+  /// The config this field was opened with. Everything the form does not touch
+  /// is carried forward from here on save.
+  late FieldConfig _existingConfig;
+
   bool get _isNew => widget.existing == null;
 
   /// Swatches rather than a full colour picker: these are read outdoors at a
@@ -193,11 +197,11 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
     _type = existing?.type ?? FieldType.categorical;
     _isStatic = existing?.isStatic ?? false;
 
-    final config = existing == null
+    _existingConfig = existing == null
         ? FieldConfig.empty
         : FieldConfig.parse(existing.config);
-    _options = [...config.options];
-    _optionColors = {...config.optionColors};
+    _options = [..._existingConfig.options];
+    _optionColors = {..._existingConfig.optionColors};
   }
 
   @override
@@ -207,8 +211,14 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
     super.dispose();
   }
 
+  /// The config as it stands, preserving everything this form cannot edit.
+  ///
+  /// Built from the existing config rather than from scratch. Rebuilding it
+  /// dropped every value without a control here -- a rating field's scale, a
+  /// number field's min/max/precision, colour ramps, custom labels -- so
+  /// renaming a field silently destroyed its configuration.
   FieldConfig get _config =>
-      FieldConfig(options: _options, optionColors: _optionColors);
+      _existingConfig.copyWith(options: _options, optionColors: _optionColors);
 
   Future<void> _save() async {
     final dao = ref.read(fieldDefsDaoProvider);

@@ -182,6 +182,59 @@ class FieldConfig {
 
   String toJson() => jsonEncode(toMap());
 
+  /// A copy with some values replaced.
+  ///
+  /// Exists because the field editor previously rebuilt this from scratch when
+  /// saving, which silently dropped every value it did not have a control for:
+  /// a rating field's scale, a number field's bounds and precision, a colour
+  /// ramp, custom labels. Editing a field's name was enough to lose them.
+  ///
+  /// Omitting an argument keeps the current value; there is deliberately no way
+  /// to set a nullable field *back* to null through here, because no caller
+  /// needs it and supporting it would mean sentinel values for eighteen
+  /// parameters.
+  FieldConfig copyWith({
+    int? maxLength,
+    String? pattern,
+    num? min,
+    num? max,
+    int? precision,
+    DateTime? minDate,
+    DateTime? maxDate,
+    List<String>? options,
+    bool? allowOther,
+    int? scaleMin,
+    int? scaleMax,
+    Map<String, String>? colorRamp,
+    Map<String, String>? optionColors,
+    Map<String, String>? labels,
+    String? trueLabel,
+    String? falseLabel,
+    bool? interpolate,
+    bool? dateOnlyObservation,
+  }) {
+    return FieldConfig(
+      maxLength: maxLength ?? this.maxLength,
+      pattern: pattern ?? this.pattern,
+      min: min ?? this.min,
+      max: max ?? this.max,
+      precision: precision ?? this.precision,
+      minDate: minDate ?? this.minDate,
+      maxDate: maxDate ?? this.maxDate,
+      options: options ?? this.options,
+      allowOther: allowOther ?? this.allowOther,
+      scaleMin: scaleMin ?? this.scaleMin,
+      scaleMax: scaleMax ?? this.scaleMax,
+      colorRamp: colorRamp ?? this.colorRamp,
+      optionColors: optionColors ?? this.optionColors,
+      labels: labels ?? this.labels,
+      trueLabel: trueLabel ?? this.trueLabel,
+      falseLabel: falseLabel ?? this.falseLabel,
+      interpolate: interpolate ?? this.interpolate,
+      dateOnlyObservation: dateOnlyObservation ?? this.dateOnlyObservation,
+    );
+  }
+
   /// Effective rating bounds, defaulting to the 1-5 scale in the plan.
   int get effectiveScaleMin => scaleMin ?? 1;
   int get effectiveScaleMax => scaleMax ?? 5;
