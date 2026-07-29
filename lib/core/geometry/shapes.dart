@@ -29,6 +29,26 @@ sealed class Shape {
     for (final p in points) [p.dx, p.dy],
   ]);
 
+  /// The same shape with vertex [index] moved to [to].
+  ///
+  /// Here rather than in the reshape tool so the tool never has to know which
+  /// kind of shape it is holding -- and so a polygon cannot be reshaped into
+  /// something with fewer than three vertices by a caller that forgot.
+  ///
+  /// An out-of-range index returns the shape unchanged. The index comes from a
+  /// hit test against a list that a concurrent edit could have shortened, and
+  /// throwing there would take down the canvas mid-drag.
+  Shape withPointMoved(int index, Offset to) {
+    if (index < 0 || index >= points.length) return this;
+    final moved = [...points]..[index] = to;
+
+    return switch (this) {
+      PolylineShape() => PolylineShape(Polyline(moved)),
+      PolygonShape() => PolygonShape(moved),
+      PointShape() => PointShape(to),
+    };
+  }
+
   /// Parses stored JSON as [type], returning null for anything malformed.
   ///
   /// Null rather than throwing, matching [Polyline.tryParse] and for the same

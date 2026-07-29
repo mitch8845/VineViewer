@@ -21,6 +21,29 @@ final activeToolProvider = StateProvider<CanvasTool>(
 /// Currently selected plant ids.
 final selectionProvider = StateProvider<Set<String>>((ref) => const {});
 
+/// Whether a tap adds to the selection instead of replacing it.
+///
+/// A sticky toggle rather than a modifier key, because the tablet has no
+/// keyboard and the gesture this replaces -- hold-and-tap -- competes with the
+/// long-press the OS reserves. Building a selection out of forty scattered
+/// plants is a normal thing to want, and a marquee cannot express it.
+final stickySelectProvider = StateProvider<bool>((ref) => false);
+
+/// The drawn object the user has selected, if any.
+///
+/// Separate from [selectionProvider], which only ever holds plants. Tapping a
+/// row selects *the row* -- the thing you rename, reshape, plant into or delete
+/// -- and offers its plants as one further tap.
+final selectedObjectProvider = StateProvider<String?>((ref) => null);
+
+/// A vertex being dragged, holding the whole reworked shape.
+///
+/// The shape rather than just the moved point, so the painter can draw the
+/// proposal by substitution and needs to know nothing about reshaping.
+typedef ReshapeDraft = ({String objectId, int vertex, Shape shape});
+
+final reshapeDraftProvider = StateProvider<ReshapeDraft?>((ref) => null);
+
 /// Whether to draw `block.row.plant` labels.
 final showLabelsProvider = StateProvider<bool>((ref) => false);
 

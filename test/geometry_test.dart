@@ -221,6 +221,87 @@ void main() {
     });
   });
 
+  group('RowGeneration across a span', () {
+    // The rock case: a line planted in two passes, near side then far side. The
+    // span is what makes the second pass possible without disturbing the first.
+    test('byCountBetween spans the stretch, both ends inclusive', () {
+      expect(RowGeneration.byCountBetween(from: 100, to: 200, count: 5), [
+        100,
+        125,
+        150,
+        175,
+        200,
+      ]);
+    });
+
+    test('a single plant goes at the start of the span', () {
+      expect(RowGeneration.byCountBetween(from: 40, to: 90, count: 1), [40]);
+    });
+
+    test('bySpacingBetween starts at from, not at zero', () {
+      // The caller passes where it wants the *next* plant, not where the last
+      // one landed -- otherwise every resumed row doubles up one plant.
+      expect(RowGeneration.bySpacingBetween(from: 90, to: 150, spacing: 20), [
+        90,
+        110,
+        130,
+        150,
+      ]);
+    });
+
+    test('never places past the end of the span', () {
+      expect(RowGeneration.bySpacingBetween(from: 0, to: 100, spacing: 30), [
+        0,
+        30,
+        60,
+        90,
+      ]);
+    });
+
+    test('a reversed or degenerate span yields nothing', () {
+      // These numbers are typed by hand into two text fields, so backwards is
+      // an ordinary thing to receive and must not throw.
+      expect(
+        RowGeneration.byCountBetween(from: 200, to: 100, count: 5),
+        isEmpty,
+      );
+      expect(
+        RowGeneration.bySpacingBetween(from: 200, to: 100, spacing: 10),
+        isEmpty,
+      );
+      expect(
+        RowGeneration.byCountBetween(from: 0, to: double.nan, count: 5),
+        isEmpty,
+      );
+      expect(
+        RowGeneration.bySpacingBetween(from: 0, to: 100, spacing: 0),
+        isEmpty,
+      );
+    });
+
+    test('a zero-length span still places the plants asked for', () {
+      // Not nothing: a count of 3 over a zero span is three plants stacked at
+      // one point, which is wrong-looking but is what was asked, and is fixable
+      // by dragging. Silently placing none would look like the tool failing.
+      expect(RowGeneration.byCountBetween(from: 50, to: 50, count: 3), [
+        50,
+        50,
+        50,
+      ]);
+    });
+
+    test('caps pathological spacing instead of hanging', () {
+      expect(
+        RowGeneration.bySpacingBetween(
+          from: 0,
+          to: 100,
+          spacing: 0.0001,
+        ).length,
+        lessThanOrEqualTo(5000),
+      );
+    });
+  });
+
   group('ScaleCalibration', () {
     test('uncalibrated works in pixels', () {
       const cal = ScaleCalibration.uncalibrated;

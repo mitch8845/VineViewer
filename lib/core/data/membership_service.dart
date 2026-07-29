@@ -94,24 +94,72 @@ class MembershipService {
     return changed;
   }
 
+  /// Container values as geometry would have them, **without writing**.
+  ///
+  /// Returns plant id -> field id -> the holding object's name, which is exactly
+  /// the container half of `IdentifierData.values`. Feed it to
+  /// `LabelService.dataFor(containerValues: ...)` to render identifiers for a
+  /// world that does not exist yet.
+  ///
+  /// [geometryOverride] answers the question that makes a boundary-edit prompt
+  /// possible: *if this block's outline moved here, what would every plant be
+  /// called?* An entry mapping to null takes the object out of consideration
+  /// entirely, which is how deleting one is previewed.
+  ///
+  /// [positionOverride] asks the same question from the other side -- *if this
+  /// plant were dragged there, would it end up in a different block?* Both are
+  /// needed together for one common gesture: dragging a line translates its
+  /// shape **and** carries its plants, and each half can change containment
+  /// independently of the other.
+  ///
+  /// Deliberately not a reconcile with a rollback. Rolling back would still fire
+  /// the capture triggers, so a preview the user then cancelled would sit in the
+  /// undo journal as an operation that happened -- and in label history as a
+  /// rename that never took place.
+  Future<Map<String, Map<String, String>>> previewContainerValues({
+    required String projectId,
+    Map<String, Shape?> geometryOverride = const {},
+    Map<String, Offset> positionOverride = const {},
+  }) async {
+    final containers = await _containersIn(
+      projectId,
+      null,
+      geometryOverride: geometryOverride,
+    );
+    final plants = [
+      for (final plant in await _plantsIn(projectId, null))
+        positionOverride.containsKey(plant.id)
+            ? _Plant(plant.id, positionOverride[plant.id]!)
+            : plant,
+    ];
+
+    final labels = {for (final c in containers) c.id: c.label};
+    final values = <String, Map<String, String>>{};
+    for (final key in _derive(plants, containers)) {
+      final label = labels[key.objectId];
+      if (label != null) (values[key.plantId] ??= {})[key.fieldDefId] = label;
+    }
+    return values;
+  }
+
   /// The container objects to test against, with their geometry resolved.
   Future<List<_Container>> _containersIn(
     String projectId,
-    Set<String>? objectIds,
-  ) async {
+    Set<String>? objectIds, {
+    Map<String, Shape?> geometryOverride = const {},
+  }) async {
     final rows = await _db
         .customSelect(
           'SELECT o.id AS id, o.field_def_id AS field_def_id, '
-          '       o.geometry AS geometry, f.draw_type AS draw_type, '
-          '       f.tolerance AS tolerance '
+          '       o.label AS label, o.geometry AS geometry, '
+          '       f.draw_type AS draw_type, f.tolerance AS tolerance '
           'FROM map_objects o '
           'JOIN field_defs f ON f.id = o.field_def_id '
           'WHERE o.project_id = ?1 '
           '  AND o.deleted_at IS NULL AND f.deleted_at IS NULL '
           // Non-containers contribute nothing: a road crossing the vineyard
           // must not put a field on a single plant.
-          '  AND f.is_container = 1 '
-          '  AND o.geometry IS NOT NULL',
+          '  AND f.is_container = 1',
           variables: [Variable<String>(projectId)],
           readsFrom: {_db.mapObjects, _db.fieldDefs},
         )
@@ -127,10 +175,13 @@ class MembershipService {
       // refuses the combination; this is the belt to that pair of braces.
       if (drawType == null || drawType == DrawType.point) continue;
 
-      final shape = Shape.tryParse(
-        r.readNullable<String>('geometry'),
-        drawType,
-      );
+      // `containsKey` rather than a null check, so an override *to* null means
+      // "pretend this object covers nothing" instead of "no override given".
+      // An object with no geometry at all is skipped by the same line, which is
+      // why the SQL above no longer filters on it.
+      final shape = geometryOverride.containsKey(id)
+          ? geometryOverride[id]
+          : Shape.tryParse(r.readNullable<String>('geometry'), drawType);
       if (shape == null) continue;
 
       final tolerance = r.readNullable<double>('tolerance') ?? defaultTolerance;
@@ -138,6 +189,7 @@ class MembershipService {
         _Container(
           id: id,
           fieldDefId: r.read<String>('field_def_id'),
+          label: r.read<String>('label'),
           shape: shape,
           tolerance: tolerance,
           // Inflated by the tolerance so the cheap rejection below cannot
@@ -241,6 +293,7 @@ class _Container {
   const _Container({
     required this.id,
     required this.fieldDefId,
+    required this.label,
     required this.shape,
     required this.tolerance,
     required this.reach,
@@ -248,6 +301,11 @@ class _Container {
 
   final String id;
   final String fieldDefId;
+
+  /// Carried so a preview can report the *value* a plant would take, not just
+  /// which object would hold it.
+  final String label;
+
   final Shape shape;
   final double tolerance;
   final Rect reach;

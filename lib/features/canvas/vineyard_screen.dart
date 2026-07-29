@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/db/database.dart';
 import '../../core/geometry/polyline.dart';
 import '../../core/geometry/shapes.dart';
 import '../../core/models/enums.dart';
@@ -12,7 +13,9 @@ import '../schema/field_editor_screen.dart';
 import '../schema/identifier_template_editor.dart';
 import 'canvas_controller.dart';
 import 'frame_stats_overlay.dart';
+import 'tools/identifier_change_prompt.dart';
 import 'tools/new_object_sheet.dart';
+import 'tools/object_actions_sheet.dart';
 import 'tools/plant_actions_sheet.dart';
 import 'tools/renumber_dialog.dart';
 import 'undo_controls.dart';
@@ -42,6 +45,11 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
   /// What the move tool grabbed: a plant id, or an object id.
   String? _draggingPlant;
   String? _draggingObject;
+
+  /// The object whose shape the reshape tool grabbed, and its original shape --
+  /// kept so a refused edit can put the boundary back exactly.
+  String? _reshapingObject;
+  Shape? _shapeBeforeReshape;
 
   /// Finger-sized tap target, converted to layout units so the tolerance stays
   /// constant on screen at any zoom.
@@ -97,6 +105,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             .read(pendingShapeProvider.notifier)
             .update((points) => [...points, layoutPoint]);
       case CanvasTool.move:
+      case CanvasTool.reshape:
         _selectAt(layoutPoint);
     }
   }
@@ -106,24 +115,42 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     final snapshot = ref.read(layoutSnapshotProvider).valueOrNull;
     if (snapshot == null) return;
 
+    final sticky = ref.read(stickySelectProvider);
     final tolerance = _viewport.screenToLayoutDistance(_tapRadiusScreenPx);
     final hit = snapshot.index.nearest(layoutPoint, maxDistance: tolerance);
     if (hit != null) {
-      ref.read(selectionProvider.notifier).state = {hit.id};
+      ref.read(selectedObjectProvider.notifier).state = null;
+      ref
+          .read(selectionProvider.notifier)
+          .update(
+            // Toggling rather than only adding: with sticky on, the way to correct
+            // an over-grab is to tap the stray plant again. An add-only mode would
+            // mean starting the whole selection over.
+            (current) => !sticky
+                ? {hit.id}
+                : current.contains(hit.id)
+                ? ({...current}..remove(hit.id))
+                : {...current, hit.id},
+          );
       return;
     }
 
-    // Nothing plant-shaped there. An object is the next most likely target, and
-    // selecting one is how "everything on this row" is expressed.
+    // Nothing plant-shaped there. An object is the next most likely target.
     final object = _objectAt(layoutPoint, tolerance, snapshot);
     if (object != null) {
-      _selectObject(object);
+      // The object itself, not its plants. v3 selected the plants directly,
+      // which quietly made the object unreachable -- and the object is what you
+      // rename, reshape, plant into and delete. Its plants are one tap away in
+      // the sheet.
+      ref.read(selectedObjectProvider.notifier).state = object.id;
+      if (!sticky) ref.read(selectionProvider.notifier).state = const {};
       return;
     }
 
-    // Tapping empty ground deselects. Keeping the selection would make it
-    // impossible to clear one without finding something else to tap.
-    ref.read(selectionProvider.notifier).state = const {};
+    // Tapping empty ground deselects -- unless sticky is on, where a stray tap
+    // between plants must not throw away a selection thirty taps in the making.
+    ref.read(selectedObjectProvider.notifier).state = null;
+    if (!sticky) ref.read(selectionProvider.notifier).state = const {};
   }
 
   DrawnObject? _objectAt(
@@ -144,17 +171,39 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     return null;
   }
 
-  Future<void> _selectObject(DrawnObject object) async {
-    final plants = await ref
-        .read(plantsDaoProvider)
-        .resolveSelection(objectIds: [object.id]);
+  /// The vertex of a drawn object nearest a point, or null if none is close.
+  ///
+  /// Prefers the selected object when one is selected, so reshaping a boundary
+  /// that runs under a row does not grab the row's corner instead. Without that,
+  /// the two shapes that most often overlap are the two you most often cannot
+  /// tell the tool apart.
+  ({DrawnObject object, int vertex})? _vertexAt(
+    ui.Offset point,
+    double tolerance,
+    LayoutSnapshot snapshot,
+  ) {
+    final preferred = ref.read(selectedObjectProvider);
+    final candidates = [
+      for (final o in snapshot.objects)
+        if (o.id == preferred) o,
+      for (final o in snapshot.objects)
+        if (o.id != preferred) o,
+    ];
 
-    if (!mounted) return;
-    if (plants.isEmpty) {
-      _say('${object.label} has no plants on it yet.');
-      return;
+    for (final object in candidates) {
+      var best = -1;
+      var bestDistance = double.infinity;
+      final points = object.shape.points;
+      for (var i = 0; i < points.length; i++) {
+        final distance = (points[i] - point).distance;
+        if (distance <= tolerance && distance < bestDistance) {
+          best = i;
+          bestDistance = distance;
+        }
+      }
+      if (best >= 0) return (object: object, vertex: best);
     }
-    ref.read(selectionProvider.notifier).state = plants;
+    return null;
   }
 
   Future<void> _placePlantAt(ui.Offset layoutPoint) async {
@@ -263,6 +312,29 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
         _draggingObject = _draggingPlant != null
             ? null
             : _objectAt(layoutPoint, tolerance, snapshot)?.id;
+
+      case CanvasTool.reshape:
+        if (snapshot == null) return;
+        // A generous target: corners are small, this is used outdoors, and
+        // missing one costs a whole gesture.
+        final grabbed = _vertexAt(
+          layoutPoint,
+          _viewport.screenToLayoutDistance(_tapRadiusScreenPx * 1.5),
+          snapshot,
+        );
+        if (grabbed == null) {
+          _reshapingObject = null;
+          _shapeBeforeReshape = null;
+          return;
+        }
+        _reshapingObject = grabbed.object.id;
+        _shapeBeforeReshape = grabbed.object.shape;
+        ref.read(reshapeDraftProvider.notifier).state = (
+          objectId: grabbed.object.id,
+          vertex: grabbed.vertex,
+          shape: grabbed.object.shape,
+        );
+
       case CanvasTool.placePlant:
       case CanvasTool.insertPlant:
       case CanvasTool.drawObject:
@@ -282,6 +354,20 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
         );
       case CanvasTool.lasso:
         ref.read(lassoProvider.notifier).update((p) => [...p, layoutPoint]);
+
+      case CanvasTool.reshape:
+        final draft = ref.read(reshapeDraftProvider);
+        final original = _shapeBeforeReshape;
+        if (draft == null || original == null) return;
+        // Always from the *original* shape, never from the last draft. Chaining
+        // moves off each other accumulates float error, and a polyline whose
+        // vertex is dragged in a circle would slowly wander.
+        ref.read(reshapeDraftProvider.notifier).state = (
+          objectId: draft.objectId,
+          vertex: draft.vertex,
+          shape: original.withPointMoved(draft.vertex, layoutPoint),
+        );
+
       case CanvasTool.move:
       case CanvasTool.placePlant:
       case CanvasTool.insertPlant:
@@ -305,9 +391,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
         if (rect == null || snapshot == null) return;
         // SpatialIndex.inRect is exactly this query and already exists -- it
         // has only ever been used for viewport culling.
-        ref.read(selectionProvider.notifier).state = {
-          for (final p in snapshot.index.inRect(rect)) p.id,
-        };
+        _applySelection({for (final p in snapshot.index.inRect(rect)) p.id});
 
       case CanvasTool.lasso:
         final path = ref.read(lassoProvider);
@@ -316,10 +400,21 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
         // Bounds first, then the exact test: point-in-polygon over 3,000 plants
         // against a 200-point lasso is worth avoiding.
         final bounds = _boundsOfPath(path);
-        ref.read(selectionProvider.notifier).state = {
+        _applySelection({
           for (final p in snapshot.index.inRect(bounds))
             if (pointInPolygon(p.position, path)) p.id,
-        };
+        });
+
+      case CanvasTool.reshape:
+        final draft = ref.read(reshapeDraftProvider);
+        ref.read(reshapeDraftProvider.notifier).state = null;
+        final objectId = _reshapingObject;
+        _reshapingObject = null;
+        _shapeBeforeReshape = null;
+        if (draft == null || objectId == null) return;
+        // A tap with the reshape tool is a select, not a zero-length reshape.
+        if (origin == layoutPoint) return;
+        await _commitReshape(objectId, draft.shape);
 
       case CanvasTool.move:
         final plant = _draggingPlant;
@@ -327,21 +422,10 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
         _draggingPlant = null;
         _draggingObject = null;
 
-        final layout = ref.read(layoutDaoProvider);
         if (plant != null) {
-          // One operation per drag, not per pointer event: dragging a plant
-          // across the map must be one press of undo.
-          await _gesture(
-            'move_plant',
-            'Move plant',
-            () => layout.movePlant(plant, layoutPoint),
-          );
+          await _commitPlantMove(plant, layoutPoint);
         } else if (object != null) {
-          await _gesture(
-            'move_object',
-            'Move object',
-            () => layout.moveObject(object, layoutPoint - origin),
-          );
+          await _commitObjectMove(object, layoutPoint - origin);
         }
 
       case CanvasTool.placePlant:
@@ -349,6 +433,170 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
       case CanvasTool.drawObject:
         break;
     }
+  }
+
+  /// Applies a marquee or lasso result, respecting the sticky toggle.
+  ///
+  /// Union rather than replace when sticky: two marquees over two separate
+  /// stands of plants is the natural way to select both, and it is the reason
+  /// this mode exists at all.
+  void _applySelection(Set<String> hits) {
+    final sticky = ref.read(stickySelectProvider);
+    ref
+        .read(selectionProvider.notifier)
+        .update((current) => sticky ? {...current, ...hits} : hits);
+  }
+
+  /// Writes a plant move, refusing one that would create a duplicate ID.
+  ///
+  /// **Refused but not confirmed**, and the asymmetry is deliberate. Dragging one
+  /// plant out of Block 2 changes its ID, but that is the direct, visible
+  /// consequence of the thing the user just did, and the inspector shows the new
+  /// ID immediately -- a dialog every time would be noise. A *collision* is
+  /// different: two plants called `11.3` makes every record naming that plant
+  /// worthless, and no gesture is allowed to produce one.
+  Future<void> _commitPlantMove(String plantId, ui.Offset to) async {
+    final layout = ref.read(layoutDaoProvider);
+    final change = await layout.previewPlantMove(
+      plantId: plantId,
+      position: to,
+    );
+    if (!mounted) return;
+
+    if (!change.isSafe) {
+      _say(
+        'Moving it there would make two plants '
+        '${change.duplicates.first} -- so it stayed put.',
+      );
+      return;
+    }
+
+    // One operation per drag, not per pointer event: dragging a plant across the
+    // map must be one press of undo.
+    await _gesture(
+      'move_plant',
+      'Move plant',
+      () => layout.movePlant(plantId, to),
+    );
+  }
+
+  /// Writes an object move, with the full boundary-edit treatment.
+  ///
+  /// Unlike a single plant, dragging a line or a block can sweep hundreds of
+  /// plants across a boundary at once, so this one is counted and confirmed.
+  Future<void> _commitObjectMove(String objectId, ui.Offset delta) async {
+    final layout = ref.read(layoutDaoProvider);
+    final object = await layout.objectById(objectId);
+    final shape = await layout.shapeOf(objectId);
+    if (object == null || shape == null || !mounted) return;
+
+    final field = await ref.read(fieldDefsDaoProvider).byId(object.fieldDefId);
+    if (field == null || !mounted) return;
+
+    final moved = switch (shape) {
+      final PolylineShape s => PolylineShape(
+        Polyline([for (final p in s.path.points) p + delta]),
+      ),
+      final PolygonShape s => PolygonShape([
+        for (final v in s.vertices) v + delta,
+      ]),
+      final PointShape s => PointShape(s.at + delta),
+    };
+
+    final overlap = await layout.checkOverlap(
+      fieldDefId: object.fieldDefId,
+      shape: moved,
+      ignoringObjectId: objectId,
+    );
+    if (!mounted) return;
+    if (overlap != null) {
+      _say(
+        'That would put ${field.name} ${object.label} over '
+        '${field.name} ${overlap.label}. Two of the same cannot share ground, '
+        'so it stayed put.',
+      );
+      return;
+    }
+
+    final change = await layout.previewGeometryChange(
+      objectId: objectId,
+      geometry: moved,
+    );
+    if (!mounted) return;
+
+    final ok = await confirmIdentifierChange(
+      context,
+      change: change,
+      action: 'Move ${field.name} ${object.label}',
+      proceedLabel: 'Move it',
+      refusalAdvice:
+          'It stayed put. Plants would end up sharing an ID, so renumber them '
+          'first or move it somewhere else.',
+    );
+    if (!ok || !mounted) return;
+
+    await _gesture(
+      'move_object',
+      'Move ${field.name} ${object.label}',
+      () => layout.moveObject(objectId, delta),
+    );
+  }
+
+  /// Writes a reshape, after the two gates the plan requires.
+  ///
+  /// **Overlap first**, because it is a hard rule about the drawing rather than
+  /// a question for the user: two instances of the same field may not share
+  /// ground. **Then the identifier change**, which is all-or-nothing -- membership
+  /// is derived from geometry, so a plant inside Block 2 *is* in Block 2, and
+  /// declining per-plant would need a stored override contradicting the map.
+  ///
+  /// Either refusal leaves the boundary exactly where it was. Nothing partial is
+  /// ever written, so there is no half-moved boundary to notice later.
+  Future<void> _commitReshape(String objectId, Shape shape) async {
+    final layout = ref.read(layoutDaoProvider);
+    final object = await layout.objectById(objectId);
+    if (object == null || !mounted) return;
+
+    final field = await ref.read(fieldDefsDaoProvider).byId(object.fieldDefId);
+    if (field == null || !mounted) return;
+
+    final overlap = await layout.checkOverlap(
+      fieldDefId: object.fieldDefId,
+      shape: shape,
+      ignoringObjectId: objectId,
+    );
+    if (!mounted) return;
+    if (overlap != null) {
+      _say(
+        'That would put ${field.name} ${object.label} over '
+        '${field.name} ${overlap.label}. Two of the same cannot share ground, '
+        'so the boundary is back where it was.',
+      );
+      return;
+    }
+
+    final change = await layout.previewGeometryChange(
+      objectId: objectId,
+      geometry: shape,
+    );
+    if (!mounted) return;
+
+    final ok = await confirmIdentifierChange(
+      context,
+      change: change,
+      action: 'Reshape ${field.name} ${object.label}',
+      proceedLabel: 'Move the boundary',
+      refusalAdvice:
+          'The boundary is back where it was. Plants would end up sharing an '
+          'ID, so either move it somewhere else or renumber them first.',
+    );
+    if (!ok || !mounted) return;
+
+    await _gesture(
+      'reshape_object',
+      'Reshape ${field.name} ${object.label}',
+      () => layout.updateObjectGeometry(objectId, shape),
+    );
   }
 
   ui.Rect _boundsOfPath(List<ui.Offset> points) {
@@ -514,6 +762,8 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     final image = ref.watch(backgroundImageProvider).valueOrNull;
     final pending = ref.watch(pendingShapeProvider);
     final activeField = ref.watch(activeObjectFieldProvider);
+    final draft = ref.watch(reshapeDraftProvider);
+    final selectedObject = ref.watch(selectedObjectProvider);
 
     // Fit the view once the layout has something in it.
     if (!_fittedOnce && !snapshot.bounds.isEmpty) {
@@ -550,6 +800,21 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             onPressed: () => setState(() => _showStats = !_showStats),
           ),
           IconButton(
+            tooltip: ref.watch(stickySelectProvider)
+                ? 'Adding to selection -- tap to go back to replacing it'
+                : 'Add to selection instead of replacing it',
+            icon: Icon(
+              ref.watch(stickySelectProvider)
+                  ? Icons.library_add_check
+                  : Icons.library_add_check_outlined,
+            ),
+            color: ref.watch(stickySelectProvider)
+                ? Theme.of(context).colorScheme.primary
+                : null,
+            onPressed: () =>
+                ref.read(stickySelectProvider.notifier).update((v) => !v),
+          ),
+          IconButton(
             tooltip: showLabels ? 'Hide IDs' : 'Show IDs',
             icon: Icon(showLabels ? Icons.label : Icons.label_outline),
             onPressed: () =>
@@ -570,7 +835,18 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
               plants: snapshot.positions,
               index: snapshot.index,
               objects: [
-                ...snapshot.objects,
+                // A vertex being dragged is shown by substituting the object,
+                // so the painter needs to know nothing about reshaping.
+                for (final object in snapshot.objects)
+                  draft?.objectId == object.id
+                      ? (
+                          id: object.id,
+                          fieldDefId: object.fieldDefId,
+                          label: object.label,
+                          shape: draft!.shape,
+                          isContainer: object.isContainer,
+                        )
+                      : object,
                 // The shape being drawn, previewed live.
                 ?_previewOf(pending, activeField),
               ],
@@ -589,6 +865,13 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             onViewportChanged: (v) => _viewport = v,
           ),
           if (tool == CanvasTool.drawObject) _drawBanner(pending, activeField),
+          if (tool == CanvasTool.reshape)
+            _hint(
+              draft == null
+                  ? 'Drag a corner to reshape. Two fingers still pan and zoom.'
+                  : 'Let go to place it. Anything it would rename is counted '
+                        'first.',
+            ),
           if (_showStats)
             const Positioned(top: 8, right: 8, child: FrameStatsOverlay()),
           // Anchored bottom-left, clear of the toolbar, so the selected plant
@@ -607,6 +890,19 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
               bottom: 90,
               child: _BulkBar(selection: selection),
             ),
+          // Only when no plants are selected. With sticky on the two can
+          // coexist, and two cards in the same corner is worse than one.
+          if (selectedObject != null && selection.isEmpty)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 90,
+              child: _ObjectBar(
+                object: snapshot.objects
+                    .where((o) => o.id == selectedObject)
+                    .firstOrNull,
+              ),
+            ),
           Positioned(
             left: 0,
             right: 0,
@@ -614,10 +910,15 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             child: _Toolbar(
               active: tool,
               onChanged: (t) async {
-                // Abandon a half-drawn shape when switching away, rather than
-                // leaving invisible state that reappears later.
+                // Abandon half-finished gesture state when switching away,
+                // rather than leaving something invisible that reappears later.
                 if (t != CanvasTool.drawObject) {
                   ref.read(pendingShapeProvider.notifier).state = const [];
+                }
+                if (t != CanvasTool.reshape) {
+                  ref.read(reshapeDraftProvider.notifier).state = null;
+                  _reshapingObject = null;
+                  _shapeBeforeReshape = null;
                 }
                 ref.read(activeToolProvider.notifier).state = t;
                 if (t == CanvasTool.drawObject) await _chooseObjectField();
@@ -641,6 +942,22 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
       label: '',
       shape: shape,
       isContainer: false,
+    );
+  }
+
+  /// A one-line banner explaining what the current tool wants.
+  ///
+  /// The tools that create data need saying out loud. A reshape drag that grabs
+  /// nothing looks identical to a broken tool otherwise.
+  Widget _hint(String text) {
+    return Positioned(
+      top: 8,
+      left: 8,
+      right: 8,
+      child: Card(
+        color: Theme.of(context).colorScheme.secondaryContainer,
+        child: Padding(padding: const EdgeInsets.all(12), child: Text(text)),
+      ),
     );
   }
 
@@ -683,6 +1000,79 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     );
   }
 }
+
+/// The selected drawn object, and the way into what can be done to it.
+class _ObjectBar extends ConsumerWidget {
+  const _ObjectBar({required this.object});
+
+  /// Null when the selected object has vanished underneath us -- undone,
+  /// deleted, or its geometry made unreadable. Nothing to show rather than a
+  /// crash.
+  final DrawnObject? object;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final object = this.object;
+    if (object == null) return const SizedBox.shrink();
+
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          children: [
+            Expanded(
+              child: Consumer(
+                builder: (context, ref, _) {
+                  final field = ref
+                      .watch(_objectFieldProvider(object.fieldDefId))
+                      .valueOrNull;
+                  return Text(
+                    field == null
+                        ? object.label
+                        : '${field.name} ${object.label}',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                    overflow: TextOverflow.ellipsis,
+                  );
+                },
+              ),
+            ),
+            TextButton(
+              onPressed: () async {
+                final field = await ref
+                    .read(fieldDefsDaoProvider)
+                    .byId(object.fieldDefId);
+                if (field == null || !context.mounted) return;
+                await showModalBottomSheet<void>(
+                  context: context,
+                  isScrollControlled: true,
+                  builder: (context) => ObjectActionsSheet(
+                    objectId: object.id,
+                    label: object.label,
+                    fieldName: field.name,
+                    isLine: object.shape is PolylineShape,
+                  ),
+                );
+              },
+              child: const Text('Actions'),
+            ),
+            IconButton(
+              tooltip: 'Deselect',
+              icon: const Icon(Icons.close),
+              onPressed: () =>
+                  ref.read(selectedObjectProvider.notifier).state = null,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// One field definition by id, for naming a selected object.
+final _objectFieldProvider = FutureProvider.family<FieldDef?, String>(
+  (ref, fieldDefId) => ref.watch(fieldDefsDaoProvider).byId(fieldDefId),
+);
 
 /// Actions available on a multi-plant selection.
 class _BulkBar extends ConsumerWidget {
@@ -737,6 +1127,7 @@ class _Toolbar extends StatelessWidget {
     (CanvasTool.insertPlant, Icons.playlist_add, 'Insert'),
     (CanvasTool.drawObject, Icons.timeline, 'Draw'),
     (CanvasTool.move, Icons.open_with, 'Move'),
+    (CanvasTool.reshape, Icons.transform, 'Reshape'),
   ];
 
   @override

@@ -46,7 +46,14 @@ class LabelService {
   /// "this renames 34 plants" prompt exist at all: fetch once, render under the
   /// current template and under the proposed one, and diff -- without writing
   /// anything.
-  Future<IdentifierData> dataFor(String projectId) async {
+  /// Pass [containerValues] to render against containment that is not what is
+  /// stored -- `MembershipService.previewContainerValues` produces exactly this
+  /// shape. That is how "moving this boundary renames 34 plants" is known before
+  /// the boundary moves.
+  Future<IdentifierData> dataFor(
+    String projectId, {
+    Map<String, Map<String, String>>? containerValues,
+  }) async {
     final plants = await _db
         .customSelect(
           'SELECT id, position_idx FROM plants '
@@ -59,18 +66,24 @@ class LabelService {
     // One query for every container value in the project, rather than one per
     // plant. 3,000 round trips per repaint is not a budget, it is a freeze --
     // the same reason v2 used a single join.
-    final containers = await _db
-        .customSelect(
-          'SELECT m.plant_id AS plant_id, m.field_def_id AS field_def_id, '
-          '       o.label AS label '
-          'FROM plant_memberships m '
-          'JOIN map_objects o ON o.id = m.object_id AND o.deleted_at IS NULL '
-          'JOIN plants v ON v.id = m.plant_id '
-          'WHERE v.project_id = ?1 AND v.deleted_at IS NULL',
-          variables: [Variable<String>(projectId)],
-          readsFrom: {_db.plantMemberships, _db.mapObjects, _db.plants},
-        )
-        .get();
+    //
+    // Skipped entirely when the caller supplied its own containment: there is
+    // nothing to read, and reading it would only be thrown away.
+    final containers = containerValues != null
+        ? const <QueryRow>[]
+        : await _db
+              .customSelect(
+                'SELECT m.plant_id AS plant_id, '
+                '       m.field_def_id AS field_def_id, o.label AS label '
+                'FROM plant_memberships m '
+                'JOIN map_objects o '
+                '  ON o.id = m.object_id AND o.deleted_at IS NULL '
+                'JOIN plants v ON v.id = m.plant_id '
+                'WHERE v.project_id = ?1 AND v.deleted_at IS NULL',
+                variables: [Variable<String>(projectId)],
+                readsFrom: {_db.plantMemberships, _db.mapObjects, _db.plants},
+              )
+              .get();
 
     // Latest value per plant per attribute field, by the same window-function
     // shape FieldEventsDao uses. Scoped to the whole project rather than to the
@@ -99,7 +112,12 @@ class LabelService {
       numbers[r.read<String>('id')] = r.read<int>('position_idx');
     }
 
-    final values = <String, Map<String, String>>{};
+    // Containers first, then attributes over the top. Order matters only in the
+    // pathological case of one field being both, which the schema forbids.
+    final values = <String, Map<String, String>>{
+      if (containerValues != null)
+        for (final e in containerValues.entries) e.key: {...e.value},
+    };
     for (final r in containers) {
       (values[r.read<String>('plant_id')] ??= {})[r.read<String>(
         'field_def_id',
@@ -225,6 +243,119 @@ class LabelService {
           if (e.value > 1) e.key,
       ]..sort(),
     );
+  }
+
+  /// What renaming an object would do to identifiers. **Nothing is written.**
+  ///
+  /// A rename is the one identifier change that touches no plant row at all:
+  /// every plant inside Block 1 is called something different the moment Block 1
+  /// becomes Block 4, and none of them moved. Without this the change would land
+  /// silently, which is the worst case -- a printed map going stale with no
+  /// record of when.
+  ///
+  /// Reports `changed: 0` when the object's field is not part of the template.
+  /// Renaming a road that no identifier mentions genuinely renames nothing.
+  Future<IdentifierChange> previewObjectRename({
+    required String objectId,
+    required String label,
+  }) async {
+    final object = await (_db.select(
+      _db.mapObjects,
+    )..where((o) => o.id.equals(objectId))).getSingleOrNull();
+    if (object == null) {
+      return const IdentifierChange(changed: 0, duplicates: []);
+    }
+
+    final template = await templateFor(object.projectId);
+    final data = await dataFor(object.projectId);
+    final held = await plantsHeldBy(objectId);
+
+    return compare(
+      render(data, template),
+      render(
+        data.withValues(object.fieldDefId, {
+          for (final plantId in held) plantId: label.trim(),
+        }),
+        template,
+      ),
+    );
+  }
+
+  /// What recording [value] against [fieldDefId] would do to identifiers.
+  ///
+  /// The fourth way a plant gets renamed, and the least obvious one: if Clone is
+  /// part of the identifier, correcting a clone silently readdresses the plant.
+  /// A null [value] means clearing it, which falls back to the field's
+  /// placeholder -- so it is a rename too, not a no-op.
+  ///
+  /// Takes a set of plants rather than one, so a bulk edit across a whole block
+  /// is the same call and gets the same refusal.
+  ///
+  /// Reports `changed: 0` for a field the template does not mention, which is
+  /// almost every field. That is the cheap path and the common one.
+  Future<IdentifierChange> previewAttributeChange({
+    required String projectId,
+    required String fieldDefId,
+    required Iterable<String> plantIds,
+    required String? value,
+  }) async {
+    final template = await templateFor(projectId);
+    if (!template.fieldIds.contains(fieldDefId)) {
+      return const IdentifierChange(changed: 0, duplicates: []);
+    }
+
+    final data = await dataFor(projectId);
+    final next = <String, Map<String, String>>{
+      for (final e in data.values.entries) e.key: {...e.value},
+    };
+    for (final plantId in plantIds) {
+      if (value == null) {
+        // Removal, not an empty string. `withValues` cannot express this, which
+        // is why this builds the map itself: an empty value would render as an
+        // empty part rather than as the placeholder.
+        next[plantId]?.remove(fieldDefId);
+      } else {
+        (next[plantId] ??= {})[fieldDefId] = value;
+      }
+    }
+
+    return compare(
+      render(data, template),
+      render(
+        IdentifierData(
+          plantNumbers: data.plantNumbers,
+          values: next,
+          placeholders: data.placeholders,
+        ),
+        template,
+      ),
+    );
+  }
+
+  /// Whether [fieldDefId] is part of the project's identifier.
+  ///
+  /// Cheap enough to ask before doing anything expensive, and it is what decides
+  /// whether an ordinary field edit needs the identifier treatment at all.
+  Future<bool> isIdentifierPart({
+    required String projectId,
+    required String fieldDefId,
+  }) async => (await templateFor(projectId)).fieldIds.contains(fieldDefId);
+
+  /// Plants whose container value comes from this object.
+  ///
+  /// Membership only, deliberately: a plant merely *carried* by a non-container
+  /// line takes no value from it, so renaming that line changes nothing about
+  /// the plant. `PlantsDao.resolveSelection` unions the two because selecting a
+  /// row should grab its plants either way -- a different question.
+  Future<Set<String>> plantsHeldBy(String objectId) async {
+    final rows = await _db
+        .customSelect(
+          'SELECT plant_id FROM plant_memberships WHERE object_id = ?1',
+          variables: [Variable<String>(objectId)],
+          readsFrom: {_db.plantMemberships},
+        )
+        .get();
+    return {for (final r in rows) r.read<String>('plant_id')};
   }
 
   /// Whether an object label is acceptable for its field.

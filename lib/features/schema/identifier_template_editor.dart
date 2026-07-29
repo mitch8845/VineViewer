@@ -7,6 +7,7 @@ import '../../core/models/enums.dart';
 import '../../core/models/identifier_template.dart';
 import '../../core/providers.dart';
 import '../canvas/canvas_controller.dart';
+import '../canvas/tools/identifier_change_prompt.dart';
 
 /// Composes what a plant is called.
 ///
@@ -108,6 +109,9 @@ class _IdentifierTemplateEditorState
       LabelService.render(data, _template),
     );
 
+    // Kept inline as well as in the dialog: this screen has room to show the
+    // refusal next to the template that caused it, which a dismissed dialog
+    // cannot do.
     if (!change.isSafe) {
       setState(
         () => _refusal =
@@ -120,33 +124,14 @@ class _IdentifierTemplateEditorState
       return;
     }
 
-    if (change.changed > 0 && mounted) {
-      final proceed = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Change plant IDs'),
-          content: Text(
-            'This renames ${change.changed} '
-            '${change.changed == 1 ? 'plant' : 'plants'}.\n\n'
-            'Their old IDs stay searchable in each plant\'s history, so a '
-            'paper record from an earlier season can still be matched up.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Rename them'),
-            ),
-          ],
-        ),
-      );
-      if (proceed != true) return;
-    }
-
     if (!mounted) return;
+    final ok = await confirmIdentifierChange(
+      context,
+      change: change,
+      action: 'Change plant IDs',
+      refusalAdvice: 'Add a part that tells them apart.',
+    );
+    if (!ok || !mounted) return;
     await ref
         .read(operationRecorderProvider)
         .run(

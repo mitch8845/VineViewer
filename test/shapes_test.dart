@@ -367,4 +367,54 @@ void main() {
       expect(hit?.objectId, 'near');
     });
   });
+
+  group('withPointMoved', () {
+    test('moves one polyline vertex and leaves the rest', () {
+      final line = PolylineShape(
+        Polyline([
+          const Offset(0, 0),
+          const Offset(50, 0),
+          const Offset(100, 0),
+        ]),
+      );
+      final moved = line.withPointMoved(1, const Offset(50, 40));
+
+      expect(moved.points, [
+        const Offset(0, 0),
+        const Offset(50, 40),
+        const Offset(100, 0),
+      ]);
+      expect(moved, isA<PolylineShape>());
+    });
+
+    test('keeps a polygon a polygon', () {
+      final polygon = PolygonShape(square);
+      final moved = polygon.withPointMoved(0, const Offset(-20, -20));
+
+      expect(moved, isA<PolygonShape>());
+      expect(moved.points.first, const Offset(-20, -20));
+      expect(moved.points.length, square.length);
+    });
+
+    test('a point shape moves wholesale', () {
+      final moved = const PointShape(
+        Offset(5, 5),
+      ).withPointMoved(0, const Offset(9, 9));
+      expect(moved.points, [const Offset(9, 9)]);
+    });
+
+    test('an out-of-range index changes nothing rather than throwing', () {
+      // The index comes from a hit test against a list a concurrent edit could
+      // have shortened, and throwing mid-drag would take the canvas down.
+      final polygon = PolygonShape(square);
+      expect(polygon.withPointMoved(99, Offset.zero).points, square);
+      expect(polygon.withPointMoved(-1, Offset.zero).points, square);
+    });
+
+    test('survives a JSON round trip', () {
+      final moved = PolygonShape(square).withPointMoved(2, const Offset(7, 8));
+      final restored = Shape.tryParse(moved.toJson(), DrawType.polygon);
+      expect(restored!.points, moved.points);
+    });
+  });
 }

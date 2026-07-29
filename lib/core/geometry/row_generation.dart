@@ -54,6 +54,60 @@ abstract final class RowGeneration {
     if (spacing <= 0 || !spacing.isFinite) return 0;
     return (row.length / spacing).floor() + 1;
   }
+
+  /// [count] plants spread evenly across the span [from]..[to].
+  ///
+  /// The span exists for planting a line in more than one pass -- the near side
+  /// of a rock, then the far side -- so the two runs join up as one contiguous
+  /// sequence of numbers with a gap in space rather than a gap in the numbering.
+  ///
+  /// Both ends inclusive, matching [byCount]. Reversed or non-finite input
+  /// yields nothing rather than throwing: these numbers are typed by hand.
+  static List<double> byCountBetween({
+    required double from,
+    required double to,
+    required int count,
+  }) {
+    if (count <= 0 || !from.isFinite || !to.isFinite || to < from) {
+      return const [];
+    }
+    if (count == 1) return [from];
+
+    final step = (to - from) / (count - 1);
+    return [for (var i = 0; i < count; i++) from + i * step];
+  }
+
+  /// A plant every [spacing] units across the span [from]..[to].
+  ///
+  /// Starts *at* [from]. A caller resuming after an obstacle passes the offset
+  /// it wants the next plant at, not the offset of the last one placed.
+  static List<double> bySpacingBetween({
+    required double from,
+    required double to,
+    required double spacing,
+  }) {
+    if (spacing <= 0 ||
+        !spacing.isFinite ||
+        !from.isFinite ||
+        !to.isFinite ||
+        to < from) {
+      return const [];
+    }
+
+    final offsets = <double>[];
+    // The same guard as [bySpacing], and for the same reason: a fat-fingered
+    // 0.001 would otherwise try to place millions of plants on the UI thread.
+    const maxPlantsPerRow = 5000;
+
+    for (
+      var offset = from;
+      offset <= to && offsets.length < maxPlantsPerRow;
+      offset += spacing
+    ) {
+      offsets.add(offset);
+    }
+    return offsets;
+  }
 }
 
 /// Converts between real-world units and image pixels.

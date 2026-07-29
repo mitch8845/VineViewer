@@ -10,6 +10,7 @@ import '../../core/models/field_value.dart';
 import '../../core/models/identifier_template.dart';
 import '../../core/providers.dart';
 import '../canvas/canvas_controller.dart';
+import '../canvas/tools/identifier_change_prompt.dart';
 import '../schema/field_editor_screen.dart';
 
 /// Panel for the selected plant: its address and every field, editable.
@@ -292,7 +293,88 @@ class _FieldRow extends ConsumerWidget {
     if (value == _cancelled) return;
     if (!context.mounted) return;
 
-    await _write(context, ref, value == _clear ? null : value);
+    final resolved = value == _clear ? null : value;
+    final projectId = ref.read(activeProjectIdProvider);
+    if (projectId == null) return;
+
+    // Gated here rather than inside [_write], which retries itself with
+    // `force: true` after a write-once override. Gating there would ask the same
+    // question twice for one decision.
+    final cleared = await _clearedIdentifierGate(
+      context,
+      ref,
+      projectId,
+      resolved,
+    );
+    if (!cleared || !context.mounted) return;
+
+    await _write(context, ref, resolved);
+  }
+
+  /// The gate for a field that is part of the plant's identifier.
+  ///
+  /// Returns true to go ahead. For the overwhelming majority of fields this
+  /// costs one cheap query and returns true immediately -- health scores are not
+  /// addresses. But when Clone *is* part of the ID, correcting a clone
+  /// readdresses the plant, and until now it did so in silence.
+  ///
+  /// Two separate checks, because they fail for different reasons:
+  ///
+  ///  * The value itself may be unusable as an ID part -- containing the
+  ///    delimiter, or equal to the placeholder that means "no value here". A
+  ///    clone genuinely called `none` would make `12.none.7` ambiguous between a
+  ///    real clone and a missing one.
+  ///  * The resulting identifiers may collide, which is refused outright.
+  Future<bool> _clearedIdentifierGate(
+    BuildContext context,
+    WidgetRef ref,
+    String projectId,
+    Object? value,
+  ) async {
+    final labels = ref.read(labelServiceProvider);
+    if (!await labels.isIdentifierPart(
+      projectId: projectId,
+      fieldDefId: field.id,
+    )) {
+      return true;
+    }
+
+    final template = await labels.templateFor(projectId);
+    final text = value?.toString();
+    if (text != null) {
+      final problem = LabelService.problemWithIdentifierValue(
+        value: text,
+        delimiter: template.delimiter,
+        blankPlaceholder: field.blankPlaceholder,
+      );
+      if (problem != null) {
+        if (!context.mounted) return false;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${field.name} is part of the plant ID. $problem'),
+          ),
+        );
+        return false;
+      }
+    }
+
+    final change = await labels.previewAttributeChange(
+      projectId: projectId,
+      fieldDefId: field.id,
+      plantIds: [plantId],
+      value: text,
+    );
+    if (!context.mounted) return false;
+
+    return confirmIdentifierChange(
+      context,
+      change: change,
+      action: 'Change ${field.name}',
+      proceedLabel: 'Change it',
+      refusalAdvice:
+          '${field.name} is part of the plant ID. Pick a different value, or '
+          'add a part to the ID format that tells these plants apart.',
+    );
   }
 
   Future<void> _write(

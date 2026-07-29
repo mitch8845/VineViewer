@@ -31,6 +31,13 @@ enum CanvasTool {
 
   /// Drag moves the plant or object under the pointer.
   move,
+
+  /// Drag moves one *corner* of an object, leaving the rest where it is.
+  ///
+  /// Distinct from [move], which translates the whole shape. Both exist because
+  /// they are the two different things you do to a boundary that is wrong:
+  /// it is in the wrong place, or it is the wrong shape.
+  reshape,
 }
 
 /// The interactive map.

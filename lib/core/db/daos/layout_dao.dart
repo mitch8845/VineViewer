@@ -131,6 +131,159 @@ class LayoutDao {
     });
   }
 
+  /// Renames an object.
+  ///
+  /// No geometry moves, and no plant row is touched -- yet every plant this
+  /// object holds is called something different afterwards, because container
+  /// values are composed from the object's name at render time. That is why the
+  /// caller is expected to have put [LabelService.previewObjectRename] to the
+  /// user first.
+  Future<void> renameObject(
+    String objectId,
+    String label, {
+    DateTime? now,
+  }) async {
+    final timestamp = now ?? DateTime.now();
+    await (_db.update(
+      _db.mapObjects,
+    )..where((o) => o.id.equals(objectId))).write(
+      MapObjectsCompanion(
+        label: Value(label.trim()),
+        updatedAt: Value(timestamp),
+      ),
+    );
+  }
+
+  /// What a proposed layout would do to identifiers. **Nothing is written.**
+  ///
+  /// The one place every boundary-style prompt gets its numbers. Membership is
+  /// derived from geometry, so moving a shape or a plant can rename hundreds of
+  /// records that nobody edited -- and per the amended plan such an edit is
+  /// all-or-nothing: a named count, refused on duplicates, cancel changes
+  /// nothing.
+  ///
+  /// Not implemented as "reconcile then roll back", which would look equivalent
+  /// and be wrong: the capture triggers fire inside the transaction, so a
+  /// cancelled preview would still land in the undo journal as an operation that
+  /// happened, and in label history as a rename that never did.
+  Future<IdentifierChange> previewLayoutChange({
+    required String projectId,
+    Map<String, Shape?> geometry = const {},
+    Map<String, Offset> positions = const {},
+  }) async {
+    final before = await _labels.identifiersForProject(projectId);
+    final after = LabelService.render(
+      await _labels.dataFor(
+        projectId,
+        containerValues: await _memberships.previewContainerValues(
+          projectId: projectId,
+          geometryOverride: geometry,
+          positionOverride: positions,
+        ),
+      ),
+      await _labels.templateFor(projectId),
+    );
+
+    return LabelService.compare(before, after);
+  }
+
+  /// What changing one object's shape would do. Pass null to ask about deleting
+  /// it.
+  ///
+  /// Includes the plants the object *carries* sliding to their new places, which
+  /// is a second, independent way containment can change: dragging a row's end
+  /// out of a block takes its plants with it, and they leave the block even
+  /// though the block never moved.
+  Future<IdentifierChange> previewGeometryChange({
+    required String objectId,
+    Shape? geometry,
+  }) async {
+    final projectId = await _projectOf(objectId);
+    if (projectId == null) {
+      return const IdentifierChange(changed: 0, duplicates: []);
+    }
+
+    return previewLayoutChange(
+      projectId: projectId,
+      geometry: {objectId: geometry},
+      // Only a line carries anything. Deleting leaves plants exactly where they
+      // are -- they lose the carrier, not the position -- so that case overrides
+      // nothing either.
+      positions: geometry is PolylineShape
+          ? await carriedPositionsFor(objectId, geometry.path)
+          : const {},
+    );
+  }
+
+  /// What dragging one plant to [position] would do.
+  ///
+  /// Uses the position the plant would *actually* end up at, which for a carried
+  /// plant is the nearest point on its line rather than where the finger lifted
+  /// -- the same rule [movePlant] applies. Previewing the raw drop point would
+  /// answer a question about a place the plant never goes.
+  Future<IdentifierChange> previewPlantMove({
+    required String plantId,
+    required Offset position,
+  }) async {
+    final plant = await plantById(plantId);
+    if (plant == null) {
+      return const IdentifierChange(changed: 0, duplicates: []);
+    }
+
+    final path = plant.carrierId == null
+        ? null
+        : await carrierPathOf(plant.carrierId!);
+    final landing = path == null ? position : path.closestTo(position).point;
+
+    return previewLayoutChange(
+      projectId: plant.projectId,
+      positions: {plantId: landing},
+    );
+  }
+
+  /// Where a carrier's plants would end up if its path became [path].
+  ///
+  /// The read-only twin of [_repositionCarried], applying the same
+  /// offset-or-project rule. Kept as two functions rather than one with a flag:
+  /// one answers a question and one changes the database, and confusing those
+  /// two is how a preview writes.
+  Future<Map<String, Offset>> carriedPositionsFor(
+    String objectId,
+    Polyline path,
+  ) async {
+    final plants = await (_db.select(
+      _db.plants,
+    )..where((v) => v.carrierId.equals(objectId) & v.deletedAt.isNull())).get();
+
+    return {
+      for (final plant in plants)
+        plant.id: path.pointAt(
+          plant.pathOffset ??
+              (plant.x != null && plant.y != null
+                  ? path.closestTo(Offset(plant.x!, plant.y!)).offset
+                  : 0.0),
+        ),
+    };
+  }
+
+  /// Arc-length offsets already occupied on a carrier, ascending.
+  ///
+  /// What "plant more" needs to show: the line is 210ft long and plants occupy
+  /// 0-90ft, so the far side of the rock starts around there.
+  Future<List<double>> plantedOffsetsOn(String carrierId) async {
+    final rows = await _db
+        .customSelect(
+          'SELECT path_offset FROM plants '
+          'WHERE carrier_id = ?1 AND deleted_at IS NULL '
+          '  AND path_offset IS NOT NULL '
+          'ORDER BY path_offset',
+          variables: [Variable<String>(carrierId)],
+          readsFrom: {_db.plants},
+        )
+        .get();
+    return [for (final r in rows) r.read<double>('path_offset')];
+  }
+
   /// Translates an object and everything it carries.
   Future<void> moveObject(
     String objectId,
@@ -244,6 +397,13 @@ class LayoutDao {
           ..where((o) => o.projectId.equals(projectId) & o.deletedAt.isNull())
           ..orderBy([(o) => OrderingTerm.asc(o.sortOrder)]))
         .watch();
+  }
+
+  /// One object by id, or null.
+  Future<MapObject?> objectById(String objectId) {
+    return (_db.select(_db.mapObjects)
+          ..where((o) => o.id.equals(objectId) & o.deletedAt.isNull()))
+        .getSingleOrNull();
   }
 
   Future<String?> _projectOf(String objectId) async {
