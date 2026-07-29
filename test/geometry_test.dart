@@ -100,6 +100,37 @@ void main() {
     });
   });
 
+  group('reversed', () {
+    // Numbering direction is implemented by storing the row the other way
+    // round, so that position_idx always follows path order. Nothing downstream
+    // has to consult a flag, and renumberRow -- which sorts by path_offset --
+    // keeps agreeing with what is on the ground.
+    test('walks the same shape from the other end', () {
+      final back = elbow.reversed;
+      expect(back.points, elbow.points.reversed.toList());
+      expect(back.points.first, elbow.points.last);
+    });
+
+    test('is the same length', () {
+      expect(elbow.reversed.length, closeTo(elbow.length, 1e-9));
+    });
+
+    test('offset zero moves to the far end', () {
+      expect(elbow.reversed.pointAt(0), elbow.points.last);
+      expect(elbow.reversed.pointAt(elbow.length), elbow.points.first);
+    });
+
+    test('reversing twice is the original', () {
+      expect(elbow.reversed.reversed.points, elbow.points);
+    });
+
+    test('vine one lands where the user said it should', () {
+      // The whole point of the toggle: plant 1 sits at the end they picked.
+      final offsets = RowGeneration.byCount(elbow.reversed, 5);
+      expect(elbow.reversed.pointAt(offsets.first), elbow.points.last);
+    });
+  });
+
   group('JSON round trip', () {
     test('survives encoding and decoding', () {
       final restored = Polyline.tryParse(elbow.toJson())!;

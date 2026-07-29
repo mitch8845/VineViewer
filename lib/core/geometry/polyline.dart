@@ -121,6 +121,15 @@ class Polyline {
     );
   }
 
+  /// The same shape walked from the other end.
+  ///
+  /// This is how numbering direction is implemented. A vine's `position_idx`
+  /// follows path order -- `renumberRow` sorts by `path_offset` to decide what
+  /// is plant 1 -- so "number from the other end" means storing the row
+  /// reversed, not carrying a flag that every read would have to consult and
+  /// one read would eventually forget.
+  Polyline get reversed => Polyline(points.reversed.toList());
+
   /// JSON `[[x,y], ...]`, as stored in `vine_rows.path`.
   String toJson() => jsonEncode([
     for (final p in points) [p.dx, p.dy],

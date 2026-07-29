@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/data/label_service.dart';
 import '../../core/geometry/polyline.dart';
 import '../../core/geometry/row_generation.dart';
 import '../../core/providers.dart';
@@ -181,26 +182,47 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
       ..showSnackBar(SnackBar(content: Text(message)));
   }
 
+  /// Turns the drawn points into a numbered, planted row.
+  ///
+  /// One sheet asks everything -- number, which end is plant 1, and how the
+  /// vines are spaced -- and one operation writes it, so the whole row is a
+  /// single press of undo rather than a row and then separately its vines.
   Future<void> _finishRow() async {
     final points = ref.read(pendingRowProvider);
     final projectId = _projectId;
     if (projectId == null || points.length < 2) return;
 
-    final path = Polyline(points);
-    final label = await _nextRowLabel(projectId);
-    final rowId = await _gesture(
-      'draw_row',
-      'Draw row $label',
-      () => ref
-          .read(layoutDaoProvider)
-          .createRow(projectId: projectId, label: label, path: path),
-    );
-    if (rowId == null) return;
-
-    ref.read(pendingRowProvider.notifier).state = const [];
+    final suggested = await _nextRowLabel(projectId);
     if (!mounted) return;
 
-    await _promptForVines(rowId: rowId, path: path);
+    final plan = await showModalBottomSheet<NewRow>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => _NewRowSheet(
+        path: Polyline(points),
+        suggestedNumber: suggested,
+        projectId: projectId,
+        calibration:
+            ref.read(calibrationProvider).valueOrNull ??
+            ScaleCalibration.uncalibrated,
+      ),
+    );
+    if (plan == null || !mounted) return;
+
+    ref.read(pendingRowProvider.notifier).state = const [];
+
+    final layout = ref.read(layoutDaoProvider);
+    await _gesture('draw_row', 'Draw row ${plan.number}', () async {
+      final rowId = await layout.createRow(
+        projectId: projectId,
+        label: plan.number,
+        path: plan.path,
+      );
+      if (plan.offsets.isNotEmpty) {
+        await layout.placeVinesAlongRow(rowId: rowId, offsets: plan.offsets);
+      }
+      return rowId;
+    });
   }
 
   /// Lowest unused row number **in the row's block**.
@@ -214,31 +236,6 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
         .read(labelServiceProvider)
         .nextRowNumber(projectId: projectId, blockId: blockId);
     return '$number';
-  }
-
-  Future<void> _promptForVines({
-    required String rowId,
-    required Polyline path,
-  }) async {
-    final calibration =
-        ref.read(calibrationProvider).valueOrNull ??
-        ScaleCalibration.uncalibrated;
-
-    final result = await showModalBottomSheet<List<double>>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) =>
-          _PlaceVinesSheet(path: path, calibration: calibration),
-    );
-
-    if (result == null || result.isEmpty) return;
-    await _gesture(
-      'plant_row',
-      'Plant ${result.length} vines',
-      () => ref
-          .read(layoutDaoProvider)
-          .placeVinesAlongRow(rowId: rowId, offsets: result),
-    );
   }
 
   @override
@@ -512,38 +509,109 @@ class _RenumberDialog extends StatelessWidget {
   }
 }
 
-/// Asks how to fill a freshly drawn row, previewing the count live.
-class _PlaceVinesSheet extends StatefulWidget {
-  const _PlaceVinesSheet({required this.path, required this.calibration});
+/// Everything the user decides about a freshly drawn row.
+class NewRow {
+  const NewRow({
+    required this.number,
+    required this.path,
+    required this.offsets,
+  });
+
+  /// The "row" segment of every label on it.
+  final String number;
+
+  /// The shape as it should be stored -- already reversed if the user chose to
+  /// number from the other end, so plant 1 sits at offset zero.
+  final Polyline path;
+
+  /// Arc-length positions for the vines, empty to leave the row unplanted.
+  final List<double> offsets;
+}
+
+/// Asks everything about a new row at once: number, direction, and spacing.
+///
+/// One sheet rather than three prompts, because for the person drawing it these
+/// are one decision. It also means the row and its vines are written by a single
+/// operation, so undo takes the whole thing back instead of leaving an empty row
+/// behind.
+class _NewRowSheet extends ConsumerStatefulWidget {
+  const _NewRowSheet({
+    required this.path,
+    required this.suggestedNumber,
+    required this.projectId,
+    required this.calibration,
+  });
 
   final Polyline path;
+  final String suggestedNumber;
+  final String projectId;
   final ScaleCalibration calibration;
 
   @override
-  State<_PlaceVinesSheet> createState() => _PlaceVinesSheetState();
+  ConsumerState<_NewRowSheet> createState() => _NewRowSheetState();
 }
 
-class _PlaceVinesSheetState extends State<_PlaceVinesSheet> {
+class _NewRowSheetState extends ConsumerState<_NewRowSheet> {
+  late final TextEditingController _number = TextEditingController(
+    text: widget.suggestedNumber,
+  );
+  final _count = TextEditingController(text: '30');
+  final _spacing = TextEditingController(text: '6');
+
   bool _byCount = true;
-  final _countController = TextEditingController(text: '20');
-  final _spacingController = TextEditingController(text: '6');
+
+  /// False puts plant 1 at the end the user finished drawing on.
+  bool _forward = true;
+
+  String? _numberProblem;
+
+  @override
+  void initState() {
+    super.initState();
+    _number.addListener(_checkNumber);
+    _checkNumber();
+  }
 
   @override
   void dispose() {
-    _countController.dispose();
-    _spacingController.dispose();
+    _number.dispose();
+    _count.dispose();
+    _spacing.dispose();
     super.dispose();
   }
 
+  /// Validates as the user types rather than on submit.
+  ///
+  /// Worth getting right at the moment of drawing: correcting a row number
+  /// afterwards renames every vine on the row.
+  Future<void> _checkNumber() async {
+    final typed = _number.text;
+    final problem = LabelService.problemWithLabel(typed);
+    if (problem != null) {
+      if (mounted) setState(() => _numberProblem = problem);
+      return;
+    }
+
+    // Rows are drawn before their block is decided, so this checks the
+    // unassigned scope. Assigning the row to a block later re-checks it there.
+    final free = await ref
+        .read(labelServiceProvider)
+        .isRowNumberFree(projectId: widget.projectId, number: typed);
+
+    // The field may have moved on while the query ran.
+    if (!mounted || _number.text != typed) return;
+    setState(() => _numberProblem = free ? null : 'Row $typed already exists.');
+  }
+
+  Polyline get _path => _forward ? widget.path : widget.path.reversed;
+
   List<double> get _offsets {
     if (_byCount) {
-      final count = int.tryParse(_countController.text) ?? 0;
-      return RowGeneration.byCount(widget.path, count);
+      return RowGeneration.byCount(_path, int.tryParse(_count.text) ?? 0);
     }
-    final spacing = double.tryParse(_spacingController.text) ?? 0;
     return RowGeneration.bySpacing(
-      widget.path,
-      widget.calibration.toPixels(spacing),
+      _path,
+      widget.calibration.toPixels(double.tryParse(_spacing.text) ?? 0),
     );
   }
 
@@ -559,75 +627,113 @@ class _PlaceVinesSheetState extends State<_PlaceVinesSheet> {
         top: 20,
         bottom: MediaQuery.of(context).viewInsets.bottom + 20,
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Plant this row', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 4),
-          Text(
-            'Row length ${widget.calibration.format(widget.path.length)}',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const SizedBox(height: 16),
-          SegmentedButton<bool>(
-            segments: const [
-              ButtonSegment(value: true, label: Text('By count')),
-              ButtonSegment(value: false, label: Text('By spacing')),
-            ],
-            selected: {_byCount},
-            onSelectionChanged: (s) => setState(() => _byCount = s.first),
-          ),
-          const SizedBox(height: 16),
-          if (_byCount)
-            TextField(
-              controller: _countController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'Number of vines',
-                helperText: 'Spread evenly, first and last at the ends',
-              ),
-              onChanged: (_) => setState(() {}),
-            )
-          else
-            TextField(
-              controller: _spacingController,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-              ),
-              decoration: InputDecoration(
-                labelText: 'Spacing ($unit)',
-                helperText: widget.calibration.isCalibrated
-                    ? 'Measured against this project\'s scale'
-                    : 'No scale set for this project, so this is in pixels',
-              ),
-              onChanged: (_) => setState(() {}),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('New row', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 4),
+            Text(
+              'Length ${widget.calibration.format(widget.path.length)}',
+              style: Theme.of(context).textTheme.bodySmall,
             ),
-          const SizedBox(height: 16),
-          Text(
-            offsets.isEmpty
-                ? 'Nothing to place'
-                : 'Will place ${offsets.length} vines',
-            style: Theme.of(context).textTheme.bodyMedium,
-          ),
-          const SizedBox(height: 16),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Leave empty'),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _number,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: 'Row number',
+                errorText: _numberProblem,
+                helperText: _numberProblem == null
+                    ? 'Numbers restart in every block'
+                    : null,
               ),
-              const SizedBox(width: 8),
-              FilledButton(
-                onPressed: offsets.isEmpty
-                    ? null
-                    : () => Navigator.pop(context, offsets),
-                child: const Text('Plant'),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              'Which end is plant 1',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 8),
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(value: true, label: Text('Where I started')),
+                ButtonSegment(value: false, label: Text('Where I finished')),
+              ],
+              selected: {_forward},
+              onSelectionChanged: (s) => setState(() => _forward = s.first),
+            ),
+            const SizedBox(height: 20),
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(value: true, label: Text('By count')),
+                ButtonSegment(value: false, label: Text('By spacing')),
+              ],
+              selected: {_byCount},
+              onSelectionChanged: (s) => setState(() => _byCount = s.first),
+            ),
+            const SizedBox(height: 16),
+            if (_byCount)
+              TextField(
+                controller: _count,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Number of vines',
+                  helperText: 'Spread evenly, first and last at the ends',
+                ),
+                onChanged: (_) => setState(() {}),
+              )
+            else
+              TextField(
+                controller: _spacing,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: InputDecoration(
+                  labelText: 'Spacing ($unit)',
+                  helperText: widget.calibration.isCalibrated
+                      ? 'Measured against this project\'s scale'
+                      : 'No scale set for this project, so this is in pixels',
+                ),
+                onChanged: (_) => setState(() {}),
               ),
-            ],
-          ),
-        ],
+            const SizedBox(height: 16),
+            Text(
+              offsets.isEmpty
+                  ? 'No vines -- the row will be drawn empty'
+                  : 'Will place ${offsets.length} vines, numbered from the '
+                        'end you ${_forward ? 'started' : 'finished'} on',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 20),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(
+                  // An empty row is legitimate -- draw it now, plant it once you
+                  // have walked it -- so only a bad number blocks creation.
+                  onPressed: _numberProblem != null
+                      ? null
+                      : () => Navigator.pop(
+                          context,
+                          NewRow(
+                            number: _number.text.trim(),
+                            path: _path,
+                            offsets: offsets,
+                          ),
+                        ),
+                  child: const Text('Create'),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
