@@ -501,6 +501,30 @@ class LabelService {
     return {for (final r in rows) r.read<String>('id')};
   }
 
+  /// Which containers hold this plant, as field name to object name.
+  ///
+  /// What the inspector shows under the identifier. Read-only by nature: these
+  /// are derived from geometry, so the way to change one is to move the plant or
+  /// move the boundary.
+  Future<Map<String, String>> containersOf(String vineId) async {
+    final rows = await _db
+        .customSelect(
+          'SELECT f.name AS field, o.label AS label '
+          'FROM plant_memberships m '
+          'JOIN map_objects o ON o.id = m.object_id AND o.deleted_at IS NULL '
+          'JOIN field_defs f ON f.id = m.field_def_id AND f.deleted_at IS NULL '
+          'WHERE m.vine_id = ?1 '
+          'ORDER BY f.sort_order',
+          variables: [Variable<String>(vineId)],
+          readsFrom: {_db.plantMemberships, _db.mapObjects, _db.fieldDefs},
+        )
+        .get();
+
+    return {
+      for (final r in rows) r.read<String>('field'): r.read<String>('label'),
+    };
+  }
+
   /// Which object currently holds each container field for this plant.
   Future<Map<String, String>> _currentHolders(String vineId) async {
     final rows = await _db

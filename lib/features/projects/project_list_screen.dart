@@ -3,7 +3,11 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/db/daos/field_defs_dao.dart';
 import '../../core/geometry/polyline.dart';
+import '../../core/geometry/shapes.dart';
+import '../../core/models/enums.dart';
+import '../../core/models/identifier_template.dart';
 import '../../core/providers.dart';
 import '../canvas/canvas_controller.dart';
 import '../canvas/vineyard_screen.dart';
@@ -185,34 +189,91 @@ class _EmptyState extends ConsumerWidget {
     );
   }
 
+  /// Builds a realistic 4,000-plant vineyard for the performance gate.
+  ///
+  /// Sets up the v3 model from scratch -- a Row field, a Block field, and the
+  /// `Block.Row.Plant` template -- so the seeded project exercises exactly what
+  /// a hand-drawn one would, including identifier rendering and containment.
   Future<void> _seedDemo(WidgetRef ref) async {
     final projects = ref.read(projectsDaoProvider);
     final layout = ref.read(layoutDaoProvider);
+    final fields = ref.read(fieldDefsDaoProvider);
 
     final projectId = await projects.create(name: 'Performance test');
-    final blockId = await layout.createBlock(projectId: projectId, label: '1');
+
+    final rowField = await fields.create(
+      projectId: projectId,
+      name: 'Row',
+      type: FieldType.text,
+      role: FieldRole.object,
+      drawType: DrawType.polyline,
+      isContainer: true,
+      blankPlaceholder: '0',
+    );
+    final blockField = await fields.create(
+      projectId: projectId,
+      name: 'Block',
+      type: FieldType.text,
+      role: FieldRole.object,
+      drawType: DrawType.polygon,
+      isContainer: true,
+      blankPlaceholder: '0',
+    );
+    if (rowField is! FieldDefSaved || blockField is! FieldDefSaved) return;
+
+    await projects.setIdentifierTemplate(
+      projectId,
+      IdentifierTemplate(
+        delimiter: '.',
+        parts: [
+          FieldPart(blockField.id),
+          FieldPart(rowField.id),
+          const PlantPart(),
+        ],
+      ),
+    );
 
     // Mirrors the real vineyard's shape: 75 rows of wildly varying length
-    // (9-72 vines), not a uniform grid. A uniform grid would flatter the
+    // (9-72 plants), not a uniform grid. A uniform grid would flatter the
     // spatial index and hide clustering costs.
     final random = math.Random(42);
+    final rows = <({double y, int count})>[];
     var placed = 0;
     for (var r = 0; r < 75 && placed < 4000; r++) {
       final count = math.min(9 + random.nextInt(64), 4000 - placed);
-      final y = 100.0 + r * 45;
-      final path = Polyline([Offset(100, y), Offset(100 + count * 14.0, y)]);
-
-      final rowId = await layout.createRow(
-        projectId: projectId,
-        label: '${r + 1}',
-        blockId: blockId,
-        path: path,
-      );
-      await layout.placeVinesAlongRow(
-        rowId: rowId,
-        offsets: [for (var i = 0; i < count; i++) i * 14.0],
-      );
+      rows.add((y: 100.0 + r * 45, count: count));
       placed += count;
+    }
+
+    // One block around the lot, so every plant has a container value and the
+    // identifier has all three parts to render.
+    final widest = rows.fold(0.0, (w, r) => math.max(w, r.count * 14.0));
+    await layout.createObject(
+      projectId: projectId,
+      fieldDefId: blockField.id,
+      label: '1',
+      geometry: PolygonShape([
+        const Offset(50, 50),
+        Offset(150 + widest, 50),
+        Offset(150 + widest, 150 + rows.length * 45),
+        Offset(50, 150 + rows.length * 45),
+      ]),
+    );
+
+    for (var r = 0; r < rows.length; r++) {
+      final row = rows[r];
+      final carrier = await layout.createObject(
+        projectId: projectId,
+        fieldDefId: rowField.id,
+        label: '${r + 1}',
+        geometry: PolylineShape(
+          Polyline([Offset(100, row.y), Offset(100 + row.count * 14.0, row.y)]),
+        ),
+      );
+      await layout.placePlantsAlongCarrier(
+        carrierId: carrier,
+        offsets: [for (var i = 0; i < row.count; i++) i * 14.0],
+      );
     }
   }
 }

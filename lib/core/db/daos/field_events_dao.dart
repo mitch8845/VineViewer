@@ -261,6 +261,27 @@ class FieldEventsDao {
     };
   }
 
+  /// How many observations exist across a set of plants.
+  ///
+  /// Section 6.4 wants the deletion prompt to name this first: retiring a plant
+  /// with three seasons of readings deserves a different pause than one planted
+  /// yesterday.
+  Future<int> countEventsFor(Iterable<String> vineIds) async {
+    final ids = vineIds.toList();
+    if (ids.isEmpty) return 0;
+
+    final placeholders = List.filled(ids.length, '?').join(', ');
+    final row = await _db
+        .customSelect(
+          'SELECT COUNT(*) AS n FROM field_events '
+          'WHERE deleted_at IS NULL AND vine_id IN ($placeholders)',
+          variables: [for (final id in ids) Variable<String>(id)],
+          readsFrom: {_db.fieldEvents},
+        )
+        .getSingle();
+    return row.read<int>('n');
+  }
+
   /// Soft-deletes a single event. The prior value becomes current again.
   Future<void> softDelete(String eventId, {DateTime? now}) async {
     await (_db.update(_db.fieldEvents)..where((e) => e.id.equals(eventId)))

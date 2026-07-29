@@ -2,9 +2,18 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
-import '../../core/geometry/polyline.dart';
+import '../../core/geometry/shapes.dart';
 import '../../core/geometry/spatial_index.dart';
 import 'viewport.dart';
+
+/// One drawn instance, reduced to what painting and hit-testing need.
+typedef DrawnObject = ({
+  String id,
+  String fieldDefId,
+  String label,
+  Shape shape,
+  bool isContainer,
+});
 
 /// Everything the painter needs, assembled once per change rather than looked
 /// up per frame.
@@ -18,19 +27,30 @@ class VineyardScene {
   const VineyardScene({
     required this.vines,
     required this.index,
-    required this.rows,
+    required this.objects,
     this.image,
     this.imageTransform = Matrix4.identity,
     this.selection = const <String>{},
     this.colors = const <String, Color>{},
     this.labels = const <String, String>{},
     this.showLabels = false,
+    this.marquee,
+    this.lasso = const <Offset>[],
   });
 
   /// Positions by id. The index holds the same points for spatial queries.
   final Map<String, Offset> vines;
   final SpatialIndex index;
-  final List<Polyline> rows;
+
+  /// Everything drawn: rows, blocks, roads, posts. Painted per object because
+  /// there are tens of them, not thousands.
+  final List<DrawnObject> objects;
+
+  /// The box being dragged out, in layout coordinates, or null.
+  final Rect? marquee;
+
+  /// The lasso being drawn, in layout coordinates.
+  final List<Offset> lasso;
 
   final ui.Image? image;
 
@@ -67,13 +87,6 @@ class VineyardPainter extends CustomPainter {
   /// mush and a large text-layout bill.
   static const _labelVisibleScale = 1.2;
 
-  static final _rowPaint = Paint()
-    ..color = const Color(0x66000000)
-    ..strokeWidth = 1.5
-    ..style = PaintingStyle.stroke
-    ..strokeCap = StrokeCap.round
-    ..strokeJoin = StrokeJoin.round;
-
   static final _selectionPaint = Paint()
     ..color = const Color(0xFF5B2C6F)
     ..strokeWidth = 2
@@ -88,8 +101,9 @@ class VineyardPainter extends CustomPainter {
     canvas.scale(viewport.scale);
 
     _paintImage(canvas);
-    _paintRows(canvas);
+    _paintObjects(canvas);
     _paintVines(canvas);
+    _paintSelectionGesture(canvas);
 
     canvas.restore();
   }
@@ -110,27 +124,109 @@ class VineyardPainter extends CustomPainter {
     canvas.restore();
   }
 
-  void _paintRows(Canvas canvas) {
-    if (scene.rows.isEmpty) return;
+  /// Palette for object fields, keyed by the order they were created.
+  ///
+  /// Colour per *field*, not per instance, so every Row looks like a Row and
+  /// Blocks are distinguishable from them at a glance. Derived from sort order
+  /// rather than stored, which keeps a colour column out of the schema for
+  /// something the user has not asked to control.
+  static const _objectPalette = [
+    Color(0xFF546E7A), // slate -- rows
+    Color(0xFF6A1B9A), // purple -- blocks
+    Color(0xFF00838F), // teal
+    Color(0xFFEF6C00), // orange
+    Color(0xFF33691E), // olive
+  ];
+
+  Color _objectColour(DrawnObject object) {
+    // Hashing the field id gives a stable colour without needing sort order
+    // threaded through the scene. Stable across restarts, which matters more
+    // than the particular hue.
+    return _objectPalette[object.fieldDefId.hashCode.abs() %
+        _objectPalette.length];
+  }
+
+  void _paintObjects(Canvas canvas) {
+    if (scene.objects.isEmpty) return;
 
     final visible = viewport.visibleLayoutRect(padding: 50);
-    // Stroke width is in layout units, so it has to shrink as we zoom in or
-    // the lines become thick slabs.
-    final paint = Paint()
-      ..color = _rowPaint.color
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..strokeWidth = 1.5 / viewport.scale;
+    // Stroke width is in layout units, so it has to shrink as we zoom in or the
+    // lines become thick slabs.
+    final width = 1.5 / viewport.scale;
 
-    for (final row in scene.rows) {
-      if (!row.bounds.inflate(10).overlaps(visible)) continue;
+    for (final object in scene.objects) {
+      if (!object.shape.bounds.inflate(10).overlaps(visible)) continue;
 
-      final path = Path()..moveTo(row.points.first.dx, row.points.first.dy);
-      for (var i = 1; i < row.points.length; i++) {
-        path.lineTo(row.points[i].dx, row.points[i].dy);
+      final colour = _objectColour(object);
+      final stroke = Paint()
+        ..color = colour.withValues(alpha: 0.75)
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..strokeWidth = width;
+
+      switch (object.shape) {
+        case final PolylineShape line:
+          canvas.drawPath(_pathOf(line.path.points, close: false), stroke);
+
+        case final PolygonShape polygon:
+          final path = _pathOf(polygon.vertices, close: true);
+          // Faint fill so the area reads as an area without hiding the aerial
+          // underneath it -- the photo is what the user is drawing against.
+          canvas.drawPath(
+            path,
+            Paint()..color = colour.withValues(alpha: 0.10),
+          );
+          canvas.drawPath(path, stroke);
+
+        case final PointShape point:
+          // A diamond, deliberately unlike a plant's round dot: a post and a
+          // vine must not be confusable at a glance.
+          final r = (6 / viewport.scale).clamp(0.5, 40.0);
+          canvas.drawPath(
+            Path()
+              ..moveTo(point.at.dx, point.at.dy - r)
+              ..lineTo(point.at.dx + r, point.at.dy)
+              ..lineTo(point.at.dx, point.at.dy + r)
+              ..lineTo(point.at.dx - r, point.at.dy)
+              ..close(),
+            Paint()..color = colour,
+          );
       }
-      canvas.drawPath(path, paint);
+    }
+  }
+
+  Path _pathOf(List<Offset> points, {required bool close}) {
+    final path = Path()..moveTo(points.first.dx, points.first.dy);
+    for (var i = 1; i < points.length; i++) {
+      path.lineTo(points[i].dx, points[i].dy);
+    }
+    if (close) path.close();
+    return path;
+  }
+
+  /// The marquee or lasso in progress.
+  ///
+  /// Drawn last, over everything: it is transient feedback about a gesture, not
+  /// part of the vineyard.
+  void _paintSelectionGesture(Canvas canvas) {
+    final width = 1.5 / viewport.scale;
+    final paint = Paint()
+      ..color = _selectionPaint.color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = width;
+
+    final marquee = scene.marquee;
+    if (marquee != null) {
+      canvas.drawRect(
+        marquee,
+        Paint()..color = _selectionPaint.color.withValues(alpha: 0.12),
+      );
+      canvas.drawRect(marquee, paint);
+    }
+
+    if (scene.lasso.length >= 2) {
+      canvas.drawPath(_pathOf(scene.lasso, close: false), paint);
     }
   }
 

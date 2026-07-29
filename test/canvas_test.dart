@@ -1,19 +1,33 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vine_viewer/core/geometry/polyline.dart';
+import 'package:vine_viewer/core/geometry/shapes.dart';
 import 'package:vine_viewer/core/geometry/spatial_index.dart';
 import 'package:vine_viewer/features/canvas/viewport.dart';
 import 'package:vine_viewer/features/canvas/vineyard_canvas.dart';
 import 'package:vine_viewer/features/canvas/vineyard_painter.dart';
 
+/// A drawn object of each kind, for the painter to dispatch on.
+DrawnObject objectOf(String id, Shape shape, {bool container = true}) => (
+  id: id,
+  fieldDefId: 'field_$id',
+  label: id,
+  shape: shape,
+  isContainer: container,
+);
+
 VineyardScene sceneWith(
   List<IndexedPoint> points, {
-  List<Polyline> rows = const [],
+  List<DrawnObject> objects = const [],
+  Rect? marquee,
+  List<Offset> lasso = const [],
 }) {
   return VineyardScene(
     vines: {for (final p in points) p.id: p.position},
     index: SpatialIndex.build(points),
-    rows: rows,
+    objects: objects,
+    marquee: marquee,
+    lasso: lasso,
   );
 }
 
@@ -149,7 +163,7 @@ void main() {
       Offset? tapped;
       await pumpCanvas(
         tester,
-        tool: CanvasTool.placeVine,
+        tool: CanvasTool.placePlant,
         onTap: (p) => tapped = p,
       );
 
@@ -189,7 +203,7 @@ void main() {
       CanvasViewport? viewport;
       await pumpCanvas(
         tester,
-        tool: CanvasTool.placeVine,
+        tool: CanvasTool.placePlant,
         onViewport: (v) => viewport = v,
       );
       final before = viewport!.translation;
@@ -253,6 +267,49 @@ void main() {
           home: Scaffold(
             body: VineyardCanvas(
               scene: sceneWith(points),
+              tool: CanvasTool.select,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('paints all three kinds of object without throwing', (
+      tester,
+    ) async {
+      // The painter dispatches on draw type, so each branch needs exercising:
+      // a line, a filled area, and a point drawn as a diamond.
+      final objects = [
+        objectOf(
+          'row',
+          PolylineShape(Polyline([const Offset(0, 0), const Offset(400, 0)])),
+        ),
+        objectOf(
+          'block',
+          PolygonShape([
+            const Offset(0, 0),
+            const Offset(400, 0),
+            const Offset(400, 400),
+            const Offset(0, 400),
+          ]),
+        ),
+        objectOf('post', const PointShape(Offset(200, 200)), container: false),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: VineyardCanvas(
+              scene: sceneWith(
+                [(id: 'a', position: const Offset(100, 0))],
+                objects: objects,
+                // The transient gesture overlays paint last, over everything.
+                marquee: const Rect.fromLTRB(10, 10, 90, 90),
+                lasso: const [Offset(0, 0), Offset(50, 20), Offset(80, 70)],
+              ),
               tool: CanvasTool.select,
             ),
           ),

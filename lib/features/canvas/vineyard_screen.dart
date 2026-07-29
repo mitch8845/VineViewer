@@ -3,20 +3,24 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/data/label_service.dart';
 import '../../core/geometry/polyline.dart';
-import '../../core/geometry/row_generation.dart';
+import '../../core/geometry/shapes.dart';
+import '../../core/models/enums.dart';
 import '../../core/providers.dart';
-import 'canvas_controller.dart';
 import '../data_entry/vine_inspector.dart';
 import '../schema/field_editor_screen.dart';
+import '../schema/identifier_template_editor.dart';
+import 'canvas_controller.dart';
 import 'frame_stats_overlay.dart';
+import 'tools/new_object_sheet.dart';
+import 'tools/plant_actions_sheet.dart';
+import 'tools/renumber_dialog.dart';
 import 'undo_controls.dart';
 import 'viewport.dart';
 import 'vineyard_canvas.dart';
 import 'vineyard_painter.dart';
 
-/// The map screen: canvas, toolbar, and the row-drawing flow.
+/// The map screen: canvas, toolbar, and the drawing flows.
 class VineyardScreen extends ConsumerStatefulWidget {
   const VineyardScreen({super.key, required this.projectName});
 
@@ -32,6 +36,13 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
   bool _fittedOnce = false;
   bool _showStats = false;
 
+  /// Where a drag started, in layout units.
+  ui.Offset? _dragOrigin;
+
+  /// What the move tool grabbed: a plant id, or an object id.
+  String? _draggingPlant;
+  String? _draggingObject;
+
   /// Finger-sized tap target, converted to layout units so the tolerance stays
   /// constant on screen at any zoom.
   static const _tapRadiusScreenPx = 24.0;
@@ -40,9 +51,10 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
 
   /// Runs a write as one undoable gesture.
   ///
-  /// Every path in this screen that touches the database goes through here.
-  /// The unit of undo is what the user did, not what the DAO did -- planting a
-  /// row is one press of undo even though it writes a row and forty vines.
+  /// Every path in this screen that touches the database goes through here. The
+  /// unit of undo is what the user did, not what the DAO did -- drawing a
+  /// planted row is one press of undo even though it writes an object, forty
+  /// plants and their memberships.
   Future<T?> _gesture<T>(
     String kind,
     String description,
@@ -61,61 +73,111 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
         );
   }
 
+  void _say(String message) {
+    ScaffoldMessenger.of(context)
+      ..removeCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  // ------------------------------------------------------------------- taps
+
   Future<void> _onTap(ui.Offset layoutPoint) async {
-    final tool = ref.read(activeToolProvider);
-    switch (tool) {
+    switch (ref.read(activeToolProvider)) {
       case CanvasTool.select:
         _selectAt(layoutPoint);
-      case CanvasTool.placeVine:
-        await _placeVineAt(layoutPoint);
-      case CanvasTool.insertVine:
-        await _insertVineAt(layoutPoint);
-      case CanvasTool.drawRow:
+      case CanvasTool.lasso:
+        // A tap with the lasso is just a select; nothing was enclosed.
+        _selectAt(layoutPoint);
+      case CanvasTool.placePlant:
+        await _placePlantAt(layoutPoint);
+      case CanvasTool.insertPlant:
+        await _insertPlantAt(layoutPoint);
+      case CanvasTool.drawObject:
         ref
-            .read(pendingRowProvider.notifier)
+            .read(pendingShapeProvider.notifier)
             .update((points) => [...points, layoutPoint]);
       case CanvasTool.move:
         _selectAt(layoutPoint);
     }
   }
 
+  /// Selects the plant under the tap, or failing that the object under it.
   void _selectAt(ui.Offset layoutPoint) {
     final snapshot = ref.read(layoutSnapshotProvider).valueOrNull;
     if (snapshot == null) return;
 
-    final hit = snapshot.index.nearest(
-      layoutPoint,
-      maxDistance: _viewport.screenToLayoutDistance(_tapRadiusScreenPx),
-    );
+    final tolerance = _viewport.screenToLayoutDistance(_tapRadiusScreenPx);
+    final hit = snapshot.index.nearest(layoutPoint, maxDistance: tolerance);
+    if (hit != null) {
+      ref.read(selectionProvider.notifier).state = {hit.id};
+      return;
+    }
 
-    ref.read(selectionProvider.notifier).state = hit == null
-        // Tapping empty ground deselects. Keeping the selection would make it
-        // impossible to clear one without finding something else to tap.
-        ? const {}
-        : {hit.id};
+    // Nothing plant-shaped there. An object is the next most likely target, and
+    // selecting one is how "everything on this row" is expressed.
+    final object = _objectAt(layoutPoint, tolerance, snapshot);
+    if (object != null) {
+      _selectObject(object);
+      return;
+    }
+
+    // Tapping empty ground deselects. Keeping the selection would make it
+    // impossible to clear one without finding something else to tap.
+    ref.read(selectionProvider.notifier).state = const {};
   }
 
-  Future<void> _placeVineAt(ui.Offset layoutPoint) async {
+  DrawnObject? _objectAt(
+    ui.Offset point,
+    double tolerance,
+    LayoutSnapshot snapshot,
+  ) {
+    for (final object in snapshot.objects) {
+      switch (object.shape) {
+        case final PolylineShape line:
+          if (line.path.closestTo(point).distance <= tolerance) return object;
+        case final PolygonShape polygon:
+          if (pointInPolygon(point, polygon.vertices)) return object;
+        case final PointShape p:
+          if ((p.at - point).distance <= tolerance) return object;
+      }
+    }
+    return null;
+  }
+
+  Future<void> _selectObject(DrawnObject object) async {
+    final plants = await ref
+        .read(vinesDaoProvider)
+        .resolveSelection(objectIds: [object.id]);
+
+    if (!mounted) return;
+    if (plants.isEmpty) {
+      _say('${object.label} has no plants on it yet.');
+      return;
+    }
+    ref.read(selectionProvider.notifier).state = plants;
+  }
+
+  Future<void> _placePlantAt(ui.Offset layoutPoint) async {
     final projectId = _projectId;
     if (projectId == null) return;
     await _gesture(
-      'place_vine',
-      'Place vine',
+      'place_plant',
+      'Place plant',
       () => ref
           .read(layoutDaoProvider)
-          .createVine(projectId: projectId, position: layoutPoint),
+          .createPlant(projectId: projectId, position: layoutPoint),
     );
   }
 
-  /// Inserts a vine into an existing row, asking how to renumber.
+  /// Inserts a plant into an existing line, asking how to renumber.
   ///
   /// Plan section 6.3 recommended defaulting to a suffix (`3.12.6a`) so nothing
   /// downstream moved. That is superseded -- plant numbers are integers -- so
-  /// the real choice is between shifting every label after the insertion point
-  /// and reusing a gap left by a vine that was pulled. Only the user knows
+  /// the real choice is between shifting every number after the insertion point
+  /// and reusing a gap left by a plant that was pulled. Only the user knows
   /// whether a printed map is in somebody's pocket, so the app asks and names
   /// the cost.
-  Future<void> _insertVineAt(ui.Offset layoutPoint) async {
+  Future<void> _insertPlantAt(ui.Offset layoutPoint) async {
     final projectId = _projectId;
     final snapshot = ref.read(layoutSnapshotProvider).valueOrNull;
     if (projectId == null || snapshot == null) return;
@@ -125,117 +187,320 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
       maxDistance: _viewport.screenToLayoutDistance(_tapRadiusScreenPx * 3),
     );
     if (neighbour == null) {
-      _say('Tap next to a vine in the row you want to insert into.');
+      _say('Tap next to a plant on the line you want to insert into.');
       return;
     }
 
     final layout = ref.read(layoutDaoProvider);
     final labels = ref.read(labelServiceProvider);
-    final anchor = await layout.vineById(neighbour.id);
-    final rowId = anchor?.rowId;
-    if (anchor == null || rowId == null) {
-      _say('That vine is not on a row, so there is nothing to insert into.');
+    final anchor = await layout.plantById(neighbour.id);
+    final carrierId = anchor?.carrierId;
+    if (anchor == null || carrierId == null) {
+      _say('That plant is not on a line, so there is nothing to insert into.');
       return;
     }
 
-    final anchorLabel = await labels.labelOf(anchor.id);
+    final anchorId = await labels.identifierOf(anchor.id);
     final affected = await labels.countAffectedByShift(
-      rowId: rowId,
+      carrierId: carrierId,
       afterPositionIdx: anchor.positionIdx,
     );
     if (!mounted) return;
 
     final shift = await showDialog<bool>(
       context: context,
-      builder: (context) => _RenumberDialog(
+      builder: (context) => RenumberDialog(
         affected: affected,
-        after: anchorLabel?.text ?? 'the vine you tapped',
+        after: anchorId?.text ?? 'the plant you tapped',
       ),
     );
     if (shift == null || !mounted) return;
 
-    await _gesture(
-      'insert_vine',
-      'Insert vine in row ${anchorLabel?.row ?? ''}'.trimRight(),
-      () async {
-        final vineId = await layout.createVine(
-          projectId: projectId,
-          position: layoutPoint,
-        );
-        await labels.insertAfter(
-          vineId: vineId,
-          rowId: rowId,
-          afterPositionIdx: anchor.positionIdx,
-          shift: shift,
-        );
-        // Put it on the row properly: insertAfter owns the address, snapping owns
-        // the geometry, and a vine with a row must physically be on it.
-        await layout.snapVineToRowKeepingNumber(vineId: vineId, rowId: rowId);
-        return vineId;
-      },
-    );
+    await _gesture('insert_plant', 'Insert plant', () async {
+      final plantId = await layout.createPlant(
+        projectId: projectId,
+        position: layoutPoint,
+      );
+      await labels.insertAfter(
+        vineId: plantId,
+        carrierId: carrierId,
+        afterPositionIdx: anchor.positionIdx,
+        shift: shift,
+      );
+      // insertAfter owns the number; snapping owns the geometry. A plant with a
+      // carrier has to physically be on it.
+      await layout.snapPlantToCarrierKeepingNumber(
+        vineId: plantId,
+        carrierId: carrierId,
+      );
+      return plantId;
+    });
   }
 
-  void _say(String message) {
-    ScaffoldMessenger.of(context)
-      ..removeCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
+  // ------------------------------------------------------------------ drags
+
+  void _onDragStart(ui.Offset layoutPoint) {
+    _dragOrigin = layoutPoint;
+    final tool = ref.read(activeToolProvider);
+    final snapshot = ref.read(layoutSnapshotProvider).valueOrNull;
+
+    switch (tool) {
+      case CanvasTool.select:
+        ref.read(marqueeProvider.notifier).state = ui.Rect.fromPoints(
+          layoutPoint,
+          layoutPoint,
+        );
+      case CanvasTool.lasso:
+        ref.read(lassoProvider.notifier).state = [layoutPoint];
+      case CanvasTool.move:
+        if (snapshot == null) return;
+        final tolerance = _viewport.screenToLayoutDistance(_tapRadiusScreenPx);
+        _draggingPlant = snapshot.index
+            .nearest(layoutPoint, maxDistance: tolerance)
+            ?.id;
+        // Only reach for an object if no plant was grabbed: plants are what the
+        // user is usually aiming at, and they sit on top of the lines.
+        _draggingObject = _draggingPlant != null
+            ? null
+            : _objectAt(layoutPoint, tolerance, snapshot)?.id;
+      case CanvasTool.placePlant:
+      case CanvasTool.insertPlant:
+      case CanvasTool.drawObject:
+        break;
+    }
   }
 
-  /// Turns the drawn points into a numbered, planted row.
-  ///
-  /// One sheet asks everything -- number, which end is plant 1, and how the
-  /// vines are spaced -- and one operation writes it, so the whole row is a
-  /// single press of undo rather than a row and then separately its vines.
-  Future<void> _finishRow() async {
-    final points = ref.read(pendingRowProvider);
+  void _onDragUpdate(ui.Offset layoutPoint) {
+    final origin = _dragOrigin;
+    if (origin == null) return;
+
+    switch (ref.read(activeToolProvider)) {
+      case CanvasTool.select:
+        ref.read(marqueeProvider.notifier).state = ui.Rect.fromPoints(
+          origin,
+          layoutPoint,
+        );
+      case CanvasTool.lasso:
+        ref.read(lassoProvider.notifier).update((p) => [...p, layoutPoint]);
+      case CanvasTool.move:
+      case CanvasTool.placePlant:
+      case CanvasTool.insertPlant:
+      case CanvasTool.drawObject:
+        break;
+    }
+  }
+
+  Future<void> _onDragEnd(ui.Offset layoutPoint) async {
+    final origin = _dragOrigin;
+    _dragOrigin = null;
+    if (origin == null) return;
+
+    final tool = ref.read(activeToolProvider);
+    final snapshot = ref.read(layoutSnapshotProvider).valueOrNull;
+
+    switch (tool) {
+      case CanvasTool.select:
+        final rect = ref.read(marqueeProvider);
+        ref.read(marqueeProvider.notifier).state = null;
+        if (rect == null || snapshot == null) return;
+        // SpatialIndex.inRect is exactly this query and already exists -- it
+        // has only ever been used for viewport culling.
+        ref.read(selectionProvider.notifier).state = {
+          for (final p in snapshot.index.inRect(rect)) p.id,
+        };
+
+      case CanvasTool.lasso:
+        final path = ref.read(lassoProvider);
+        ref.read(lassoProvider.notifier).state = const [];
+        if (path.length < 3 || snapshot == null) return;
+        // Bounds first, then the exact test: point-in-polygon over 3,000 plants
+        // against a 200-point lasso is worth avoiding.
+        final bounds = _boundsOfPath(path);
+        ref.read(selectionProvider.notifier).state = {
+          for (final p in snapshot.index.inRect(bounds))
+            if (pointInPolygon(p.position, path)) p.id,
+        };
+
+      case CanvasTool.move:
+        final plant = _draggingPlant;
+        final object = _draggingObject;
+        _draggingPlant = null;
+        _draggingObject = null;
+
+        final layout = ref.read(layoutDaoProvider);
+        if (plant != null) {
+          // One operation per drag, not per pointer event: dragging a plant
+          // across the map must be one press of undo.
+          await _gesture(
+            'move_plant',
+            'Move plant',
+            () => layout.movePlant(plant, layoutPoint),
+          );
+        } else if (object != null) {
+          await _gesture(
+            'move_object',
+            'Move object',
+            () => layout.moveObject(object, layoutPoint - origin),
+          );
+        }
+
+      case CanvasTool.placePlant:
+      case CanvasTool.insertPlant:
+      case CanvasTool.drawObject:
+        break;
+    }
+  }
+
+  ui.Rect _boundsOfPath(List<ui.Offset> points) {
+    var minX = points.first.dx, maxX = points.first.dx;
+    var minY = points.first.dy, maxY = points.first.dy;
+    for (final p in points) {
+      if (p.dx < minX) minX = p.dx;
+      if (p.dx > maxX) maxX = p.dx;
+      if (p.dy < minY) minY = p.dy;
+      if (p.dy > maxY) maxY = p.dy;
+    }
+    return ui.Rect.fromLTRB(minX, minY, maxX, maxY);
+  }
+
+  // --------------------------------------------------------- drawing objects
+
+  /// Turns the drawn points into a named object, planted if it is a line.
+  Future<void> _finishObject() async {
+    final points = ref.read(pendingShapeProvider);
     final projectId = _projectId;
-    if (projectId == null || points.length < 2) return;
+    final fieldId = ref.read(activeObjectFieldProvider);
+    if (projectId == null || fieldId == null) return;
 
-    final suggested = await _nextRowLabel(projectId);
+    final field = await ref.read(fieldDefsDaoProvider).byId(fieldId);
+    final drawType = field?.drawType;
+    if (field == null || drawType == null) return;
+
+    final shape = switch (drawType) {
+      DrawType.point when points.isNotEmpty => PointShape(points.first),
+      DrawType.polyline when points.length >= 2 => PolylineShape(
+        Polyline(points),
+      ),
+      DrawType.polygon when points.length >= 3 => PolygonShape(points),
+      _ => null,
+    };
+    if (shape == null) {
+      _say(switch (drawType) {
+        DrawType.polygon => 'An area needs at least three points.',
+        DrawType.polyline => 'A line needs at least two points.',
+        DrawType.point => 'Tap once to place it.',
+      });
+      return;
+    }
+
     if (!mounted) return;
-
-    final plan = await showModalBottomSheet<NewRow>(
+    final plan = await showModalBottomSheet<NewObject>(
       context: context,
       isScrollControlled: true,
-      builder: (context) => _NewRowSheet(
-        path: Polyline(points),
-        suggestedNumber: suggested,
-        projectId: projectId,
-        calibration:
-            ref.read(calibrationProvider).valueOrNull ??
-            ScaleCalibration.uncalibrated,
+      builder: (context) => NewObjectSheet(
+        field: field,
+        shape: shape,
+        calibration: ref.read(calibrationProvider).valueOrNull,
       ),
     );
     if (plan == null || !mounted) return;
 
-    ref.read(pendingRowProvider.notifier).state = const [];
+    ref.read(pendingShapeProvider.notifier).state = const [];
 
     final layout = ref.read(layoutDaoProvider);
-    await _gesture('draw_row', 'Draw row ${plan.number}', () async {
-      final rowId = await layout.createRow(
+    await _gesture('draw_object', 'Draw ${field.name} ${plan.label}', () async {
+      final objectId = await layout.createObject(
         projectId: projectId,
-        label: plan.number,
-        path: plan.path,
+        fieldDefId: fieldId,
+        label: plan.label,
+        geometry: plan.shape,
       );
       if (plan.offsets.isNotEmpty) {
-        await layout.placeVinesAlongRow(rowId: rowId, offsets: plan.offsets);
+        await layout.placePlantsAlongCarrier(
+          carrierId: objectId,
+          offsets: plan.offsets,
+        );
       }
-      return rowId;
+      return objectId;
     });
   }
 
-  /// Lowest unused row number **in the row's block**.
-  ///
-  /// Rows are drawn before their block is decided, so this is normally the
-  /// unassigned scope. It used to allocate project-wide, which numbered the
-  /// first row drawn in a second block 26 rather than 1 -- not how the vineyard
-  /// counts, where every block restarts at row 1.
-  Future<String> _nextRowLabel(String projectId, {String? blockId}) async {
-    final number = await ref
-        .read(labelServiceProvider)
-        .nextRowNumber(projectId: projectId, blockId: blockId);
-    return '$number';
+  /// Picks which object field the draw tool creates.
+  Future<void> _chooseObjectField() async {
+    final projectId = _projectId;
+    if (projectId == null) return;
+
+    final fields = await ref
+        .read(fieldDefsDaoProvider)
+        .objectFieldsForProject(projectId);
+    if (!mounted) return;
+
+    if (fields.isEmpty) {
+      // "Want neither, get neither" cuts both ways: with no object fields there
+      // is nothing to draw, and the honest response is to say so and offer the
+      // place that fixes it.
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Nothing to draw yet'),
+          content: const Text(
+            'Rows and blocks are not built in -- you define what this vineyard '
+            'has. Create a field, mark it as something drawn, and pick a '
+            'shape.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Not now'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Set one up'),
+            ),
+          ],
+        ),
+      );
+      if (go == true && mounted) {
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(builder: (_) => const FieldListScreen()),
+        );
+      }
+      return;
+    }
+
+    if (fields.length == 1) {
+      ref.read(activeObjectFieldProvider.notifier).state = fields.first.id;
+      return;
+    }
+
+    final chosen = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final field in fields)
+              ListTile(
+                leading: Icon(switch (field.drawType!) {
+                  DrawType.polyline => Icons.timeline,
+                  DrawType.polygon => Icons.pentagon_outlined,
+                  DrawType.point => Icons.place_outlined,
+                }),
+                title: Text(field.name),
+                subtitle: Text(
+                  field.isContainer
+                      ? 'Plants belong to it'
+                      : 'Nothing to do with the plants',
+                ),
+                onTap: () => Navigator.pop(context, field.id),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (chosen != null) {
+      ref.read(activeObjectFieldProvider.notifier).state = chosen;
+    }
   }
 
   @override
@@ -247,7 +512,8 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     final labels = ref.watch(labelsProvider).valueOrNull ?? const {};
     final showLabels = ref.watch(showLabelsProvider);
     final image = ref.watch(backgroundImageProvider).valueOrNull;
-    final pending = ref.watch(pendingRowProvider);
+    final pending = ref.watch(pendingShapeProvider);
+    final activeField = ref.watch(activeObjectFieldProvider);
 
     // Fit the view once the layout has something in it.
     if (!_fittedOnce && !snapshot.bounds.isEmpty) {
@@ -263,6 +529,15 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
         actions: [
           const UndoControls(),
           IconButton(
+            tooltip: 'Plant ID format',
+            icon: const Icon(Icons.tag),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const IdentifierTemplateEditor(),
+              ),
+            ),
+          ),
+          IconButton(
             tooltip: 'Fields',
             icon: const Icon(Icons.list_alt),
             onPressed: () => Navigator.of(context).push(
@@ -275,7 +550,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             onPressed: () => setState(() => _showStats = !_showStats),
           ),
           IconButton(
-            tooltip: showLabels ? 'Hide labels' : 'Show labels',
+            tooltip: showLabels ? 'Hide IDs' : 'Show IDs',
             icon: Icon(showLabels ? Icons.label : Icons.label_outline),
             onPressed: () =>
                 ref.read(showLabelsProvider.notifier).update((v) => !v),
@@ -294,24 +569,29 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             scene: VineyardScene(
               vines: snapshot.positions,
               index: snapshot.index,
-              rows: [
-                ...snapshot.rows,
-                // The row being drawn, previewed live.
-                if (pending.length >= 2) Polyline(pending),
+              objects: [
+                ...snapshot.objects,
+                // The shape being drawn, previewed live.
+                ?_previewOf(pending, activeField),
               ],
               image: image,
               selection: selection,
               labels: labels,
               showLabels: showLabels,
+              marquee: ref.watch(marqueeProvider),
+              lasso: ref.watch(lassoProvider),
             ),
             tool: tool,
             onTapLayout: _onTap,
+            onDragStart: _onDragStart,
+            onDragUpdate: _onDragUpdate,
+            onDragEnd: _onDragEnd,
             onViewportChanged: (v) => _viewport = v,
           ),
-          if (tool == CanvasTool.drawRow) _drawRowBanner(pending),
+          if (tool == CanvasTool.drawObject) _drawBanner(pending, activeField),
           if (_showStats)
             const Positioned(top: 8, right: 8, child: FrameStatsOverlay()),
-          // Anchored bottom-left, clear of the toolbar, so the selected vine
+          // Anchored bottom-left, clear of the toolbar, so the selected plant
           // stays visible while its values are read or changed -- in the field
           // you are looking at the plant and the screen at the same time.
           if (selection.length == 1)
@@ -320,19 +600,27 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
               bottom: 90,
               child: VineInspector(vineId: selection.first),
             ),
+          if (selection.length > 1)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 90,
+              child: _BulkBar(selection: selection),
+            ),
           Positioned(
             left: 0,
             right: 0,
             bottom: 0,
             child: _Toolbar(
               active: tool,
-              onChanged: (t) {
-                // Abandon a half-drawn row when switching away, rather than
+              onChanged: (t) async {
+                // Abandon a half-drawn shape when switching away, rather than
                 // leaving invisible state that reappears later.
-                if (t != CanvasTool.drawRow) {
-                  ref.read(pendingRowProvider.notifier).state = const [];
+                if (t != CanvasTool.drawObject) {
+                  ref.read(pendingShapeProvider.notifier).state = const [];
                 }
                 ref.read(activeToolProvider.notifier).state = t;
+                if (t == CanvasTool.drawObject) await _chooseObjectField();
               },
             ),
           ),
@@ -341,7 +629,22 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     );
   }
 
-  Widget _drawRowBanner(List<ui.Offset> pending) {
+  /// The in-progress shape, as an object the painter can draw.
+  DrawnObject? _previewOf(List<ui.Offset> points, String? fieldId) {
+    if (fieldId == null || points.isEmpty) return null;
+    final shape = points.length >= 2
+        ? PolylineShape(Polyline(points))
+        : PointShape(points.first);
+    return (
+      id: '__preview',
+      fieldDefId: fieldId,
+      label: '',
+      shape: shape,
+      isContainer: false,
+    );
+  }
+
+  Widget _drawBanner(List<ui.Offset> pending, String? fieldId) {
     return Positioned(
       top: 8,
       left: 8,
@@ -354,25 +657,67 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             children: [
               Expanded(
                 child: Text(
-                  pending.isEmpty
-                      ? 'Tap to place the start of the row.'
-                      : 'Tap to add points. ${pending.length} placed. '
-                            'Rows turn at hard angles, so add a point at each turn.',
+                  fieldId == null
+                      ? 'Pick what you are drawing first.'
+                      : pending.isEmpty
+                      ? 'Tap to place the first point.'
+                      : '${pending.length} placed. Lines and areas turn at hard '
+                            'angles, so add a point at each corner.',
                 ),
               ),
               if (pending.isNotEmpty)
                 TextButton(
                   onPressed: () => ref
-                      .read(pendingRowProvider.notifier)
+                      .read(pendingShapeProvider.notifier)
                       .update((p) => p.sublist(0, p.length - 1)),
                   child: const Text('Undo point'),
                 ),
               FilledButton(
-                onPressed: pending.length >= 2 ? _finishRow : null,
+                onPressed: pending.isEmpty ? null : _finishObject,
                 child: const Text('Done'),
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Actions available on a multi-plant selection.
+class _BulkBar extends ConsumerWidget {
+  const _BulkBar({required this.selection});
+
+  final Set<String> selection;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          children: [
+            Text(
+              '${selection.length} plants',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const Spacer(),
+            TextButton(
+              onPressed: () => showModalBottomSheet<void>(
+                context: context,
+                isScrollControlled: true,
+                builder: (context) => PlantActionsSheet(selection: selection),
+              ),
+              child: const Text('Actions'),
+            ),
+            IconButton(
+              tooltip: 'Clear selection',
+              icon: const Icon(Icons.close),
+              onPressed: () =>
+                  ref.read(selectionProvider.notifier).state = const {},
+            ),
+          ],
         ),
       ),
     );
@@ -387,9 +732,10 @@ class _Toolbar extends StatelessWidget {
 
   static const _tools = [
     (CanvasTool.select, Icons.touch_app, 'Select'),
-    (CanvasTool.placeVine, Icons.add_circle_outline, 'Vine'),
-    (CanvasTool.insertVine, Icons.playlist_add, 'Insert'),
-    (CanvasTool.drawRow, Icons.timeline, 'Row'),
+    (CanvasTool.lasso, Icons.gesture, 'Lasso'),
+    (CanvasTool.placePlant, Icons.add_circle_outline, 'Plant'),
+    (CanvasTool.insertPlant, Icons.playlist_add, 'Insert'),
+    (CanvasTool.drawObject, Icons.timeline, 'Draw'),
     (CanvasTool.move, Icons.open_with, 'Move'),
   ];
 
@@ -411,7 +757,7 @@ class _Toolbar extends StatelessWidget {
                   borderRadius: BorderRadius.circular(12),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
+                      horizontal: 12,
                       vertical: 10,
                     ),
                     child: Column(
@@ -442,297 +788,6 @@ class _Toolbar extends StatelessWidget {
                 ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Asks whether inserting a vine should renumber the rest of the row.
-///
-/// Both options are legitimate and the app cannot tell which is right, so it
-/// names the cost of each instead of picking. The shift count is the whole
-/// point: "this renames 34 vines" is a decision, "labels will change" is a
-/// shrug.
-class _RenumberDialog extends StatelessWidget {
-  const _RenumberDialog({required this.affected, required this.after});
-
-  final int affected;
-  final String after;
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Insert a vine'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Placing a vine after $after.'),
-          const SizedBox(height: 16),
-          Text(
-            affected == 0
-                // Nothing downstream, so the two options do the same thing and
-                // offering a choice would be noise.
-                ? 'It goes on the end of the row, so nothing is renamed.'
-                : 'Shifting renames $affected '
-                      '${affected == 1 ? 'vine' : 'vines'} further along the '
-                      'row. Any printed map showing their old numbers will be '
-                      'out of date.',
-          ),
-          if (affected > 0) ...[
-            const SizedBox(height: 12),
-            const Text(
-              'Filling a gap instead renames nothing, but the new vine takes '
-              'the lowest free number rather than one matching where it sits.',
-              style: TextStyle(fontSize: 12),
-            ),
-          ],
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-        if (affected > 0)
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Fill a gap'),
-          ),
-        FilledButton(
-          onPressed: () => Navigator.pop(context, true),
-          child: Text(affected == 0 ? 'Insert' : 'Shift the rest'),
-        ),
-      ],
-    );
-  }
-}
-
-/// Everything the user decides about a freshly drawn row.
-class NewRow {
-  const NewRow({
-    required this.number,
-    required this.path,
-    required this.offsets,
-  });
-
-  /// The "row" segment of every label on it.
-  final String number;
-
-  /// The shape as it should be stored -- already reversed if the user chose to
-  /// number from the other end, so plant 1 sits at offset zero.
-  final Polyline path;
-
-  /// Arc-length positions for the vines, empty to leave the row unplanted.
-  final List<double> offsets;
-}
-
-/// Asks everything about a new row at once: number, direction, and spacing.
-///
-/// One sheet rather than three prompts, because for the person drawing it these
-/// are one decision. It also means the row and its vines are written by a single
-/// operation, so undo takes the whole thing back instead of leaving an empty row
-/// behind.
-class _NewRowSheet extends ConsumerStatefulWidget {
-  const _NewRowSheet({
-    required this.path,
-    required this.suggestedNumber,
-    required this.projectId,
-    required this.calibration,
-  });
-
-  final Polyline path;
-  final String suggestedNumber;
-  final String projectId;
-  final ScaleCalibration calibration;
-
-  @override
-  ConsumerState<_NewRowSheet> createState() => _NewRowSheetState();
-}
-
-class _NewRowSheetState extends ConsumerState<_NewRowSheet> {
-  late final TextEditingController _number = TextEditingController(
-    text: widget.suggestedNumber,
-  );
-  final _count = TextEditingController(text: '30');
-  final _spacing = TextEditingController(text: '6');
-
-  bool _byCount = true;
-
-  /// False puts plant 1 at the end the user finished drawing on.
-  bool _forward = true;
-
-  String? _numberProblem;
-
-  @override
-  void initState() {
-    super.initState();
-    _number.addListener(_checkNumber);
-    _checkNumber();
-  }
-
-  @override
-  void dispose() {
-    _number.dispose();
-    _count.dispose();
-    _spacing.dispose();
-    super.dispose();
-  }
-
-  /// Validates as the user types rather than on submit.
-  ///
-  /// Worth getting right at the moment of drawing: correcting a row number
-  /// afterwards renames every vine on the row.
-  Future<void> _checkNumber() async {
-    final typed = _number.text;
-    final problem = LabelService.problemWithLabel(typed);
-    if (problem != null) {
-      if (mounted) setState(() => _numberProblem = problem);
-      return;
-    }
-
-    // Rows are drawn before their block is decided, so this checks the
-    // unassigned scope. Assigning the row to a block later re-checks it there.
-    final free = await ref
-        .read(labelServiceProvider)
-        .isRowNumberFree(projectId: widget.projectId, number: typed);
-
-    // The field may have moved on while the query ran.
-    if (!mounted || _number.text != typed) return;
-    setState(() => _numberProblem = free ? null : 'Row $typed already exists.');
-  }
-
-  Polyline get _path => _forward ? widget.path : widget.path.reversed;
-
-  List<double> get _offsets {
-    if (_byCount) {
-      return RowGeneration.byCount(_path, int.tryParse(_count.text) ?? 0);
-    }
-    return RowGeneration.bySpacing(
-      _path,
-      widget.calibration.toPixels(double.tryParse(_spacing.text) ?? 0),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final offsets = _offsets;
-    final unit = widget.calibration.unit;
-
-    return Padding(
-      padding: EdgeInsets.only(
-        left: 20,
-        right: 20,
-        top: 20,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 20,
-      ),
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('New row', style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 4),
-            Text(
-              'Length ${widget.calibration.format(widget.path.length)}',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _number,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(
-                labelText: 'Row number',
-                errorText: _numberProblem,
-                helperText: _numberProblem == null
-                    ? 'Numbers restart in every block'
-                    : null,
-              ),
-            ),
-            const SizedBox(height: 20),
-            Text(
-              'Which end is plant 1',
-              style: Theme.of(context).textTheme.titleSmall,
-            ),
-            const SizedBox(height: 8),
-            SegmentedButton<bool>(
-              segments: const [
-                ButtonSegment(value: true, label: Text('Where I started')),
-                ButtonSegment(value: false, label: Text('Where I finished')),
-              ],
-              selected: {_forward},
-              onSelectionChanged: (s) => setState(() => _forward = s.first),
-            ),
-            const SizedBox(height: 20),
-            SegmentedButton<bool>(
-              segments: const [
-                ButtonSegment(value: true, label: Text('By count')),
-                ButtonSegment(value: false, label: Text('By spacing')),
-              ],
-              selected: {_byCount},
-              onSelectionChanged: (s) => setState(() => _byCount = s.first),
-            ),
-            const SizedBox(height: 16),
-            if (_byCount)
-              TextField(
-                controller: _count,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  labelText: 'Number of vines',
-                  helperText: 'Spread evenly, first and last at the ends',
-                ),
-                onChanged: (_) => setState(() {}),
-              )
-            else
-              TextField(
-                controller: _spacing,
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
-                ),
-                decoration: InputDecoration(
-                  labelText: 'Spacing ($unit)',
-                  helperText: widget.calibration.isCalibrated
-                      ? 'Measured against this project\'s scale'
-                      : 'No scale set for this project, so this is in pixels',
-                ),
-                onChanged: (_) => setState(() {}),
-              ),
-            const SizedBox(height: 16),
-            Text(
-              offsets.isEmpty
-                  ? 'No vines -- the row will be drawn empty'
-                  : 'Will place ${offsets.length} vines, numbered from the '
-                        'end you ${_forward ? 'started' : 'finished'} on',
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-            const SizedBox(height: 20),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Cancel'),
-                ),
-                const SizedBox(width: 8),
-                FilledButton(
-                  // An empty row is legitimate -- draw it now, plant it once you
-                  // have walked it -- so only a bad number blocks creation.
-                  onPressed: _numberProblem != null
-                      ? null
-                      : () => Navigator.pop(
-                          context,
-                          NewRow(
-                            number: _number.text.trim(),
-                            path: _path,
-                            offsets: offsets,
-                          ),
-                        ),
-                  child: const Text('Create'),
-                ),
-              ],
-            ),
-          ],
         ),
       ),
     );

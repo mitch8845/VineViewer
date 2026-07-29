@@ -6,23 +6,30 @@ import 'vineyard_painter.dart';
 
 /// What a single pointer does, decided by the active tool.
 enum CanvasTool {
-  /// Tap selects, drag marquee-selects.
+  /// Tap selects one plant or an object; drag marquee-selects.
   select,
 
-  /// Tap places a vine.
-  placeVine,
+  /// Drag encloses plants in a freehand loop.
+  lasso,
 
-  /// Tap adds a point to the row being drawn.
-  drawRow,
+  /// Tap places a free-standing plant.
+  placePlant,
 
-  /// Tap inserts a vine into the nearest row, between its neighbours.
+  /// Tap inserts a plant into the nearest line, between its neighbours.
   ///
-  /// Distinct from [placeVine] because it renumbers: the app has to ask whether
-  /// to shift every label downstream or reuse a gap, and that question only
-  /// makes sense for a vine going *into* an existing sequence.
-  insertVine,
+  /// Distinct from [placePlant] because it renumbers: the app has to ask
+  /// whether to shift every number downstream or reuse a gap, and that question
+  /// only makes sense for a plant going *into* an existing sequence.
+  insertPlant,
 
-  /// Drag moves the vine under the pointer.
+  /// Tap adds a point to the object being drawn.
+  ///
+  /// Which kind of object comes from `activeObjectFieldProvider`, not from the
+  /// tool: rows, blocks and roads are all drawn the same way and differ only in
+  /// what field they instantiate.
+  drawObject,
+
+  /// Drag moves the plant or object under the pointer.
   move,
 }
 

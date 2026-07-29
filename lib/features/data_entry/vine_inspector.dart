@@ -7,6 +7,7 @@ import '../../core/db/database.dart';
 import '../../core/models/enums.dart';
 import '../../core/models/field_config.dart';
 import '../../core/models/field_value.dart';
+import '../../core/models/identifier_template.dart';
 import '../../core/providers.dart';
 import '../canvas/canvas_controller.dart';
 import '../schema/field_editor_screen.dart';
@@ -24,7 +25,9 @@ class VineInspector extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final fields = ref.watch(fieldDefsProvider).valueOrNull ?? const [];
-    final label = ref.watch(_labelProvider(vineId)).valueOrNull;
+    final identifier = ref.watch(_identifierProvider(vineId)).valueOrNull;
+    final containers =
+        ref.watch(_containersProvider(vineId)).valueOrNull ?? const {};
     final values = ref.watch(_valuesProvider(vineId)).valueOrNull ?? const {};
 
     return Card(
@@ -37,25 +40,28 @@ class VineInspector extends ConsumerWidget {
           children: [
             ListTile(
               title: Text(
-                label?.text ?? '...',
+                identifier?.text ?? '...',
                 style: const TextStyle(
                   fontSize: 22,
                   fontWeight: FontWeight.bold,
                 ),
               ),
+              // Container values are worked out from where the plant sits, so
+              // they are shown rather than offered: the way to change one is to
+              // move the plant or the boundary.
               subtitle: Text(
-                label == null
-                    ? ''
+                containers.isEmpty
+                    ? 'Not inside anything'
                     : [
-                        if (!label.hasBlock) 'no block',
-                        if (!label.hasRow) 'not on a row',
+                        for (final e in containers.entries)
+                          '${e.key} ${e.value}',
                       ].join(' · '),
               ),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   IconButton(
-                    tooltip: 'Label history',
+                    tooltip: 'ID history',
                     icon: const Icon(Icons.history),
                     onPressed: () => showModalBottomSheet<void>(
                       context: context,
@@ -100,13 +106,26 @@ class VineInspector extends ConsumerWidget {
   }
 }
 
-final _labelProvider = FutureProvider.family<VineLabel?, String>((
+final _identifierProvider = FutureProvider.family<PlantIdentifier?, String>((
   ref,
   vineId,
 ) async {
-  // Depend on the layout so a snap or renumber refreshes the label shown.
+  // Depends on the layout so a snap, a renumber, or a boundary edit that
+  // changes containment all refresh what is shown.
   ref.watch(layoutSnapshotProvider);
-  return ref.watch(labelServiceProvider).labelOf(vineId);
+  return ref.watch(labelServiceProvider).identifierOf(vineId);
+});
+
+/// Which containers hold this plant, as field name to object name.
+///
+/// Read-only by nature: these are derived from geometry, so the way to change
+/// one is to move the plant or move the boundary.
+final _containersProvider = FutureProvider.family<Map<String, String>, String>((
+  ref,
+  vineId,
+) async {
+  ref.watch(layoutSnapshotProvider);
+  return ref.watch(labelServiceProvider).containersOf(vineId);
 });
 
 /// The vine's current values, live.
@@ -122,13 +141,14 @@ final _valuesProvider = StreamProvider.family<Map<String, FieldEvent>, String>((
   return ref.watch(fieldEventsDaoProvider).watchCurrentValuesForVine(vineId);
 });
 
-final _historyProvider = FutureProvider.family<List<LabelChange>, String>((
-  ref,
-  vineId,
-) async {
-  ref.watch(layoutSnapshotProvider);
-  return ref.watch(labelServiceProvider).historyOf(vineId);
-});
+final _historyProvider =
+    FutureProvider.family<List<IdentifierChangeRecord>, String>((
+      ref,
+      vineId,
+    ) async {
+      ref.watch(layoutSnapshotProvider);
+      return ref.watch(labelServiceProvider).historyOf(vineId);
+    });
 
 /// Every label this vine has carried.
 ///
@@ -159,10 +179,7 @@ class _LabelHistorySheet extends ConsumerWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Label history',
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
+              Text('ID history', style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(height: 12),
               for (final change in changes)
                 ListTile(
@@ -175,7 +192,7 @@ class _LabelHistorySheet extends ConsumerWidget {
                     size: 18,
                   ),
                   title: Text(
-                    change.label.text,
+                    change.identifier.text,
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
                   subtitle: Text(
@@ -191,7 +208,7 @@ class _LabelHistorySheet extends ConsumerWidget {
                 const Padding(
                   padding: EdgeInsets.only(top: 8),
                   child: Text(
-                    'This vine has never been renumbered.',
+                    'This plant has never been renamed.',
                     style: TextStyle(fontSize: 12),
                   ),
                 ),
