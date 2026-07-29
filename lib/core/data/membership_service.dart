@@ -129,7 +129,14 @@ class MembershipService {
     final plants = [
       for (final plant in await _plantsIn(projectId, null))
         positionOverride.containsKey(plant.id)
-            ? _Plant(plant.id, positionOverride[plant.id]!)
+            // The carrier is carried through: it is what breaks a same-field tie,
+            // and a preview that dropped it would disagree with the reconcile it
+            // is meant to be predicting.
+            ? _Plant(
+                plant.id,
+                positionOverride[plant.id]!,
+                carrierId: plant.carrierId,
+              )
             : plant,
     ];
 
@@ -207,7 +214,7 @@ class MembershipService {
   ) async {
     final rows = await _db
         .customSelect(
-          'SELECT id, x, y FROM plants '
+          'SELECT id, x, y, carrier_id FROM plants '
           'WHERE project_id = ?1 AND deleted_at IS NULL '
           '  AND x IS NOT NULL AND y IS NOT NULL',
           variables: [Variable<String>(projectId)],
@@ -221,6 +228,7 @@ class MembershipService {
           _Plant(
             r.read<String>('id'),
             Offset(r.read<double>('x'), r.read<double>('y')),
+            carrierId: r.readNullable<String>('carrier_id'),
           ),
     ];
   }
@@ -245,7 +253,64 @@ class MembershipService {
         );
       }
     }
-    return wanted;
+
+    return _carrierWins(wanted, plants);
+  }
+
+  /// Resolves a plant held by two container **lines of the same field**.
+  ///
+  /// Normally impossible: two instances of one field may not overlap. But
+  /// splitting a line produces two halves that *touch* at the cut, and touching
+  /// is legal by design -- so a plant sitting on the seam is within tolerance of
+  /// both halves, and its Row value would be decided by whichever object the
+  /// query happened to return last.
+  ///
+  /// **The carrier wins.** A plant snapped to a line is unambiguously on that
+  /// line -- `carrier_id` was written deliberately, not derived -- so when the
+  /// derivation cannot tell two same-field lines apart, the one the plant is
+  /// actually attached to is the answer. Splitting a row now puts the seam plant
+  /// on the half it was assigned to rather than on a coin toss.
+  ///
+  /// Only same-field collisions are touched. A plant in Block 2 *and* on
+  /// Terrace 3 is two different fields and entirely correct.
+  Set<_Key> _carrierWins(Set<_Key> wanted, List<_Plant> plants) {
+    final carriers = {
+      for (final plant in plants)
+        if (plant.carrierId != null) plant.id: plant.carrierId!,
+    };
+    if (carriers.isEmpty) return wanted;
+
+    // Only pairs that actually conflict are worth resolving, and conflicts are
+    // rare enough that finding them first keeps this off the hot path.
+    final counts = <({String plantId, String fieldDefId}), int>{};
+    for (final key in wanted) {
+      final scope = (plantId: key.plantId, fieldDefId: key.fieldDefId);
+      counts[scope] = (counts[scope] ?? 0) + 1;
+    }
+    if (!counts.values.any((n) => n > 1)) return wanted;
+
+    return {
+      for (final key in wanted)
+        if (!_isLosingDuplicate(key, counts, carriers)) key,
+    };
+  }
+
+  bool _isLosingDuplicate(
+    _Key key,
+    Map<({String plantId, String fieldDefId}), int> counts,
+    Map<String, String> carriers,
+  ) {
+    final contested =
+        (counts[(plantId: key.plantId, fieldDefId: key.fieldDefId)] ?? 0) > 1;
+    if (!contested) return false;
+
+    final carrier = carriers[key.plantId];
+    // No carrier to appeal to, so both stay and the last one read wins as
+    // before. Keeping both is honest about the ambiguity rather than dropping a
+    // membership arbitrarily.
+    if (carrier == null) return false;
+
+    return key.objectId != carrier;
   }
 
   /// Membership rows already stored, keyed the same way, mapped to their ids.
@@ -284,9 +349,13 @@ class MembershipService {
 }
 
 class _Plant {
-  const _Plant(this.id, this.at);
+  const _Plant(this.id, this.at, {this.carrierId});
   final String id;
   final Offset at;
+
+  /// The line this plant is snapped to, if any. Carried only so that
+  /// [MembershipService._carrierWins] can break a same-field tie.
+  final String? carrierId;
 }
 
 class _Container {

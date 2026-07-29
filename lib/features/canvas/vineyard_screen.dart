@@ -13,6 +13,7 @@ import '../schema/field_editor_screen.dart';
 import '../schema/identifier_template_editor.dart';
 import 'canvas_controller.dart';
 import 'frame_stats_overlay.dart';
+import 'tools/array_sheet.dart';
 import 'tools/identifier_change_prompt.dart';
 import 'tools/new_object_sheet.dart';
 import 'tools/object_actions_sheet.dart';
@@ -101,13 +102,66 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
       case CanvasTool.insertPlant:
         await _insertPlantAt(layoutPoint);
       case CanvasTool.drawObject:
+      case CanvasTool.array:
+      case CanvasTool.pointArray:
+        // All three collect points the same way and differ only in what Done
+        // does, so they share the pending-shape state wholesale.
         ref
             .read(pendingShapeProvider.notifier)
             .update((points) => [...points, layoutPoint]);
+      case CanvasTool.split:
+        await _splitAt(layoutPoint);
       case CanvasTool.move:
       case CanvasTool.reshape:
         _selectAt(layoutPoint);
     }
+  }
+
+  /// Cuts the line under the tap at that point.
+  Future<void> _splitAt(ui.Offset layoutPoint) async {
+    final snapshot = ref.read(layoutSnapshotProvider).valueOrNull;
+    if (snapshot == null) return;
+
+    final tolerance = _viewport.screenToLayoutDistance(_tapRadiusScreenPx);
+    final object = _objectAt(layoutPoint, tolerance, snapshot);
+    final shape = object?.shape;
+    if (object == null || shape is! PolylineShape) {
+      _say('Tap the line you want to cut, at the point you want to cut it.');
+      return;
+    }
+
+    final at = shape.path.closestTo(layoutPoint);
+    if (shape.path.splitAt(at.offset) == null) {
+      _say('That is too close to the end -- there would be nothing to split.');
+      return;
+    }
+
+    final field = await ref.read(fieldDefsDaoProvider).byId(object.fieldDefId);
+    if (field == null || !mounted) return;
+
+    final label = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => SplitSheet(
+        objectId: object.id,
+        label: object.label,
+        fieldName: field.name,
+        atOffset: at.offset,
+      ),
+    );
+    if (label == null || !mounted) return;
+
+    await _gesture(
+      'split_object',
+      'Split ${field.name} ${object.label}',
+      () => ref
+          .read(layoutDaoProvider)
+          .splitCarrier(
+            objectId: object.id,
+            atOffset: at.offset,
+            newLabel: label,
+          ),
+    );
   }
 
   /// Selects the plant under the tap, or failing that the object under it.
@@ -338,6 +392,9 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
       case CanvasTool.placePlant:
       case CanvasTool.insertPlant:
       case CanvasTool.drawObject:
+      case CanvasTool.array:
+      case CanvasTool.pointArray:
+      case CanvasTool.split:
         break;
     }
   }
@@ -372,6 +429,9 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
       case CanvasTool.placePlant:
       case CanvasTool.insertPlant:
       case CanvasTool.drawObject:
+      case CanvasTool.array:
+      case CanvasTool.pointArray:
+      case CanvasTool.split:
         break;
     }
   }
@@ -431,6 +491,9 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
       case CanvasTool.placePlant:
       case CanvasTool.insertPlant:
       case CanvasTool.drawObject:
+      case CanvasTool.array:
+      case CanvasTool.pointArray:
+      case CanvasTool.split:
         break;
     }
   }
@@ -673,14 +736,137 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     });
   }
 
-  /// Picks which object field the draw tool creates.
-  Future<void> _chooseObjectField() async {
+  /// Turns the drawn line into a parallel run of independent objects.
+  ///
+  /// Each line is written as an ordinary, unrelated object -- no parent link, no
+  /// re-flow -- so dragging one endpoint later leaves the rest alone. All of them
+  /// go in under **one** operation, because "make me 24 rows" is one thing the
+  /// user did and should be one press of undo.
+  Future<void> _finishArray() async {
+    final points = ref.read(pendingShapeProvider);
+    final projectId = _projectId;
+    final fieldId = ref.read(activeObjectFieldProvider);
+    if (projectId == null || fieldId == null) return;
+
+    if (points.length < 2) {
+      _say('Draw the first line, then say how many more you want.');
+      return;
+    }
+
+    final field = await ref.read(fieldDefsDaoProvider).byId(fieldId);
+    if (field == null || field.drawType != DrawType.polyline) {
+      _say('A run only makes sense for lines.');
+      return;
+    }
+    if (!mounted) return;
+
+    final plan = await showModalBottomSheet<ArrayPlan>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => ArraySheet(
+        field: field,
+        seed: Polyline(points),
+        calibration: ref.read(calibrationProvider).valueOrNull,
+      ),
+    );
+    if (plan == null || !mounted) return;
+
+    ref.read(pendingShapeProvider.notifier).state = const [];
+
+    final layout = ref.read(layoutDaoProvider);
+    final labels = ref.read(labelServiceProvider);
+    await _gesture(
+      'array_objects',
+      'Create ${plan.lines.length} ${field.name.toLowerCase()}s',
+      () async {
+        // Labels resolved one at a time inside the operation, so each is free
+        // against the ones just written rather than against a stale snapshot.
+        for (final line in plan.lines) {
+          final label = await labels.nextObjectLabel(fieldId);
+          final objectId = await layout.createObject(
+            projectId: projectId,
+            fieldDefId: fieldId,
+            label: '$label',
+            geometry: PolylineShape(line),
+          );
+          if (plan.offsets.isNotEmpty) {
+            await layout.placePlantsAlongCarrier(
+              carrierId: objectId,
+              offsets: plan.offsets,
+            );
+          }
+        }
+      },
+    );
+  }
+
+  /// Places evenly spaced instances along a guide the user drew for the purpose.
+  ///
+  /// **The guide is never persisted.** It is a construction aid, and it is gone
+  /// the moment this returns -- sometimes the line you want to measure against is
+  /// not a thing the vineyard contains.
+  Future<void> _finishPointArray() async {
+    final points = ref.read(pendingShapeProvider);
     final projectId = _projectId;
     if (projectId == null) return;
+
+    if (points.length < 2) {
+      _say('Draw a guide line for them to sit along.');
+      return;
+    }
 
     final fields = await ref
         .read(fieldDefsDaoProvider)
         .objectFieldsForProject(projectId);
+    if (!mounted) return;
+
+    final guide = Polyline(points);
+    final plan = await showModalBottomSheet<PointArrayPlan>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => PointArraySheet(
+        guide: guide,
+        pointFields: [
+          for (final f in fields)
+            if (f.drawType == DrawType.point) f,
+        ],
+        guideIsThrowaway: true,
+        calibration: ref.read(calibrationProvider).valueOrNull,
+      ),
+    );
+    if (plan == null || !mounted) return;
+
+    // Cleared whether or not anything was created: the guide's whole contract is
+    // that it does not outlive the gesture.
+    ref.read(pendingShapeProvider.notifier).state = const [];
+
+    await writePointArray(
+      ref,
+      projectId: projectId,
+      guide: guide,
+      plan: plan,
+      // No carrier: the guide is about to stop existing, so there would be
+      // nothing for one to point at.
+      carrierId: null,
+    );
+  }
+
+  /// Picks which object field the draw tool creates.
+  ///
+  /// [linesOnly] narrows the list for the array tool: a run of parallel copies
+  /// only means anything for a line, and offering a polygon there would be
+  /// offering something the tool then has to refuse.
+  Future<void> _chooseObjectField({bool linesOnly = false}) async {
+    final projectId = _projectId;
+    if (projectId == null) return;
+
+    final all = await ref
+        .read(fieldDefsDaoProvider)
+        .objectFieldsForProject(projectId);
+    final fields = [
+      for (final f in all)
+        if (!linesOnly || f.drawType == DrawType.polyline) f,
+    ];
     if (!mounted) return;
 
     if (fields.isEmpty) {
@@ -690,11 +876,17 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
       final go = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('Nothing to draw yet'),
-          content: const Text(
-            'Rows and blocks are not built in -- you define what this vineyard '
-            'has. Create a field, mark it as something drawn, and pick a '
-            'shape.',
+          title: Text(
+            linesOnly ? 'Nothing line-shaped to copy' : 'Nothing to draw yet',
+          ),
+          content: Text(
+            linesOnly
+                ? 'A run of parallel copies only means anything for a line. '
+                      'Create a field, mark it as something drawn, and pick '
+                      'the line shape.'
+                : 'Rows and blocks are not built in -- you define what this '
+                      'vineyard has. Create a field, mark it as something '
+                      'drawn, and pick a shape.',
           ),
           actions: [
             TextButton(
@@ -864,7 +1056,15 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             onDragEnd: _onDragEnd,
             onViewportChanged: (v) => _viewport = v,
           ),
-          if (tool == CanvasTool.drawObject) _drawBanner(pending, activeField),
+          if (tool == CanvasTool.drawObject ||
+              tool == CanvasTool.array ||
+              tool == CanvasTool.pointArray)
+            _drawBanner(tool, pending, activeField),
+          if (tool == CanvasTool.split)
+            _hint(
+              'Tap a line where you want it cut. The near half keeps its name; '
+              'you name the far half.',
+            ),
           if (tool == CanvasTool.reshape)
             _hint(
               draft == null
@@ -912,7 +1112,9 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
               onChanged: (t) async {
                 // Abandon half-finished gesture state when switching away,
                 // rather than leaving something invisible that reappears later.
-                if (t != CanvasTool.drawObject) {
+                if (t != CanvasTool.drawObject &&
+                    t != CanvasTool.array &&
+                    t != CanvasTool.pointArray) {
                   ref.read(pendingShapeProvider.notifier).state = const [];
                 }
                 if (t != CanvasTool.reshape) {
@@ -921,7 +1123,13 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                   _shapeBeforeReshape = null;
                 }
                 ref.read(activeToolProvider.notifier).state = t;
-                if (t == CanvasTool.drawObject) await _chooseObjectField();
+                // The point array asks in its own sheet, because Plant belongs
+                // in that list and Plant is not an object field.
+                if (t == CanvasTool.drawObject) {
+                  await _chooseObjectField();
+                } else if (t == CanvasTool.array) {
+                  await _chooseObjectField(linesOnly: true);
+                }
               },
             ),
           ),
@@ -961,7 +1169,32 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     );
   }
 
-  Widget _drawBanner(List<ui.Offset> pending, String? fieldId) {
+  /// The banner for the three point-collecting tools.
+  ///
+  /// One widget for all three because the gesture is identical -- tap out a
+  /// shape, undo a point, press Done -- and only the wording and what Done calls
+  /// differ.
+  Widget _drawBanner(
+    CanvasTool tool,
+    List<ui.Offset> pending,
+    String? fieldId,
+  ) {
+    // Only the point array works without a chosen field: it asks in its own
+    // sheet, since Plant belongs in that list and Plant is not an object field.
+    final needsField = tool != CanvasTool.pointArray;
+
+    final message = needsField && fieldId == null
+        ? 'Pick what you are drawing first.'
+        : pending.isEmpty
+        ? switch (tool) {
+            CanvasTool.pointArray =>
+              'Draw a guide line for them to sit along. It is not saved.',
+            CanvasTool.array => 'Draw the first line of the run.',
+            _ => 'Tap to place the first point.',
+          }
+        : '${pending.length} placed. Lines and areas turn at hard angles, so '
+              'add a point at each corner.';
+
     return Positioned(
       top: 8,
       left: 8,
@@ -972,16 +1205,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
           padding: const EdgeInsets.all(12),
           child: Row(
             children: [
-              Expanded(
-                child: Text(
-                  fieldId == null
-                      ? 'Pick what you are drawing first.'
-                      : pending.isEmpty
-                      ? 'Tap to place the first point.'
-                      : '${pending.length} placed. Lines and areas turn at hard '
-                            'angles, so add a point at each corner.',
-                ),
-              ),
+              Expanded(child: Text(message)),
               if (pending.isNotEmpty)
                 TextButton(
                   onPressed: () => ref
@@ -990,7 +1214,13 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                   child: const Text('Undo point'),
                 ),
               FilledButton(
-                onPressed: pending.isEmpty ? null : _finishObject,
+                onPressed: pending.isEmpty
+                    ? null
+                    : switch (tool) {
+                        CanvasTool.array => _finishArray,
+                        CanvasTool.pointArray => _finishPointArray,
+                        _ => _finishObject,
+                      },
                 child: const Text('Done'),
               ),
             ],
@@ -1126,8 +1356,11 @@ class _Toolbar extends StatelessWidget {
     (CanvasTool.placePlant, Icons.add_circle_outline, 'Plant'),
     (CanvasTool.insertPlant, Icons.playlist_add, 'Insert'),
     (CanvasTool.drawObject, Icons.timeline, 'Draw'),
+    (CanvasTool.array, Icons.dns_outlined, 'Run'),
+    (CanvasTool.pointArray, Icons.more_horiz, 'Space'),
     (CanvasTool.move, Icons.open_with, 'Move'),
     (CanvasTool.reshape, Icons.transform, 'Reshape'),
+    (CanvasTool.split, Icons.content_cut, 'Split'),
   ];
 
   @override
@@ -1137,47 +1370,53 @@ class _Toolbar extends StatelessWidget {
         margin: const EdgeInsets.all(12),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              for (final (tool, icon, label) in _tools)
-                // Large targets: this gets used outdoors, possibly with gloves,
-                // and a mis-tap in a drawing tool creates data.
-                InkWell(
-                  onTap: () => onChanged(tool),
-                  borderRadius: BorderRadius.circular(12),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 10,
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          icon,
-                          color: tool == active
-                              ? Theme.of(context).colorScheme.primary
-                              : null,
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          label,
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: tool == active
-                                ? FontWeight.bold
-                                : FontWeight.normal,
+          // Scrollable rather than squeezed. Ten tools fit across the Fire Max
+          // 11 in landscape and do not in portrait, and shrinking the targets to
+          // make them fit would be the wrong trade outdoors.
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                for (final (tool, icon, label) in _tools)
+                  // Large targets: this gets used outdoors, possibly with gloves,
+                  // and a mis-tap in a drawing tool creates data.
+                  InkWell(
+                    onTap: () => onChanged(tool),
+                    borderRadius: BorderRadius.circular(12),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            icon,
                             color: tool == active
                                 ? Theme.of(context).colorScheme.primary
                                 : null,
                           ),
-                        ),
-                      ],
+                          const SizedBox(height: 2),
+                          Text(
+                            label,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: tool == active
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                              color: tool == active
+                                  ? Theme.of(context).colorScheme.primary
+                                  : null,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

@@ -795,6 +795,381 @@ class LayoutDao {
     return id;
   }
 
+  // ------------------------------------------------------- splitting, merging
+  //
+  // **Neither tool touches numbering, and that is what makes them buildable.**
+  //
+  // Both were dropped from an earlier plan because "which half keeps the
+  // sequence" and "which direction wins on merge" had no good answer. They came
+  // back once numbering became a separate tool: split and merge move plants
+  // between carriers and leave every `position_idx` exactly as it was. If the
+  // result reads wrong, the numbering tool fixes it. Since the tools make no
+  // numbering decision, there is no wrong answer to embed in them.
+  //
+  // What they must still refuse is a *duplicate identifier*, which merging can
+  // genuinely produce -- two rows each starting at plant 1 become one row with
+  // two plant 1s. That is not a numbering decision, it is the one invariant
+  // nothing is allowed to break.
+
+  /// Cuts a carrier in two at [atOffset] along its path.
+  ///
+  /// The original keeps its id, its label and the near half. The far half becomes
+  /// a new object of the same field called [newLabel], and the plants beyond the
+  /// cut move onto it with their offsets rebased -- **keeping their numbers**.
+  ///
+  /// Returns the new object's id, or null if the cut fell at or past an end,
+  /// where there is nothing to split.
+  Future<String?> splitCarrier({
+    required String objectId,
+    required double atOffset,
+    required String newLabel,
+    DateTime? now,
+  }) async {
+    final object = await objectById(objectId);
+    final path = await carrierPathOf(objectId);
+    if (object == null || path == null) return null;
+
+    final halves = path.splitAt(atOffset);
+    if (halves == null) return null;
+
+    final timestamp = now ?? DateTime.now();
+    final newId = _uuid.v4();
+
+    await _db.transaction(() async {
+      await _db
+          .into(_db.mapObjects)
+          .insert(
+            MapObjectsCompanion.insert(
+              id: newId,
+              projectId: object.projectId,
+              fieldDefId: object.fieldDefId,
+              label: newLabel.trim(),
+              geometry: Value(PolylineShape(halves.after).toJson()),
+              sortOrder: Value(object.sortOrder),
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            ),
+          );
+
+      // The far plants move **before** the original is shortened. The other
+      // order would clamp them to the new end of the near half first, losing the
+      // offsets this needs to rebase.
+      final plants =
+          await (_db.select(_db.plants)..where(
+                (v) => v.carrierId.equals(objectId) & v.deletedAt.isNull(),
+              ))
+              .get();
+
+      for (final plant in plants) {
+        final offset = plant.pathOffset;
+        // A plant with no offset cannot be assigned to a half by arc length, so
+        // it stays where it is on the near half and keeps its carrier.
+        if (offset == null || offset <= atOffset) continue;
+
+        final rebased = offset - atOffset;
+        final point = halves.after.pointAt(rebased);
+        await (_db.update(
+          _db.plants,
+        )..where((v) => v.id.equals(plant.id))).write(
+          PlantsCompanion(
+            carrierId: Value(newId),
+            pathOffset: Value(rebased),
+            x: Value(point.dx),
+            y: Value(point.dy),
+            updatedAt: Value(timestamp),
+          ),
+        );
+      }
+
+      await (_db.update(
+        _db.mapObjects,
+      )..where((o) => o.id.equals(objectId))).write(
+        MapObjectsCompanion(
+          geometry: Value(PolylineShape(halves.before).toJson()),
+          updatedAt: Value(timestamp),
+        ),
+      );
+
+      // Project-wide: the plants that moved may have left one container and the
+      // two halves now cover ground the whole line used to.
+      await _memberships.reconcile(projectId: object.projectId, now: timestamp);
+    });
+
+    return newId;
+  }
+
+  /// Lines this one could be merged with, nearest end first.
+  ///
+  /// Offered as a list rather than a second tap on the canvas. Picking the other
+  /// half of a split means hitting a line whose near end is *by definition*
+  /// touching the one already selected, and two overlapping hit targets is a
+  /// coin toss.
+  Future<List<({String objectId, String label, double gap})>>
+  mergeCandidatesFor(String objectId) async {
+    final object = await objectById(objectId);
+    final path = await carrierPathOf(objectId);
+    if (object == null || path == null) return const [];
+
+    final rows =
+        await (_db.select(_db.mapObjects)..where(
+              (o) =>
+                  o.fieldDefId.equals(object.fieldDefId) &
+                  o.deletedAt.isNull() &
+                  o.id.equals(objectId).not(),
+            ))
+            .get();
+
+    final candidates = <({String objectId, String label, double gap})>[];
+    for (final other in rows) {
+      final otherPath = Polyline.tryParse(other.geometry);
+      if (otherPath == null) continue;
+
+      final gap = [
+        (path.points.last - otherPath.points.first).distance,
+        (path.points.last - otherPath.points.last).distance,
+        (path.points.first - otherPath.points.first).distance,
+        (path.points.first - otherPath.points.last).distance,
+      ].reduce((a, b) => a < b ? a : b);
+
+      candidates.add((objectId: other.id, label: other.label, gap: gap));
+    }
+
+    candidates.sort((a, b) => a.gap.compareTo(b.gap));
+    return candidates;
+  }
+
+  /// How a merge of two carriers would come out, without writing anything.
+  ///
+  /// Returns the joined path and where every affected plant would land, which is
+  /// everything the caller needs to check overlap, count the renames, and refuse
+  /// a collision.
+  Future<MergePlan?> planMerge({
+    required String intoObjectId,
+    required String fromObjectId,
+  }) async {
+    if (intoObjectId == fromObjectId) return null;
+
+    final into = await objectById(intoObjectId);
+    final from = await objectById(fromObjectId);
+    if (into == null || from == null) return null;
+    // Same field only. Joining a Row to a Terrace would produce an object that
+    // is an instance of one field and shaped like the union of two different
+    // kinds of thing.
+    if (into.fieldDefId != from.fieldDefId) return null;
+
+    final intoPath = await carrierPathOf(intoObjectId);
+    final fromPath = await carrierPathOf(fromObjectId);
+    if (intoPath == null || fromPath == null) return null;
+
+    final join = intoPath.joinedWith(fromPath);
+
+    /// Rebases one carrier's plants onto the merged path.
+    Future<Map<String, double>> offsetsFor(
+      String carrierId,
+      double sourceLength,
+      bool reversed,
+      double base,
+    ) async {
+      final plants =
+          await (_db.select(_db.plants)..where(
+                (v) => v.carrierId.equals(carrierId) & v.deletedAt.isNull(),
+              ))
+              .get();
+      return {
+        for (final plant in plants)
+          plant.id:
+              base +
+              (reversed
+                  ? sourceLength - (plant.pathOffset ?? 0)
+                  : (plant.pathOffset ?? 0)),
+      };
+    }
+
+    final offsets = <String, double>{
+      ...await offsetsFor(intoObjectId, intoPath.length, join.firstReversed, 0),
+      ...await offsetsFor(
+        fromObjectId,
+        fromPath.length,
+        join.secondReversed,
+        join.joinOffset,
+      ),
+    };
+
+    return MergePlan(
+      intoObjectId: intoObjectId,
+      fromObjectId: fromObjectId,
+      shape: PolylineShape(join.path),
+      offsets: offsets,
+      positions: {
+        for (final e in offsets.entries) e.key: join.path.pointAt(e.value),
+      },
+      movedPlantCount:
+          offsets.length - (await plantedOffsetsOn(intoObjectId)).length,
+    );
+  }
+
+  /// Writes a merge planned by [planMerge].
+  ///
+  /// The `from` object is soft-deleted and its plants move onto `into` with
+  /// rebased offsets. Numbers are untouched unless [renumberAlongPath] is set,
+  /// which is offered only as an explicit choice by the caller when a plain merge
+  /// would collide -- the tool still makes no numbering decision of its own.
+  Future<void> applyMerge(
+    MergePlan plan, {
+    bool renumberAlongPath = false,
+    DateTime? now,
+  }) async {
+    final into = await objectById(plan.intoObjectId);
+    if (into == null) return;
+    final timestamp = now ?? DateTime.now();
+
+    await _db.transaction(() async {
+      await (_db.update(
+        _db.mapObjects,
+      )..where((o) => o.id.equals(plan.intoObjectId))).write(
+        MapObjectsCompanion(
+          geometry: Value(plan.shape.toJson()),
+          updatedAt: Value(timestamp),
+        ),
+      );
+
+      // Numbering, when asked for, follows the merged path rather than screen
+      // position: an elbow row runs both across and down, and any x/y ordering
+      // would number it wrongly at the corner.
+      final numbers = <String, int>{};
+      if (renumberAlongPath) {
+        final ordered = plan.offsets.entries.toList()
+          ..sort((a, b) {
+            final byOffset = a.value.compareTo(b.value);
+            // Ties broken by id, so the same merge always numbers the same way.
+            return byOffset != 0 ? byOffset : a.key.compareTo(b.key);
+          });
+        for (var i = 0; i < ordered.length; i++) {
+          numbers[ordered[i].key] = i + 1;
+        }
+      }
+
+      for (final entry in plan.offsets.entries) {
+        final point = plan.positions[entry.key]!;
+        await (_db.update(
+          _db.plants,
+        )..where((v) => v.id.equals(entry.key))).write(
+          PlantsCompanion(
+            carrierId: Value(plan.intoObjectId),
+            pathOffset: Value(entry.value),
+            x: Value(point.dx),
+            y: Value(point.dy),
+            positionIdx: numbers.containsKey(entry.key)
+                ? Value(numbers[entry.key]!)
+                : const Value.absent(),
+            updatedAt: Value(timestamp),
+          ),
+        );
+      }
+
+      await (_db.update(
+        _db.mapObjects,
+      )..where((o) => o.id.equals(plan.fromObjectId))).write(
+        MapObjectsCompanion(
+          deletedAt: Value(timestamp),
+          updatedAt: Value(timestamp),
+        ),
+      );
+
+      await _memberships.reconcile(projectId: into.projectId, now: timestamp);
+    });
+  }
+
+  /// What splitting at [atOffset] into a half called [newLabel] would do.
+  ///
+  /// A split renames by way of the new half's label: every plant beyond the cut
+  /// takes it, and **not one of them moves on screen**.
+  ///
+  /// Deliberately not built on [previewGeometryChange], which would be subtly
+  /// wrong here. That models a plain reshape, where carried plants slide along
+  /// the new path -- so plants past the cut would be clamped back onto the end of
+  /// the shortened half, stay within tolerance of it, and the preview would
+  /// report that nothing changed. A split hands them to the other half instead,
+  /// and they keep their positions.
+  Future<IdentifierChange> previewSplit({
+    required String objectId,
+    required double atOffset,
+    required String newLabel,
+  }) async {
+    final object = await objectById(objectId);
+    final path = await carrierPathOf(objectId);
+    if (object == null || path == null) {
+      return const IdentifierChange(changed: 0, duplicates: []);
+    }
+
+    final halves = path.splitAt(atOffset);
+    if (halves == null) {
+      return const IdentifierChange(changed: 0, duplicates: []);
+    }
+
+    final containerValues = await _memberships.previewContainerValues(
+      projectId: object.projectId,
+      geometryOverride: {objectId: PolylineShape(halves.before)},
+    );
+
+    // The new half has no row in the database yet, so its contribution has to be
+    // stated rather than derived. Only if the field is a container: splitting a
+    // road puts a value on nobody.
+    final field = await (_db.select(
+      _db.fieldDefs,
+    )..where((f) => f.id.equals(object.fieldDefId))).getSingleOrNull();
+
+    if (field?.isContainer ?? false) {
+      for (final plant in await plantsBeyond(objectId, atOffset)) {
+        (containerValues[plant] ??= {})[object.fieldDefId] = newLabel.trim();
+      }
+    }
+
+    return LabelService.compare(
+      await _labels.identifiersForProject(object.projectId),
+      LabelService.render(
+        await _labels.dataFor(
+          object.projectId,
+          containerValues: containerValues,
+        ),
+        await _labels.templateFor(object.projectId),
+      ),
+    );
+  }
+
+  /// Plants on a carrier lying past [atOffset] -- the ones a split hands over.
+  Future<Set<String>> plantsBeyond(String carrierId, double atOffset) async {
+    final rows = await _db
+        .customSelect(
+          'SELECT id FROM plants '
+          'WHERE carrier_id = ?1 AND deleted_at IS NULL '
+          '  AND path_offset IS NOT NULL AND path_offset > ?2',
+          variables: [Variable<String>(carrierId), Variable<double>(atOffset)],
+          readsFrom: {_db.plants},
+        )
+        .get();
+    return {for (final r in rows) r.read<String>('id')};
+  }
+
+  /// What a merge would do to identifiers.
+  Future<IdentifierChange> previewMerge(MergePlan plan) async {
+    final into = await objectById(plan.intoObjectId);
+    if (into == null) {
+      return const IdentifierChange(changed: 0, duplicates: []);
+    }
+
+    return previewLayoutChange(
+      projectId: into.projectId,
+      geometry: {
+        plan.intoObjectId: plan.shape,
+        // Gone, so it contributes nothing -- which is how the `from` label
+        // disappearing from its plants' identifiers gets counted.
+        plan.fromObjectId: null,
+      },
+      positions: plan.positions,
+    );
+  }
+
   /// Every plant in a project, for the canvas to index and paint.
   Future<List<Plant>> plantsInProject(String projectId) {
     return (_db.select(_db.plants)
@@ -821,6 +1196,42 @@ class LayoutDao {
     if (plant == null) throw StateError('Plant $plantId does not exist.');
     return plant;
   }
+}
+
+/// A merge worked out but not yet written.
+///
+/// Separate from the write so the caller can check overlap, count the renames and
+/// refuse a collision using exactly the numbers the write will produce. Computing
+/// it twice -- once to ask and once to do -- is how a prompt ends up describing
+/// something other than what happens.
+class MergePlan {
+  const MergePlan({
+    required this.intoObjectId,
+    required this.fromObjectId,
+    required this.shape,
+    required this.offsets,
+    required this.positions,
+    required this.movedPlantCount,
+  });
+
+  final String intoObjectId;
+
+  /// Soft-deleted by the merge. Its plants move onto [intoObjectId].
+  final String fromObjectId;
+
+  /// The joined path.
+  final PolylineShape shape;
+
+  /// plant id -> arc-length offset along [shape]. Covers **both** carriers'
+  /// plants: reversing either half to make the ends meet invalidates its
+  /// offsets, so the surviving object's plants may move too.
+  final Map<String, double> offsets;
+
+  /// plant id -> where it ends up, derived from [offsets].
+  final Map<String, Offset> positions;
+
+  /// How many plants change carrier, for the confirmation to name.
+  final int movedPlantCount;
 }
 
 /// How a plant leaves active service, per plan section 6.4.

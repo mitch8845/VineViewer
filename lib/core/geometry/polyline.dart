@@ -130,6 +130,81 @@ class Polyline {
   /// one read would eventually forget.
   Polyline get reversed => Polyline(points.reversed.toList());
 
+  /// The path cut in two at [offset].
+  ///
+  /// Returns null when the cut would leave a piece with fewer than two points --
+  /// a cut at or past either end. That is a refusal rather than a clamp: a
+  /// "split" that produced one line and one nothing would be a rename with extra
+  /// steps, and the caller can say so.
+  ///
+  /// The two halves **share the cut point exactly**, so they touch without
+  /// crossing -- which is legal by design (see `segmentsProperlyCross`).
+  ({Polyline before, Polyline after})? splitAt(double offset) {
+    if (!offset.isFinite || offset <= 0 || offset >= length) return null;
+
+    final i = _segmentIndexFor(offset);
+    final cut = pointAt(offset);
+
+    // A cut landing exactly on an existing vertex must not duplicate it: the
+    // stored JSON would gain a zero-length segment that survives every future
+    // round trip.
+    final before = <Offset>[
+      ...points.sublist(0, i + 1),
+      if (points[i] != cut) cut,
+    ];
+    final after = <Offset>[
+      if (points[i + 1] != cut) cut,
+      ...points.sublist(i + 1),
+    ];
+
+    if (before.length < 2 || after.length < 2) return null;
+    return (before: Polyline(before), after: Polyline(after));
+  }
+
+  /// This path joined to [other] at whichever pair of ends is closest.
+  ///
+  /// Merging two lines drawn in whatever direction they happened to be drawn is
+  /// four possible joins, and the user should not have to think about which.
+  /// Nearest-endpoints picks the one they meant.
+  ///
+  /// The flags matter to the caller far more than the path does: reversing a
+  /// half invalidates every arc-length offset on it, so plants have to be
+  /// remapped, and only the caller knows which plants those are.
+  ({Polyline path, bool firstReversed, bool secondReversed, double joinOffset})
+  joinedWith(Polyline other) {
+    final aStart = points.first, aEnd = points.last;
+    final bStart = other.points.first, bEnd = other.points.last;
+
+    // (reverse a?, reverse b?) for each of the four ways two lines can meet.
+    final options = <({bool a, bool b, double gap})>[
+      (a: false, b: false, gap: (aEnd - bStart).distance),
+      (a: false, b: true, gap: (aEnd - bEnd).distance),
+      (a: true, b: false, gap: (aStart - bStart).distance),
+      (a: true, b: true, gap: (aStart - bEnd).distance),
+    ]..sort((x, y) => x.gap.compareTo(y.gap));
+    final best = options.first;
+
+    final first = best.a ? reversed : this;
+    final second = best.b ? other.reversed : other;
+
+    // Drop the duplicate at the seam when the ends actually coincide. Where they
+    // do not, the joining segment is kept deliberately: merging two lines with a
+    // gap between them gives one line that spans the gap.
+    final joined = <Offset>[
+      ...first.points,
+      ...second.points.first == first.points.last
+          ? second.points.sublist(1)
+          : second.points,
+    ];
+
+    return (
+      path: Polyline(joined),
+      firstReversed: best.a,
+      secondReversed: best.b,
+      joinOffset: first.length,
+    );
+  }
+
   /// JSON `[[x,y], ...]`, as stored in `vine_rows.path`.
   String toJson() => jsonEncode([
     for (final p in points) [p.dx, p.dy],

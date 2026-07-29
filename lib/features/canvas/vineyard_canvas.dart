@@ -38,6 +38,25 @@ enum CanvasTool {
   /// they are the two different things you do to a boundary that is wrong:
   /// it is in the wrong place, or it is the wrong shape.
   reshape,
+
+  /// Tap builds one line, then a sheet copies it into a parallel run.
+  ///
+  /// Shares the point-collecting behaviour of [drawObject] and differs only in
+  /// what happens on Done, which is why the pending-shape state is reused
+  /// wholesale.
+  array,
+
+  /// Tap builds a **throwaway guide line**, then a sheet places evenly spaced
+  /// instances along it.
+  ///
+  /// The guide is a construction aid: never persisted, never an object, gone the
+  /// moment the array executes. That is what distinguishes this from drawing a
+  /// line and planting it -- sometimes the line you want to measure against is
+  /// not a thing the vineyard contains.
+  pointArray,
+
+  /// Tap cuts the line under the pointer in two at that point.
+  split,
 }
 
 /// The interactive map.

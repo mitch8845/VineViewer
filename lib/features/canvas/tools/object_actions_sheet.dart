@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/data/label_service.dart';
+import '../../../core/db/daos/layout_dao.dart';
 import '../../../core/geometry/row_generation.dart';
+import '../../../core/models/enums.dart';
 import '../../../core/providers.dart';
 import '../canvas_controller.dart';
 import '../vineyard_canvas.dart';
+import 'array_sheet.dart';
 import 'identifier_change_prompt.dart';
 
 /// What can be done to a drawn object.
@@ -88,8 +91,35 @@ class ObjectActionsSheet extends ConsumerWidget {
                 );
               },
             ),
+          if (isLine)
+            ListTile(
+              leading: const Icon(Icons.more_horiz),
+              title: const Text('Space points along it'),
+              subtitle: const Text('Posts, gates, or plants at even intervals'),
+              onTap: () => _spacePoints(context, ref),
+            ),
+          if (isLine)
+            ListTile(
+              leading: const Icon(Icons.call_merge),
+              title: const Text('Join to another'),
+              subtitle: const Text(
+                'Makes one line of two. Numbers are left alone unless you ask.',
+              ),
+              onTap: () async {
+                Navigator.pop(context);
+                await showModalBottomSheet<void>(
+                  context: context,
+                  isScrollControlled: true,
+                  builder: (context) => _MergeSheet(
+                    objectId: objectId,
+                    label: label,
+                    fieldName: fieldName,
+                  ),
+                );
+              },
+            ),
           ListTile(
-            leading: const Icon(Icons.timeline),
+            leading: const Icon(Icons.transform),
             title: const Text('Reshape'),
             subtitle: const Text('Drag a corner. Two fingers still pan.'),
             onTap: () {
@@ -127,6 +157,43 @@ class ObjectActionsSheet extends ConsumerWidget {
     }
     ref.read(selectionProvider.notifier).state = plants;
     ref.read(selectedObjectProvider.notifier).state = null;
+  }
+
+  /// Spaces point instances along this object, which is a real line rather than
+  /// a throwaway guide -- so plants placed this way are carried by it.
+  Future<void> _spacePoints(BuildContext context, WidgetRef ref) async {
+    final projectId = ref.read(activeProjectIdProvider);
+    if (projectId == null) return;
+
+    final path = await ref.read(layoutDaoProvider).carrierPathOf(objectId);
+    final fields = await ref
+        .read(fieldDefsDaoProvider)
+        .objectFieldsForProject(projectId);
+    if (path == null || !context.mounted) return;
+
+    Navigator.pop(context);
+    final plan = await showModalBottomSheet<PointArrayPlan>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => PointArraySheet(
+        guide: path,
+        pointFields: [
+          for (final f in fields)
+            if (f.drawType == DrawType.point) f,
+        ],
+        guideIsThrowaway: false,
+        calibration: ref.read(calibrationProvider).valueOrNull,
+      ),
+    );
+    if (plan == null) return;
+
+    await writePointArray(
+      ref,
+      projectId: projectId,
+      guide: path,
+      plan: plan,
+      carrierId: objectId,
+    );
   }
 
   Future<void> _delete(BuildContext context, WidgetRef ref) async {
@@ -599,6 +666,243 @@ class _PlantMoreSheetState extends ConsumerState<_PlantMoreSheet> {
                   onPressed: offsets.isEmpty || _working ? null : _plant,
                   child: const Text('Plant them'),
                 ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Picks the line to join this one to, and handles the collision it usually
+/// causes.
+///
+/// Offered as a list rather than a second tap on the canvas: the other half of a
+/// split has an end *by definition* touching this one, and two overlapping hit
+/// targets is a coin toss.
+///
+/// **The interesting case is the common one.** Two rows each numbered from 1
+/// become one row with two plant 1s, which is a duplicate identifier and is
+/// refused. Rather than a dead end, the refusal offers to renumber along the
+/// merged line -- an explicit choice by the user, so the tool itself still makes
+/// no numbering decision.
+class _MergeSheet extends ConsumerStatefulWidget {
+  const _MergeSheet({
+    required this.objectId,
+    required this.label,
+    required this.fieldName,
+  });
+
+  final String objectId;
+  final String label;
+  final String fieldName;
+
+  @override
+  ConsumerState<_MergeSheet> createState() => _MergeSheetState();
+}
+
+class _MergeSheetState extends ConsumerState<_MergeSheet> {
+  List<({String objectId, String label, double gap})> _candidates = const [];
+  bool _loading = true;
+  bool _working = false;
+
+  /// The candidate being considered, and what merging with it would cost.
+  String? _chosen;
+  MergePlan? _plan;
+  IdentifierChange? _change;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final candidates = await ref
+        .read(layoutDaoProvider)
+        .mergeCandidatesFor(widget.objectId);
+    if (!mounted) return;
+    setState(() {
+      _candidates = candidates;
+      _loading = false;
+    });
+  }
+
+  Future<void> _consider(String otherId) async {
+    setState(() {
+      _chosen = otherId;
+      _plan = null;
+      _change = null;
+    });
+
+    final layout = ref.read(layoutDaoProvider);
+    final plan = await layout.planMerge(
+      intoObjectId: widget.objectId,
+      fromObjectId: otherId,
+    );
+    if (plan == null) {
+      if (mounted) setState(() => _chosen = null);
+      return;
+    }
+    final change = await layout.previewMerge(plan);
+
+    // The selection may have moved on while the preview ran.
+    if (!mounted || _chosen != otherId) return;
+    setState(() {
+      _plan = plan;
+      _change = change;
+    });
+  }
+
+  Future<void> _merge({required bool renumber}) async {
+    final projectId = ref.read(activeProjectIdProvider);
+    final plan = _plan;
+    if (projectId == null || plan == null) return;
+    setState(() => _working = true);
+
+    final other = _candidates.firstWhere(
+      (c) => c.objectId == plan.fromObjectId,
+    );
+    await ref
+        .read(operationRecorderProvider)
+        .run(
+          projectId: projectId,
+          kind: 'merge_objects',
+          description:
+              'Join ${widget.fieldName} ${other.label} to '
+              '${widget.fieldName} ${widget.label}',
+          body: () => ref
+              .read(layoutDaoProvider)
+              .applyMerge(plan, renumberAlongPath: renumber),
+        );
+
+    if (mounted) {
+      Navigator.pop(context);
+      ref.read(selectedObjectProvider.notifier).state = null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return const Padding(
+        padding: EdgeInsets.all(40),
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final calibration =
+        ref.watch(calibrationProvider).valueOrNull ??
+        ScaleCalibration.uncalibrated;
+    final change = _change;
+    final plan = _plan;
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Join to ${widget.fieldName} ${widget.label}',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _candidates.isEmpty
+                  ? 'There is no other ${widget.fieldName.toLowerCase()} to '
+                        'join it to.'
+                  : 'Nearest first. The two are joined at whichever pair of '
+                        'ends is closest, so it does not matter which '
+                        'direction either was drawn in.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+
+            // Bounded, so a project with 75 rows does not make a sheet taller
+            // than the screen.
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 240),
+              child: SingleChildScrollView(
+                child: RadioGroup<String>(
+                  groupValue: _chosen,
+                  onChanged: (id) {
+                    if (id != null) _consider(id);
+                  },
+                  child: Column(
+                    children: [
+                      for (final candidate in _candidates.take(20))
+                        RadioListTile<String>(
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                          value: candidate.objectId,
+                          title: Text('${widget.fieldName} ${candidate.label}'),
+                          subtitle: Text(
+                            candidate.gap < 1
+                                ? 'ends touch'
+                                : '${calibration.format(candidate.gap)} away',
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+            if (plan != null && change != null) ...[
+              const Divider(),
+              Text(
+                '${plan.movedPlantCount} '
+                '${plan.movedPlantCount == 1 ? 'plant moves' : 'plants move'} '
+                'across.',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              if (!change.isSafe) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Left as they are, ${change.duplicates.length} '
+                  '${change.duplicates.length == 1 ? 'ID' : 'IDs'} would be '
+                  'held by more than one plant: '
+                  '${change.duplicates.take(3).join(', ')}'
+                  '${change.duplicates.length > 3 ? '...' : ''}. That is the '
+                  'usual outcome when both lines are numbered from 1.',
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ] else if (change.changed > 0) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'Numbers are left alone. This changes the ID of '
+                  '${change.changed} '
+                  '${change.changed == 1 ? 'plant' : 'plants'}, whose old IDs '
+                  'stay in their history.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ],
+
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+                const SizedBox(width: 8),
+                if (change != null && !change.isSafe)
+                  FilledButton(
+                    onPressed: _working ? null : () => _merge(renumber: true),
+                    child: const Text('Join and number 1 upward'),
+                  )
+                else
+                  FilledButton(
+                    onPressed: plan == null || _working
+                        ? null
+                        : () => _merge(renumber: false),
+                    child: const Text('Join them'),
+                  ),
               ],
             ),
           ],
