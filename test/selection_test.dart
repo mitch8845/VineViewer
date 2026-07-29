@@ -1,298 +1,230 @@
-import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:vine_viewer/core/db/daos/field_events_dao.dart';
+import 'package:vine_viewer/core/data/label_service.dart';
+import 'package:vine_viewer/core/data/membership_service.dart';
+import 'package:vine_viewer/core/db/daos/field_defs_dao.dart';
+import 'package:vine_viewer/core/db/daos/layout_dao.dart';
+import 'package:vine_viewer/core/db/daos/projects_dao.dart';
 import 'package:vine_viewer/core/db/daos/vines_dao.dart';
 import 'package:vine_viewer/core/db/database.dart';
+import 'package:vine_viewer/core/geometry/polyline.dart';
+import 'package:vine_viewer/core/geometry/shapes.dart';
 import 'package:vine_viewer/core/models/enums.dart';
 
-/// Two blocks, two rows each, three vines each -- enough to test that a
-/// selection resolves across levels without over-reaching.
+/// Flattening a mixed selection into the plants it covers.
 ///
-///   block-1 -> row-1 (v-1-1-1, v-1-1-2, v-1-1-3)
-///           -> row-2 (v-1-2-1, v-1-2-2, v-1-2-3)
-///   block-2 -> row-3 (v-2-3-1, v-2-3-2, v-2-3-3)
+/// Every bulk write funnels through this, which is why field events attach to
+/// plants and never to objects: a selection of three plants from one row plus
+/// all of another has no single entity to attach an event to.
 void main() {
   late AppDatabase db;
+
+  late LayoutDao layout;
+
   late VinesDao vines;
-  late FieldEventsDao events;
 
-  final t0 = DateTime.utc(2026, 1, 1);
-  const sprayField = 'field-spray';
+  late String projectId;
 
-  Future<void> seed() async {
-    await db
-        .into(db.projects)
-        .insert(
-          ProjectsCompanion.insert(
-            id: 'p1',
-            name: 'Home',
-            createdAt: t0,
-            updatedAt: t0,
-          ),
-        );
-    for (final b in ['block-1', 'block-2']) {
-      await db
-          .into(db.blocks)
-          .insert(
-            BlocksCompanion.insert(
-              id: b,
-              projectId: 'p1',
-              label: b,
-              createdAt: t0,
-              updatedAt: t0,
-            ),
-          );
-    }
-    for (final (row, block) in [
-      ('row-1', 'block-1'),
-      ('row-2', 'block-1'),
-      ('row-3', 'block-2'),
-    ]) {
-      await db
-          .into(db.vineRows)
-          .insert(
-            VineRowsCompanion.insert(
-              id: row,
-              projectId: 'p1',
-              blockId: Value(block),
-              label: row,
-              createdAt: t0,
-              updatedAt: t0,
-            ),
-          );
-    }
-    for (final (row, block, prefix) in [
-      ('row-1', 'block-1', 'v-1-1'),
-      ('row-2', 'block-1', 'v-1-2'),
-      ('row-3', 'block-2', 'v-2-3'),
-    ]) {
-      for (var i = 1; i <= 3; i++) {
-        await db
-            .into(db.vines)
-            .insert(
-              VinesCompanion.insert(
-                id: '$prefix-$i',
-                projectId: 'p1',
-                rowId: Value(row),
-                blockId: Value(block),
-                positionIdx: i,
-                createdAt: t0,
-                updatedAt: t0,
-              ),
-            );
-      }
-    }
-    await db
-        .into(db.fieldDefs)
-        .insert(
-          FieldDefsCompanion.insert(
-            id: sprayField,
-            projectId: 'p1',
-            name: 'spray',
-            type: FieldType.text,
-            createdAt: t0,
-            updatedAt: t0,
-          ),
-        );
-  }
+  late String rowField;
+
+  late String blockField;
 
   setUp(() async {
     db = AppDatabase(NativeDatabase.memory());
+    layout = LayoutDao(db, LabelService(db), MembershipService(db));
     vines = VinesDao(db);
-    events = FieldEventsDao(db);
-    await seed();
+
+    final fields = FieldDefsDao(db);
+    projectId = await ProjectsDao(db).create(name: 'Five Sisters');
+    rowField =
+        ((await fields.create(
+                  projectId: projectId,
+                  name: 'Row',
+                  type: FieldType.text,
+                  role: FieldRole.object,
+                  drawType: DrawType.polyline,
+                  isContainer: true,
+                ))
+                as FieldDefSaved)
+            .id;
+    blockField =
+        ((await fields.create(
+                  projectId: projectId,
+                  name: 'Block',
+                  type: FieldType.text,
+                  role: FieldRole.object,
+                  drawType: DrawType.polygon,
+                  isContainer: true,
+                ))
+                as FieldDefSaved)
+            .id;
   });
 
   tearDown(() async => db.close());
 
-  group('selection resolution', () {
-    test('an empty selection resolves to nothing', () async {
-      expect(await vines.resolveSelection(), isEmpty);
-    });
+  Future<String> lineAt(String label, double y) => layout.createObject(
+    projectId: projectId,
+    fieldDefId: rowField,
+    label: label,
+    geometry: PolylineShape(Polyline([Offset(0, y), Offset(400, y)])),
+  );
 
-    test('individual vines', () async {
-      final result = await vines.resolveSelection(
-        vineIds: ['v-1-1-1', 'v-2-3-2'],
-      );
-      expect(result, {'v-1-1-1', 'v-2-3-2'});
-    });
-
-    test('a whole row expands to its vines', () async {
-      final result = await vines.resolveSelection(rowIds: ['row-1']);
-      expect(result, {'v-1-1-1', 'v-1-1-2', 'v-1-1-3'});
-    });
-
-    test('a whole block expands to every vine beneath it', () async {
-      final result = await vines.resolveSelection(blockIds: ['block-1']);
-      expect(result, hasLength(6));
-      expect(result, contains('v-1-2-3'));
-      expect(result, isNot(contains('v-2-3-1')));
-    });
-
-    test('mixed selection unions across levels', () async {
-      // The case that decided Q6: three vines from one row plus a whole other
-      // row. There is no single entity a row-level event could attach to.
-      final result = await vines.resolveSelection(
-        vineIds: ['v-1-1-1'],
-        rowIds: ['row-3'],
-      );
-      expect(result, {'v-1-1-1', 'v-2-3-1', 'v-2-3-2', 'v-2-3-3'});
-    });
-
-    test('overlapping selections deduplicate', () async {
-      // Selecting a row AND one of its vines must not write two events to it.
-      final result = await vines.resolveSelection(
-        vineIds: ['v-1-1-1', 'v-1-1-2'],
-        rowIds: ['row-1'],
-        blockIds: ['block-1'],
-      );
-      expect(result, hasLength(6));
-    });
-
-    test('removed vines are excluded by default', () async {
-      await (db.update(db.vines)..where((v) => v.id.equals('v-1-1-2'))).write(
-        VinesCompanion(status: Value(VineStatus.removed)),
+  Future<String> blockCovering(String label, double size) =>
+      layout.createObject(
+        projectId: projectId,
+        fieldDefId: blockField,
+        label: label,
+        geometry: PolygonShape([
+          const Offset(-10, -10),
+          Offset(size, -10),
+          Offset(size, size),
+          Offset(-10, size),
+        ]),
       );
 
-      final result = await vines.resolveSelection(rowIds: ['row-1']);
-      expect(result, {'v-1-1-1', 'v-1-1-3'});
-    });
+  test('an empty selection resolves to nothing', () async {
+    expect(await vines.resolveSelection(), isEmpty);
+  });
 
-    test('removed vines can be included explicitly', () async {
-      await (db.update(db.vines)..where((v) => v.id.equals('v-1-1-2'))).write(
-        VinesCompanion(status: Value(VineStatus.removed)),
-      );
+  test('individual plants resolve to themselves', () async {
+    final row = await lineAt('12', 0);
 
-      final result = await vines.resolveSelection(
-        rowIds: ['row-1'],
-        includeInactive: true,
-      );
-      expect(result, hasLength(3));
-    });
-
-    test('soft-deleted vines are never returned', () async {
-      await (db.update(db.vines)..where((v) => v.id.equals('v-1-1-2'))).write(
-        VinesCompanion(deletedAt: Value(t0)),
-      );
-
-      final result = await vines.resolveSelection(
-        rowIds: ['row-1'],
-        includeInactive: true,
-      );
-      expect(result, hasLength(2));
+    final ids = await layout.placePlantsAlongCarrier(
+      carrierId: row,
+      offsets: [0, 100, 200],
+    );
+    expect(await vines.resolveSelection(vineIds: [ids.first, ids.last]), {
+      ids.first,
+      ids.last,
     });
   });
 
-  group('bulk recording', () {
-    test('writes one event per selected vine', () async {
-      final selection = await vines.resolveSelection(rowIds: ['row-1']);
-      await events.recordBulk(
-        vineIds: selection,
-        fieldDefId: sprayField,
-        value: 'Sulfur',
-        observedAt: DateTime.utc(2026, 6, 15),
-      );
+  test('selecting a line resolves to the plants it carries', () async {
+    final row = await lineAt('12', 0);
 
-      final byVine = await events.currentValuesForField(sprayField);
-      expect(byVine, hasLength(3));
-      expect(byVine['v-1-1-1']!.value, 'Sulfur');
-      expect(byVine['v-1-1-3']!.value, 'Sulfur');
-      // Untouched row is unaffected.
-      expect(byVine.containsKey('v-1-2-1'), isFalse);
-    });
+    final ids = await layout.placePlantsAlongCarrier(
+      carrierId: row,
+      offsets: [0, 100, 200],
+    );
+    await lineAt('13', 300);
+    expect(await vines.resolveSelection(objectIds: [row]), ids.toSet());
+  });
 
-    test('a bulk edit is undoable as one unit', () async {
-      final selection = await vines.resolveSelection(blockIds: ['block-1']);
-      final batchId = await events.recordBulk(
-        vineIds: selection,
-        fieldDefId: sprayField,
-        value: 'oops',
-        observedAt: DateTime.utc(2026, 6, 15),
-      );
+  test('selecting a block resolves through membership', () async {
+    // The plant is inside the polygon but carried by nothing, so only the
+    // membership half of the union can find it.
+    final block = await blockCovering('1', 200);
 
-      expect(await events.currentValuesForField(sprayField), hasLength(6));
-      expect(await events.undoBatch(batchId), 6);
-      expect(await events.currentValuesForField(sprayField), isEmpty);
-    });
+    final loose = await layout.createPlant(
+      projectId: projectId,
+      position: const Offset(50, 50),
+    );
+    expect(await vines.resolveSelection(objectIds: [block]), {loose});
+  });
 
-    test('undo restores the value each vine had before', () async {
-      await events.record(
-        vineId: 'v-1-1-1',
-        fieldDefId: sprayField,
-        value: 'Copper',
-        observedAt: DateTime.utc(2026, 5, 1),
-      );
+  test('a carried plant with no membership is still found', () async {
+    // A plant snapped to a *non-container* line has no membership row at all.
+    // An object selection that only consulted memberships would silently drop
+    // it -- leaving plants visibly on the line that no bulk edit could touch.
+    final fields = FieldDefsDao(db);
 
-      final batchId = await events.recordBulk(
-        vineIds: await vines.resolveSelection(rowIds: ['row-1']),
-        fieldDefId: sprayField,
-        value: 'Sulfur',
-        observedAt: DateTime.utc(2026, 6, 15),
-      );
-      expect(await events.currentValue('v-1-1-1', sprayField), 'Sulfur');
+    final fence =
+        ((await fields.create(
+                  projectId: projectId,
+                  name: 'Fence',
+                  type: FieldType.text,
+                  role: FieldRole.object,
+                  drawType: DrawType.polyline,
+                ))
+                as FieldDefSaved)
+            .id;
 
-      await events.undoBatch(batchId);
-      expect(await events.currentValue('v-1-1-1', sprayField), 'Copper');
-    });
-
-    test(
-      'a later correction to one vine survives the shared timestamp',
-      () async {
-        // Every event in a bulk write shares observed_at AND recorded_at. Without
-        // the recorded_at tie-break, a subsequent single-vine correction at the
-        // same observed_at could lose to the bulk value.
-        final at = DateTime.utc(2026, 6, 15);
-        await events.recordBulk(
-          vineIds: await vines.resolveSelection(rowIds: ['row-1']),
-          fieldDefId: sprayField,
-          value: 'Sulfur',
-          observedAt: at,
-          now: DateTime.utc(2026, 6, 15, 10),
-        );
-
-        await events.record(
-          vineId: 'v-1-1-2',
-          fieldDefId: sprayField,
-          value: 'Missed - skipped',
-          observedAt: at,
-          now: DateTime.utc(2026, 6, 15, 11),
-        );
-
-        final byVine = await events.currentValuesForField(sprayField);
-        expect(byVine['v-1-1-1']!.value, 'Sulfur');
-        expect(byVine['v-1-1-2']!.value, 'Missed - skipped');
-      },
+    final line = await layout.createObject(
+      projectId: projectId,
+      fieldDefId: fence,
+      label: 'north',
+      geometry: PolylineShape(
+        Polyline([const Offset(0, 500), const Offset(400, 500)]),
+      ),
     );
 
-    test('bulk events are marked as bulk', () async {
-      await events.recordBulk(
-        vineIds: await vines.resolveSelection(rowIds: ['row-1']),
-        fieldDefId: sprayField,
-        value: 'Sulfur',
-      );
-      final event = await events.currentEvent('v-1-1-1', sprayField);
-      expect(event!.source, EventSource.bulk);
-    });
+    final ids = await layout.placePlantsAlongCarrier(
+      carrierId: line,
+      offsets: [0, 50],
+    );
+    expect(await db.select(db.plantMemberships).get(), isEmpty);
+    expect(await vines.resolveSelection(objectIds: [line]), ids.toSet());
+  });
 
-    test(
-      'an empty selection writes nothing and still returns a batch id',
-      () async {
-        final batchId = await events.recordBulk(
-          vineIds: const [],
-          fieldDefId: sprayField,
-          value: 'nothing',
-        );
-        expect(batchId, isNotEmpty);
-        expect(await events.currentValuesForField(sprayField), isEmpty);
-      },
+  test('mixing plants and objects unions them', () async {
+    final row = await lineAt('12', 0);
+
+    final onRow = await layout.placePlantsAlongCarrier(
+      carrierId: row,
+      offsets: [0, 100],
+    );
+
+    final loose = await layout.createPlant(
+      projectId: projectId,
+      position: const Offset(900, 900),
+    );
+    expect(await vines.resolveSelection(vineIds: [loose], objectIds: [row]), {
+      ...onRow,
+      loose,
+    });
+  });
+
+  test('the same plant selected twice appears once', () async {
+    final row = await lineAt('12', 0);
+
+    final ids = await layout.placePlantsAlongCarrier(
+      carrierId: row,
+      offsets: [0],
+    );
+    expect(
+      await vines.resolveSelection(vineIds: ids, objectIds: [row]),
+      hasLength(1),
     );
   });
 
-  group('vinesInRow', () {
-    test('returns vines in planting order', () async {
-      final result = await vines.vinesInRow('row-1');
-      expect(result.map((v) => v.positionIdx), [1, 2, 3]);
+  group('inactive plants', () {
+    test('are excluded by default', () async {
+      // Spraying a plant that is not there records an observation that never
+      // happened.
+      final row = await lineAt('12', 0);
+
+      final ids = await layout.placePlantsAlongCarrier(
+        carrierId: row,
+        offsets: [0, 100],
+      );
+      await layout.retirePlant(ids.first, change: PlantStatusChange.removed);
+      expect(await vines.resolveSelection(objectIds: [row]), {ids.last});
     });
+
+    test('are included when asked for', () async {
+      final row = await lineAt('12', 0);
+
+      final ids = await layout.placePlantsAlongCarrier(
+        carrierId: row,
+        offsets: [0, 100],
+      );
+      await layout.retirePlant(ids.first, change: PlantStatusChange.removed);
+      expect(
+        await vines.resolveSelection(objectIds: [row], includeInactive: true),
+        ids.toSet(),
+      );
+    });
+  });
+
+  test('plantsOnCarrier returns planting order', () async {
+    final row = await lineAt('12', 0);
+    await layout.placePlantsAlongCarrier(
+      carrierId: row,
+      offsets: [200, 0, 100],
+    );
+
+    final ordered = await vines.plantsOnCarrier(row);
+    expect([for (final v in ordered) v.positionIdx], [1, 2, 3]);
+    expect([for (final v in ordered) v.x], [0, 100, 200]);
   });
 }

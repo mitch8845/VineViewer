@@ -73,6 +73,11 @@ dev_dependencies:
   drift_dev: ^2.34.5
   build_runner: ^2.15.1
 
+  # Used only by the migration fixture, which builds an old-version database
+  # directly. drift cannot: the Dart table definitions for the previous schema
+  # no longer exist, which is precisely the situation a migration test is for.
+  sqlite3: ^3.0.0
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 

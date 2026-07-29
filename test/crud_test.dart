@@ -26,28 +26,36 @@ void main() {
 
   tearDown(() async => db.close());
 
-  /// A project with one vine, returning (projectId, vineId).
+  /// A project with one plant, returning (projectId, vineId).
+  ///
+  /// v3 has no blocks or rows table: a row is an instance of a user-defined
+  /// object field. This fixture keeps the shape of the old one -- one plant on
+  /// one line -- without needing containment, which these tests do not exercise.
   Future<(String, String)> seedVine() async {
     final projectId = await projects.create(name: 'Home Block');
     final now = DateTime.utc(2026, 1, 1);
     await db
-        .into(db.blocks)
+        .into(db.fieldDefs)
         .insert(
-          BlocksCompanion.insert(
-            id: 'b1',
+          FieldDefsCompanion.insert(
+            id: 'f_row',
             projectId: projectId,
-            label: '3',
+            name: 'Row',
+            type: FieldType.text,
+            role: const Value(FieldRole.object),
+            drawType: const Value(DrawType.polyline),
+            isContainer: const Value(true),
             createdAt: now,
             updatedAt: now,
           ),
         );
     await db
-        .into(db.vineRows)
+        .into(db.mapObjects)
         .insert(
-          VineRowsCompanion.insert(
+          MapObjectsCompanion.insert(
             id: 'r1',
             projectId: projectId,
-            blockId: const Value('b1'),
+            fieldDefId: 'f_row',
             label: '12',
             createdAt: now,
             updatedAt: now,
@@ -59,8 +67,7 @@ void main() {
           VinesCompanion.insert(
             id: 'v1',
             projectId: projectId,
-            rowId: const Value('r1'),
-            blockId: const Value('b1'),
+            carrierId: const Value('r1'),
             positionIdx: 1,
             createdAt: now,
             updatedAt: now,

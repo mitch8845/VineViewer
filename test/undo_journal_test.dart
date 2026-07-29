@@ -4,6 +4,7 @@ import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vine_viewer/core/db/database.dart';
+import 'package:vine_viewer/core/models/enums.dart';
 
 /// Tests for the capture layer itself -- the SQLite triggers, exercised through
 /// raw statements rather than through [OperationRecorder].
@@ -151,13 +152,26 @@ void main() {
     // a 3,000-vine operation is undoable. Proving it here because "batched"
     // sounds like it might bypass them.
     await insertProject('p1');
+    await db
+        .into(db.fieldDefs)
+        .insert(
+          FieldDefsCompanion.insert(
+            id: 'f1',
+            projectId: 'p1',
+            name: 'Row',
+            type: FieldType.text,
+            createdAt: DateTime.utc(2026, 1, 1),
+            updatedAt: DateTime.utc(2026, 1, 1),
+          ),
+        );
     await openOperation();
     await db.batch((b) {
-      b.insertAll(db.blocks, [
+      b.insertAll(db.mapObjects, [
         for (var i = 1; i <= 5; i++)
-          BlocksCompanion.insert(
-            id: 'b$i',
+          MapObjectsCompanion.insert(
+            id: 'o$i',
             projectId: 'p1',
+            fieldDefId: 'f1',
             label: '$i',
             createdAt: DateTime.utc(2026, 1, 1),
             updatedAt: DateTime.utc(2026, 1, 1),

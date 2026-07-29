@@ -38,6 +38,11 @@ class FieldDefsDao {
     required String projectId,
     required String name,
     required FieldType type,
+    FieldRole role = FieldRole.attribute,
+    DrawType? drawType,
+    bool isContainer = false,
+    String? blankPlaceholder,
+    double? tolerance,
     bool isStatic = false,
     FieldConfig config = FieldConfig.empty,
     int? sortOrder,
@@ -47,6 +52,12 @@ class FieldDefsDao {
     final problems = <String>[
       if (trimmed.isEmpty) 'Name cannot be empty.',
       ...config.problemsFor(type),
+      ...problemsWithRole(
+        role: role,
+        type: type,
+        drawType: drawType,
+        isContainer: isContainer,
+      ),
     ];
 
     if (trimmed.isNotEmpty && await nameExists(projectId, trimmed)) {
@@ -66,6 +77,11 @@ class FieldDefsDao {
             projectId: projectId,
             name: trimmed,
             type: type,
+            role: Value(role),
+            drawType: Value(drawType),
+            isContainer: Value(isContainer),
+            blankPlaceholder: Value(blankPlaceholder),
+            tolerance: Value(tolerance),
             isStatic: Value(isStatic),
             config: Value(config.toJson()),
             sortOrder: Value(sortOrder ?? await _nextSortOrder(projectId)),
@@ -75,6 +91,51 @@ class FieldDefsDao {
         );
 
     return FieldDefSaved(id);
+  }
+
+  /// Whether a role, type, draw type and container flag hang together.
+  ///
+  /// Returned as problems rather than thrown because the field editor offers
+  /// these controls and a user can genuinely produce an invalid combination --
+  /// unlike changing a type, which the UI must never offer at all.
+  static List<String> problemsWithRole({
+    required FieldRole role,
+    required FieldType type,
+    required DrawType? drawType,
+    required bool isContainer,
+  }) {
+    return switch (role) {
+      FieldRole.object => [
+        // An object's value is its name, and names are text.
+        if (type != FieldType.text) 'A drawable object must be a text field.',
+        if (drawType == null) 'Choose how this object is drawn.',
+        // A point has no interior, so there is nothing for it to contain.
+        if (isContainer && drawType == DrawType.point)
+          'A point cannot contain plants.',
+      ],
+      FieldRole.attribute => [
+        if (drawType != null) 'An attribute is not drawn, so it has no shape.',
+        if (isContainer) 'Only a drawable object can contain plants.',
+      ],
+    };
+  }
+
+  /// The project's drawable object fields.
+  Future<List<FieldDef>> objectFieldsForProject(String projectId) async {
+    final all = await forProject(projectId);
+    return [
+      for (final f in all)
+        if (f.role == FieldRole.object) f,
+    ];
+  }
+
+  /// The project's container fields -- the ones that put a value on every plant.
+  Future<List<FieldDef>> containerFieldsForProject(String projectId) async {
+    final all = await forProject(projectId);
+    return [
+      for (final f in all)
+        if (f.isContainer) f,
+    ];
   }
 
   /// Whether a field with this name already exists in the project.
@@ -171,8 +232,12 @@ class FieldDefsDao {
     String? name,
     FieldConfig? config,
     bool? isStatic,
+    bool? isContainer,
+    String? blankPlaceholder,
+    double? tolerance,
     int? sortOrder,
     FieldType? type,
+    DrawType? drawType,
     DateTime? now,
   }) async {
     final existing = await byId(id);
@@ -188,10 +253,26 @@ class FieldDefsDao {
       );
     }
 
+    // Immutable for the same reason and with the same consequence: every
+    // geometry already drawn against this field would become unreadable.
+    if (drawType != null && drawType != existing.drawType) {
+      throw StateError(
+        'Draw type is immutable. Cannot change "${existing.name}" from '
+        '${existing.drawType?.name} to ${drawType.name} -- every shape '
+        'already drawn would be invalid. Create a new field instead.',
+      );
+    }
+
     final trimmed = name?.trim();
     final problems = <String>[
       if (trimmed != null && trimmed.isEmpty) 'Name cannot be empty.',
       if (config != null) ...config.problemsFor(existing.type),
+      ...problemsWithRole(
+        role: existing.role,
+        type: existing.type,
+        drawType: existing.drawType,
+        isContainer: isContainer ?? existing.isContainer,
+      ),
     ];
 
     if (trimmed != null &&
@@ -207,6 +288,13 @@ class FieldDefsDao {
         name: trimmed == null ? const Value.absent() : Value(trimmed),
         config: config == null ? const Value.absent() : Value(config.toJson()),
         isStatic: isStatic == null ? const Value.absent() : Value(isStatic),
+        isContainer: isContainer == null
+            ? const Value.absent()
+            : Value(isContainer),
+        blankPlaceholder: blankPlaceholder == null
+            ? const Value.absent()
+            : Value(blankPlaceholder),
+        tolerance: tolerance == null ? const Value.absent() : Value(tolerance),
         sortOrder: sortOrder == null ? const Value.absent() : Value(sortOrder),
         updatedAt: Value(now ?? DateTime.now()),
       ),

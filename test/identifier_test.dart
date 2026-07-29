@@ -1,5 +1,3 @@
-import 'dart:ui' show Offset;
-
 import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -19,9 +17,13 @@ import 'package:vine_viewer/core/models/identifier_template.dart';
 /// working -- and that it can produce things v2 could not express at all.
 void main() {
   late AppDatabase db;
+
   late LabelService labels;
+
   late MembershipService memberships;
+
   late NumberingService numbering;
+
   const projectId = 'p1';
 
   setUp(() async {
@@ -29,7 +31,6 @@ void main() {
     labels = LabelService(db);
     memberships = MembershipService(db);
     numbering = NumberingService(db, labels);
-
     await db.customStatement(
       'INSERT INTO projects (id, name, image_offset_x, image_offset_y, '
       'image_scale_x, image_scale_y, image_rotation, created_at, updated_at) '
@@ -144,6 +145,7 @@ void main() {
       name: 'Block',
       drawType: DrawType.polygon,
     );
+
     final rowField = await objectField(
       id: 'f_row',
       name: 'Row',
@@ -177,7 +179,6 @@ void main() {
           parts: [FieldPart(v.block), FieldPart(v.row), const PlantPart()],
         ),
       );
-
       expect((await labels.identifierOf('v7'))!.text, '3.12.7');
     });
 
@@ -189,7 +190,6 @@ void main() {
           parts: [FieldPart(v.row), const PlantPart()],
         ),
       );
-
       expect((await labels.identifierOf('v7'))!.text, '12&7');
     });
 
@@ -210,6 +210,7 @@ void main() {
 
     test('an attribute can be part of the identifier', () async {
       final v = await vineyard();
+
       final variety = await attributeField(id: 'f_var', name: 'Variety');
       await db
           .into(db.fieldEvents)
@@ -223,7 +224,6 @@ void main() {
               recordedAt: DateTime.utc(2026),
             ),
           );
-
       await setTemplate(
         IdentifierTemplate(
           delimiter: '-',
@@ -239,7 +239,6 @@ void main() {
       final v = await vineyard();
       await plant('loose', const Offset(500, 500), number: 1);
       await memberships.reconcile(projectId: projectId);
-
       await setTemplate(
         IdentifierTemplate(
           delimiter: '.',
@@ -257,7 +256,6 @@ void main() {
         placeholder: 'none',
       );
       await plant('loose', const Offset(500, 500), number: 1);
-
       await setTemplate(
         const IdentifierTemplate(
           delimiter: '.',
@@ -319,6 +317,7 @@ void main() {
       await setTemplate(current);
 
       final data = await labels.dataFor(projectId);
+
       final change = LabelService.compare(
         LabelService.render(data, current),
         LabelService.render(
@@ -326,7 +325,6 @@ void main() {
           const IdentifierTemplate(delimiter: '.', parts: [PlantPart()]),
         ),
       );
-
       expect(change.changed, 2);
       expect(change.isSafe, isTrue);
     });
@@ -335,6 +333,7 @@ void main() {
       // Two plants on different rows share plant number 7, so dropping Row
       // from the template makes them the same.
       final v = await vineyard();
+
       final rowField = v.row;
       await drawn(
         id: 'r13',
@@ -348,6 +347,7 @@ void main() {
       await memberships.reconcile(projectId: projectId);
 
       final data = await labels.dataFor(projectId);
+
       final change = LabelService.compare(
         LabelService.render(
           data,
@@ -361,7 +361,6 @@ void main() {
           const IdentifierTemplate(delimiter: '.', parts: [PlantPart()]),
         ),
       );
-
       expect(change.isSafe, isFalse);
       expect(change.duplicates, ['7']);
     });
@@ -376,6 +375,7 @@ void main() {
 
     test('left to right', () async {
       await threeInARow();
+
       final plan = await numbering.plan(
         vineIds: {'a', 'b', 'c'},
         startAt: 1,
@@ -386,6 +386,7 @@ void main() {
 
     test('right to left', () async {
       await threeInARow();
+
       final plan = await numbering.plan(
         vineIds: {'a', 'b', 'c'},
         startAt: 1,
@@ -412,7 +413,6 @@ void main() {
       // runs and the numbering is not reproducible.
       await plant('z', const Offset(5, 5), number: 1);
       await plant('a', const Offset(5, 5), number: 2);
-
       for (var i = 0; i < 3; i++) {
         final plan = await numbering.plan(
           vineIds: {'a', 'z'},
@@ -425,16 +425,17 @@ void main() {
 
     test('applying writes the numbers', () async {
       await threeInARow();
+
       final plan = await numbering.plan(
         vineIds: {'a', 'b', 'c'},
         startAt: 1,
         order: NumberingOrder.leftToRight,
       );
-
       expect(
         await numbering.apply(plan, projectId: projectId),
         isA<NumberingApplied>(),
       );
+
       final after = await labels.identifiersForProject(projectId);
       expect(after['b']!.text, '1');
       expect(after['a']!.text, '3');
@@ -451,11 +452,10 @@ void main() {
         startAt: 1,
         order: NumberingOrder.leftToRight,
       );
-      final result = await numbering.apply(plan, projectId: projectId);
 
+      final result = await numbering.apply(plan, projectId: projectId);
       expect(result, isA<NumberingRefused>());
       expect((result as NumberingRefused).collisions, ['1']);
-
       // Nothing changed -- asserting the database, not just the return value.
       final rows = await db.select(db.vines).get();
       expect(rows.firstWhere((v) => v.id == 'move').positionIdx, 2);
@@ -519,7 +519,6 @@ void main() {
           Polyline([const Offset(0, 9), const Offset(1, 9)]),
         ),
       );
-
       // "north" occupies no number, so it cannot collide with one.
       expect(await labels.nextObjectLabel(rowField), 2);
     });
@@ -538,7 +537,6 @@ void main() {
           Polyline([const Offset(0, 0), const Offset(1, 0)]),
         ),
       );
-
       expect(
         await labels.isObjectLabelFree(fieldDefId: rowField, label: '1'),
         isFalse,

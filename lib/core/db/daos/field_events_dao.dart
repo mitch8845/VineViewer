@@ -279,17 +279,4 @@ class FieldEventsDao {
           ..where((e) => e.batchId.equals(batchId) & e.deletedAt.isNull()))
         .write(FieldEventsCompanion(deletedAt: Value(now ?? DateTime.now())));
   }
-
-  /// Moves every event from one vine to another.
-  ///
-  /// Used by the Transfer Data tool (plan section 6.2), typically after a vine
-  /// was recorded against the wrong position.
-  Future<int> transferEvents({
-    required String fromVineId,
-    required String toVineId,
-  }) async {
-    return (_db.update(_db.fieldEvents)
-          ..where((e) => e.vineId.equals(fromVineId) & e.deletedAt.isNull()))
-        .write(FieldEventsCompanion(vineId: Value(toVineId)));
-  }
 }

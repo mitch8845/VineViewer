@@ -1,6 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'data/label_service.dart';
+import 'data/membership_service.dart';
+import 'data/numbering_service.dart';
 import 'data/operation_recorder.dart';
 import 'data/undo_service.dart';
 import 'data/vine_data_service.dart';
@@ -29,9 +31,25 @@ final labelServiceProvider = Provider(
   (ref) => LabelService(ref.watch(databaseProvider)),
 );
 
+/// Derives which containers hold each plant, from geometry.
+final membershipServiceProvider = Provider(
+  (ref) => MembershipService(ref.watch(databaseProvider)),
+);
+
+/// Numbers a selection of plants, refusing anything that would collide.
+final numberingServiceProvider = Provider(
+  (ref) => NumberingService(
+    ref.watch(databaseProvider),
+    ref.watch(labelServiceProvider),
+  ),
+);
+
 final layoutDaoProvider = Provider(
-  (ref) =>
-      LayoutDao(ref.watch(databaseProvider), ref.watch(labelServiceProvider)),
+  (ref) => LayoutDao(
+    ref.watch(databaseProvider),
+    ref.watch(labelServiceProvider),
+    ref.watch(membershipServiceProvider),
+  ),
 );
 
 final vinesDaoProvider = Provider(

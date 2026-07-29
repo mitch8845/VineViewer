@@ -4,148 +4,276 @@ import 'package:drift/drift.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../data/label_service.dart';
+import '../../data/membership_service.dart';
 import '../../geometry/polyline.dart';
+import '../../geometry/shapes.dart';
 import '../../models/enums.dart';
 import '../database.dart';
 
-/// Creates and edits the physical layout: blocks, rows, and vine positions.
+/// Creates and edits the physical layout: drawn objects and plant positions.
 ///
-/// **The invariant this class exists to maintain:** a vine with a non-null
-/// `rowId` is physically on that row. Its `x`/`y` is always
-/// `polyline.pointAt(pathOffset)`, never anything else. Every operation that
-/// could break that -- reshaping a row, moving a row, dragging a vine --
-/// restores it before returning.
+/// **The invariant this class exists to maintain:** a plant with a non-null
+/// `carrierId` is physically on that polyline. Its `x`/`y` is always
+/// `path.pointAt(pathOffset)`, never anything else. Every operation that could
+/// break that -- reshaping a line, moving one, dragging a plant -- restores it
+/// before returning.
 ///
-/// Addresses are not this class's concern; [LabelService] owns those. Layout
-/// moves things, labelling names them.
+/// Identifiers are not this class's concern; [LabelService] owns those, and
+/// container membership belongs to [MembershipService]. Layout moves things.
 class LayoutDao {
-  LayoutDao(this._db, this._labels, {Uuid? uuid})
+  LayoutDao(this._db, this._labels, this._memberships, {Uuid? uuid})
     : _uuid = uuid ?? const Uuid();
 
   final AppDatabase _db;
   final LabelService _labels;
+  final MembershipService _memberships;
   final Uuid _uuid;
 
-  // ------------------------------------------------------------------ blocks
+  // ----------------------------------------------------------------- objects
 
-  Future<String> createBlock({
+  /// Draws a new instance of an object field -- a row, a block, a road.
+  Future<String> createObject({
     required String projectId,
+    required String fieldDefId,
     required String label,
+    Shape? geometry,
     DateTime? now,
   }) async {
-    final problem = LabelService.problemWithLabel(label);
-    if (problem != null) throw ArgumentError(problem);
-
     final timestamp = now ?? DateTime.now();
     final id = _uuid.v4();
-    await _db
-        .into(_db.blocks)
-        .insert(
-          BlocksCompanion.insert(
-            id: id,
-            projectId: projectId,
-            label: label.trim(),
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          ),
-        );
-    return id;
-  }
-
-  // -------------------------------------------------------------------- rows
-
-  Future<String> createRow({
-    required String projectId,
-    required String label,
-    String? blockId,
-    Polyline? path,
-    DateTime? now,
-  }) async {
-    final problem = LabelService.problemWithLabel(label);
-    if (problem != null) throw ArgumentError(problem);
-
-    final timestamp = now ?? DateTime.now();
-    final id = _uuid.v4();
-    await _db
-        .into(_db.vineRows)
-        .insert(
-          VineRowsCompanion.insert(
-            id: id,
-            projectId: projectId,
-            blockId: Value(blockId),
-            label: label.trim(),
-            path: Value(path?.toJson()),
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          ),
-        );
-    return id;
-  }
-
-  /// The row's shape, or null if it has not been drawn yet.
-  Future<Polyline?> pathOf(String rowId) async {
-    final row =
-        await (_db.select(_db.vineRows)
-              ..where((r) => r.id.equals(rowId) & r.deletedAt.isNull()))
-            .getSingleOrNull();
-    return Polyline.tryParse(row?.path);
-  }
-
-  /// Replaces a row's shape and slides its vines onto the new one.
-  ///
-  /// Vines keep their arc-length offset, so extending the far end of a row
-  /// leaves every existing vine exactly where it was. Re-projecting their x/y
-  /// onto the new path instead would nudge each one slightly on every edit,
-  /// and the drift compounds.
-  Future<void> updateRowPath(
-    String rowId,
-    Polyline path, {
-    DateTime? now,
-  }) async {
-    final timestamp = now ?? DateTime.now();
 
     await _db.transaction(() async {
-      await (_db.update(_db.vineRows)..where((r) => r.id.equals(rowId))).write(
-        VineRowsCompanion(
-          path: Value(path.toJson()),
+      await _db
+          .into(_db.mapObjects)
+          .insert(
+            MapObjectsCompanion.insert(
+              id: id,
+              projectId: projectId,
+              fieldDefId: fieldDefId,
+              label: label.trim(),
+              geometry: Value(geometry?.toJson()),
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            ),
+          );
+      // A new container immediately claims whatever falls inside it.
+      if (geometry != null) {
+        await _memberships.reconcile(
+          projectId: projectId,
+          objectIds: {id},
+          now: timestamp,
+        );
+      }
+    });
+
+    return id;
+  }
+
+  /// One object's geometry, or null if it has not been drawn.
+  Future<Shape?> shapeOf(String objectId) async {
+    final row = await _db
+        .customSelect(
+          'SELECT o.geometry AS geometry, f.draw_type AS draw_type '
+          'FROM map_objects o '
+          'JOIN field_defs f ON f.id = o.field_def_id '
+          'WHERE o.id = ?1 AND o.deleted_at IS NULL',
+          variables: [Variable<String>(objectId)],
+          readsFrom: {_db.mapObjects, _db.fieldDefs},
+        )
+        .getSingleOrNull();
+    if (row == null) return null;
+
+    final drawType = DrawType.values.asNameMap()[row.read<String>('draw_type')];
+    if (drawType == null) return null;
+    return Shape.tryParse(row.readNullable<String>('geometry'), drawType);
+  }
+
+  /// The path of an object plants can be carried by, or null if it is not a
+  /// line or has not been drawn.
+  Future<Polyline?> carrierPathOf(String objectId) async {
+    final shape = await shapeOf(objectId);
+    return shape is PolylineShape ? shape.path : null;
+  }
+
+  /// Replaces an object's shape.
+  ///
+  /// Carried plants keep their arc-length offset, so extending the far end of a
+  /// line leaves every existing plant exactly where it was. Re-projecting their
+  /// x/y onto the new path instead would nudge each one slightly on every edit,
+  /// and the drift compounds.
+  Future<void> updateObjectGeometry(
+    String objectId,
+    Shape geometry, {
+    DateTime? now,
+  }) async {
+    final timestamp = now ?? DateTime.now();
+    final projectId = await _projectOf(objectId);
+    if (projectId == null) return;
+
+    await _db.transaction(() async {
+      await (_db.update(
+        _db.mapObjects,
+      )..where((o) => o.id.equals(objectId))).write(
+        MapObjectsCompanion(
+          geometry: Value(geometry.toJson()),
           updatedAt: Value(timestamp),
         ),
       );
-      await _repositionVinesOn(rowId, path, timestamp);
+
+      if (geometry is PolylineShape) {
+        await _repositionCarried(objectId, geometry.path, timestamp);
+      }
+
+      // Reshaping a boundary sweeps plants in and out. Scoped to the whole
+      // project rather than to this object, because a plant that *left* is no
+      // longer found by looking at what this object now covers.
+      await _memberships.reconcile(projectId: projectId, now: timestamp);
     });
   }
 
-  /// Translates a row and everything on it.
-  Future<void> moveRow(String rowId, Offset delta, {DateTime? now}) async {
-    final path = await pathOf(rowId);
-    if (path == null) return;
+  /// Translates an object and everything it carries.
+  Future<void> moveObject(
+    String objectId,
+    Offset delta, {
+    DateTime? now,
+  }) async {
+    final shape = await shapeOf(objectId);
+    if (shape == null) return;
 
-    final moved = Polyline([for (final p in path.points) p + delta]);
-    // Offsets are unchanged by a translation, so the vines follow exactly.
-    await updateRowPath(rowId, moved, now: now);
+    final moved = switch (shape) {
+      final PolylineShape s => PolylineShape(
+        Polyline([for (final p in s.path.points) p + delta]),
+      ),
+      final PolygonShape s => PolygonShape([
+        for (final v in s.vertices) v + delta,
+      ]),
+      final PointShape s => PointShape(s.at + delta),
+    };
+
+    // Offsets are unchanged by a translation, so carried plants follow exactly.
+    await updateObjectGeometry(objectId, moved, now: now);
   }
 
-  /// Recomputes x/y for every snapped vine from its stored offset.
-  Future<void> _repositionVinesOn(
-    String rowId,
+  /// Soft-deletes an object.
+  ///
+  /// Plants it carried keep their x/y and simply lose their carrier -- deleting
+  /// a line should orphan its plants, not destroy them along with their entire
+  /// recorded history.
+  Future<void> deleteObject(String objectId, {DateTime? now}) async {
+    final timestamp = now ?? DateTime.now();
+    final projectId = await _projectOf(objectId);
+    if (projectId == null) return;
+
+    await _db.transaction(() async {
+      await (_db.update(
+        _db.mapObjects,
+      )..where((o) => o.id.equals(objectId))).write(
+        MapObjectsCompanion(
+          deletedAt: Value(timestamp),
+          updatedAt: Value(timestamp),
+        ),
+      );
+
+      // Explicit rather than relying on the foreign key, because a soft delete
+      // fires no cascade at all: the row is still there.
+      await (_db.update(
+        _db.vines,
+      )..where((v) => v.carrierId.equals(objectId))).write(
+        VinesCompanion(
+          carrierId: const Value(null),
+          pathOffset: const Value(null),
+          updatedAt: Value(timestamp),
+        ),
+      );
+
+      await _memberships.reconcile(projectId: projectId, now: timestamp);
+    });
+  }
+
+  /// The same-type object [shape] would overlap, or null.
+  ///
+  /// Called by the naming sheet before it writes, never mid-stroke: refusing a
+  /// stroke as it is drawn would throw away twelve taps.
+  Future<({String objectId, String label})?> checkOverlap({
+    required String fieldDefId,
+    required Shape shape,
+    String? ignoringObjectId,
+  }) async {
+    final rows = await _db
+        .customSelect(
+          'SELECT o.id AS id, o.label AS label, o.geometry AS geometry, '
+          '       f.draw_type AS draw_type '
+          'FROM map_objects o '
+          'JOIN field_defs f ON f.id = o.field_def_id '
+          'WHERE o.field_def_id = ?1 AND o.deleted_at IS NULL '
+          '  AND o.geometry IS NOT NULL',
+          variables: [Variable<String>(fieldDefId)],
+          readsFrom: {_db.mapObjects, _db.fieldDefs},
+        )
+        .get();
+
+    final others = <ShapeRef>[];
+    for (final r in rows) {
+      final id = r.read<String>('id');
+      // An object being reshaped does not overlap itself.
+      if (id == ignoringObjectId) continue;
+
+      final drawType = DrawType.values.asNameMap()[r.read<String>('draw_type')];
+      if (drawType == null) continue;
+      final other = Shape.tryParse(
+        r.readNullable<String>('geometry'),
+        drawType,
+      );
+      if (other == null) continue;
+
+      others.add((id: id, label: r.read<String>('label'), shape: other));
+    }
+
+    return findOverlap(shape, others);
+  }
+
+  Future<List<MapObject>> objectsInProject(String projectId) {
+    return (_db.select(_db.mapObjects)
+          ..where((o) => o.projectId.equals(projectId) & o.deletedAt.isNull())
+          ..orderBy([(o) => OrderingTerm.asc(o.sortOrder)]))
+        .get();
+  }
+
+  Stream<List<MapObject>> watchObjectsInProject(String projectId) {
+    return (_db.select(_db.mapObjects)
+          ..where((o) => o.projectId.equals(projectId) & o.deletedAt.isNull())
+          ..orderBy([(o) => OrderingTerm.asc(o.sortOrder)]))
+        .watch();
+  }
+
+  Future<String?> _projectOf(String objectId) async {
+    final row = await (_db.select(
+      _db.mapObjects,
+    )..where((o) => o.id.equals(objectId))).getSingleOrNull();
+    return row?.projectId;
+  }
+
+  /// Recomputes x/y for every carried plant from its stored offset.
+  Future<void> _repositionCarried(
+    String objectId,
     Polyline path,
     DateTime timestamp,
   ) async {
-    final vines = await (_db.select(
+    final plants = await (_db.select(
       _db.vines,
-    )..where((v) => v.rowId.equals(rowId) & v.deletedAt.isNull())).get();
+    )..where((v) => v.carrierId.equals(objectId) & v.deletedAt.isNull())).get();
 
-    for (final vine in vines) {
-      // A vine with no offset yet -- placed before the row was drawn -- gets
+    for (final plant in plants) {
+      // A plant with no offset yet -- placed before the line was drawn -- gets
       // one by projecting its current position onto the path.
       final offset =
-          vine.pathOffset ??
-          (vine.x != null && vine.y != null
-              ? path.closestTo(Offset(vine.x!, vine.y!)).offset
+          plant.pathOffset ??
+          (plant.x != null && plant.y != null
+              ? path.closestTo(Offset(plant.x!, plant.y!)).offset
               : 0.0);
 
       final point = path.pointAt(offset);
-      await (_db.update(_db.vines)..where((v) => v.id.equals(vine.id))).write(
+      await (_db.update(_db.vines)..where((v) => v.id.equals(plant.id))).write(
         VinesCompanion(
           pathOffset: Value(offset),
           x: Value(point.dx),
@@ -156,74 +284,73 @@ class LayoutDao {
     }
   }
 
-  // ------------------------------------------------------------------- vines
+  // ------------------------------------------------------------------ plants
 
-  /// Places a free-standing vine at a point.
-  Future<String> createVine({
+  /// Places a free-standing plant at a point.
+  Future<String> createPlant({
     required String projectId,
     required Offset position,
-    String? blockId,
     DateTime? now,
   }) async {
     final timestamp = now ?? DateTime.now();
     final id = _uuid.v4();
 
     await _db.transaction(() async {
-      final plant = await _labels.nextPlantNumber(
-        projectId: projectId,
-        blockId: blockId,
-      );
+      final number = await _labels.nextPlantNumber(projectId: projectId);
       await _db
           .into(_db.vines)
           .insert(
             VinesCompanion.insert(
               id: id,
               projectId: projectId,
-              blockId: Value(blockId),
-              positionIdx: plant,
+              positionIdx: number,
               x: Value(position.dx),
               y: Value(position.dy),
               createdAt: timestamp,
               updatedAt: timestamp,
             ),
           );
+      await _memberships.reconcile(
+        projectId: projectId,
+        vineIds: {id},
+        now: timestamp,
+      );
     });
 
     return id;
   }
 
-  /// Creates vines along a row at the given arc-length offsets.
+  /// Creates plants along a carrier at the given arc-length offsets.
   ///
-  /// This is what the row-by-count and row-by-spacing tools call, with offsets
-  /// from `RowGeneration`. Numbering follows path order, so plant 1 is at the
-  /// end the user started drawing from.
-  Future<List<String>> placeVinesAlongRow({
-    required String rowId,
+  /// Existing plants keep their numbers; new ones fill from the lowest free
+  /// number upward. That is what makes planting a line in two passes work --
+  /// the near side of an obstacle, then the far side -- giving contiguous
+  /// numbers with a gap in space rather than a gap in the numbering.
+  Future<List<String>> placePlantsAlongCarrier({
+    required String carrierId,
     required List<double> offsets,
     DateTime? now,
   }) async {
     if (offsets.isEmpty) return const [];
 
-    final path = await pathOf(rowId);
+    final path = await carrierPathOf(carrierId);
     if (path == null) {
-      throw StateError('Row $rowId has no path; draw it before placing vines.');
+      throw StateError('Object $carrierId has no line to place plants along.');
     }
 
-    final row = await (_db.select(
-      _db.vineRows,
-    )..where((r) => r.id.equals(rowId))).getSingle();
+    final projectId = await _projectOf(carrierId);
+    if (projectId == null) return const [];
 
     final timestamp = now ?? DateTime.now();
     final ids = <String>[];
 
     await _db.transaction(() async {
-      // Existing vines keep their numbers; new ones fill from the lowest free
-      // number upward, so re-running the tool on a partly planted row does not
-      // renumber what is already there.
       final used = <int>{
-        for (final v in await (_db.select(
-          _db.vines,
-        )..where((v) => v.rowId.equals(rowId) & v.deletedAt.isNull())).get())
+        for (final v
+            in await (_db.select(_db.vines)..where(
+                  (v) => v.carrierId.equals(carrierId) & v.deletedAt.isNull(),
+                ))
+                .get())
           v.positionIdx,
       };
 
@@ -245,9 +372,8 @@ class LayoutDao {
             .insert(
               VinesCompanion.insert(
                 id: id,
-                projectId: row.projectId,
-                rowId: Value(rowId),
-                blockId: Value(row.blockId),
+                projectId: projectId,
+                carrierId: Value(carrierId),
                 positionIdx: next,
                 x: Value(point.dx),
                 y: Value(point.dy),
@@ -257,141 +383,159 @@ class LayoutDao {
               ),
             );
       }
+
+      await _memberships.reconcile(
+        projectId: projectId,
+        vineIds: ids.toSet(),
+        now: timestamp,
+      );
     });
 
     return ids;
   }
 
-  /// Attaches a vine to a row, sliding it onto the nearest point.
+  /// Attaches a plant to a carrier, sliding it onto the nearest point and
+  /// renumbering it into that carrier's sequence.
   ///
-  /// Returns the distance it moved, so a tool can decline to snap something
-  /// the user was not aiming at.
-  Future<double> snapVineToRow({
+  /// Returns the distance it moved, so a tool can decline to snap something the
+  /// user was not aiming at.
+  Future<double> snapPlantToCarrier({
     required String vineId,
-    required String rowId,
+    required String carrierId,
     DateTime? now,
   }) async {
-    final path = await pathOf(rowId);
+    final plant = await _requirePlant(vineId);
+    final number = await _labels.nextPlantNumber(
+      projectId: plant.projectId,
+      carrierId: carrierId,
+    );
+    return _snap(vineId, carrierId, number, now);
+  }
+
+  /// Slides a plant onto a carrier it has **already been numbered into**.
+  ///
+  /// The geometry half of [snapPlantToCarrier] without the numbering half.
+  /// Insert has to number the plant first -- the whole point is that the user
+  /// chose where it goes -- and renumbering afterwards would silently undo that.
+  Future<double> snapPlantToCarrierKeepingNumber({
+    required String vineId,
+    required String carrierId,
+    DateTime? now,
+  }) async {
+    final plant = await _requirePlant(vineId);
+    return _snap(vineId, carrierId, plant.positionIdx, now);
+  }
+
+  Future<double> _snap(
+    String vineId,
+    String carrierId,
+    int number,
+    DateTime? now,
+  ) async {
+    final path = await carrierPathOf(carrierId);
     if (path == null) {
-      throw StateError('Row $rowId has no path to snap to.');
+      throw StateError('Object $carrierId has no line to snap to.');
     }
 
-    final vine = await _requireVine(vineId);
-    final from = Offset(vine.x ?? 0, vine.y ?? 0);
-    final nearest = path.closestTo(from);
+    final plant = await _requirePlant(vineId);
+    final nearest = path.closestTo(Offset(plant.x ?? 0, plant.y ?? 0));
     final timestamp = now ?? DateTime.now();
 
-    // Address first, so the vine is numbered in its new row before it moves.
-    await _labels.assignToRow(vineId: vineId, rowId: rowId, now: timestamp);
-
-    await (_db.update(_db.vines)..where((v) => v.id.equals(vineId))).write(
-      VinesCompanion(
-        pathOffset: Value(nearest.offset),
-        x: Value(nearest.point.dx),
-        y: Value(nearest.point.dy),
-        updatedAt: Value(timestamp),
-      ),
-    );
+    await _db.transaction(() async {
+      await (_db.update(_db.vines)..where((v) => v.id.equals(vineId))).write(
+        VinesCompanion(
+          carrierId: Value(carrierId),
+          positionIdx: Value(number),
+          pathOffset: Value(nearest.offset),
+          x: Value(nearest.point.dx),
+          y: Value(nearest.point.dy),
+          updatedAt: Value(timestamp),
+        ),
+      );
+      await _memberships.reconcile(
+        projectId: plant.projectId,
+        vineIds: {vineId},
+        now: timestamp,
+      );
+    });
 
     return nearest.distance;
   }
 
-  /// Slides a vine onto a row it has **already been numbered into**.
-  ///
-  /// The geometry half of [snapVineToRow] without the addressing half. Insert
-  /// Vine has to number the vine first -- the whole point is that the user
-  /// chose whether to shift or gap-fill -- and calling [snapVineToRow]
-  /// afterwards would renumber it straight back to the next free slot,
-  /// silently undoing that choice.
-  Future<double> snapVineToRowKeepingNumber({
-    required String vineId,
-    required String rowId,
-    DateTime? now,
-  }) async {
-    final path = await pathOf(rowId);
-    if (path == null) {
-      throw StateError('Row $rowId has no path to snap to.');
-    }
-
-    final vine = await _requireVine(vineId);
-    final nearest = path.closestTo(Offset(vine.x ?? 0, vine.y ?? 0));
-
-    await (_db.update(_db.vines)..where((v) => v.id.equals(vineId))).write(
-      VinesCompanion(
-        rowId: Value(rowId),
-        pathOffset: Value(nearest.offset),
-        x: Value(nearest.point.dx),
-        y: Value(nearest.point.dy),
-        updatedAt: Value(now ?? DateTime.now()),
-      ),
-    );
-
-    return nearest.distance;
-  }
-
-  /// One vine by id, or null if it does not exist.
-  Future<Vine?> vineById(String vineId) {
-    return (_db.select(_db.vines)
-          ..where((v) => v.id.equals(vineId) & v.deletedAt.isNull()))
-        .getSingleOrNull();
-  }
-
-  /// Detaches a vine from its row, leaving it where it is on screen.
-  Future<void> unsnapVine(String vineId, {DateTime? now}) =>
-      _labels.detachFromRow(vineId: vineId, now: now);
-
-  /// Moves a vine.
-  ///
-  /// A **snapped** vine slides along its row to the nearest point, keeping the
-  /// invariant that it is physically on the row. Dragging it sideways moves it
-  /// along the row rather than off it; detaching is an explicit action, so a
-  /// clumsy drag can never silently break the row's membership.
-  ///
-  /// A **free** vine goes exactly where it is put.
-  Future<void> moveVine(String vineId, Offset position, {DateTime? now}) async {
-    final vine = await _requireVine(vineId);
+  /// Detaches a plant from its carrier, leaving it where it is on screen.
+  Future<void> unsnapPlant(String vineId, {DateTime? now}) async {
+    final plant = await _requirePlant(vineId);
     final timestamp = now ?? DateTime.now();
 
-    if (vine.rowId == null) {
+    await _db.transaction(() async {
+      final number = await _labels.nextPlantNumber(projectId: plant.projectId);
       await (_db.update(_db.vines)..where((v) => v.id.equals(vineId))).write(
         VinesCompanion(
-          x: Value(position.dx),
-          y: Value(position.dy),
+          carrierId: const Value(null),
+          pathOffset: const Value(null),
+          positionIdx: Value(number),
           updatedAt: Value(timestamp),
         ),
       );
-      return;
-    }
-
-    final path = await pathOf(vine.rowId!);
-    if (path == null) {
-      // Snapped to a row that was never drawn: nothing to slide along, so
-      // treat it as free rather than refusing to move.
-      await (_db.update(_db.vines)..where((v) => v.id.equals(vineId))).write(
-        VinesCompanion(
-          x: Value(position.dx),
-          y: Value(position.dy),
-          updatedAt: Value(timestamp),
-        ),
-      );
-      return;
-    }
-
-    final nearest = path.closestTo(position);
-    await (_db.update(_db.vines)..where((v) => v.id.equals(vineId))).write(
-      VinesCompanion(
-        pathOffset: Value(nearest.offset),
-        x: Value(nearest.point.dx),
-        y: Value(nearest.point.dy),
-        updatedAt: Value(timestamp),
-      ),
-    );
+    });
   }
 
-  /// Retires a vine, keeping its history (decision D7).
-  Future<void> retireVine(
+  /// Moves a plant.
+  ///
+  /// A **carried** plant slides along its line to the nearest point, keeping
+  /// the invariant that it is physically on it. Dragging it sideways moves it
+  /// along the line rather than off it; detaching is an explicit action, so a
+  /// clumsy drag can never silently break a plant's membership of its row.
+  ///
+  /// A **free** plant goes exactly where it is put.
+  Future<void> movePlant(
+    String vineId,
+    Offset position, {
+    DateTime? now,
+  }) async {
+    final plant = await _requirePlant(vineId);
+    final timestamp = now ?? DateTime.now();
+
+    final path = plant.carrierId == null
+        ? null
+        : await carrierPathOf(plant.carrierId!);
+
+    await _db.transaction(() async {
+      if (path == null) {
+        // Free, or carried by something never drawn: nothing to slide along,
+        // so put it where it was dropped rather than refusing to move it.
+        await (_db.update(_db.vines)..where((v) => v.id.equals(vineId))).write(
+          VinesCompanion(
+            x: Value(position.dx),
+            y: Value(position.dy),
+            updatedAt: Value(timestamp),
+          ),
+        );
+      } else {
+        final nearest = path.closestTo(position);
+        await (_db.update(_db.vines)..where((v) => v.id.equals(vineId))).write(
+          VinesCompanion(
+            pathOffset: Value(nearest.offset),
+            x: Value(nearest.point.dx),
+            y: Value(nearest.point.dy),
+            updatedAt: Value(timestamp),
+          ),
+        );
+      }
+
+      // Moving a plant can carry it across a boundary.
+      await _memberships.reconcile(
+        projectId: plant.projectId,
+        vineIds: {vineId},
+        now: timestamp,
+      );
+    });
+  }
+
+  /// Retires a plant, keeping its history (decision D7).
+  Future<void> retirePlant(
     String vineId, {
-    required VineStatusChange change,
+    required PlantStatusChange change,
     DateTime? now,
   }) async {
     final timestamp = now ?? DateTime.now();
@@ -404,53 +548,126 @@ class LayoutDao {
     );
   }
 
-  /// Every vine in a project, for the canvas to index and paint.
-  Future<List<Vine>> vinesInProject(String projectId) {
-    return (_db.select(_db.vines)
-          ..where((v) => v.projectId.equals(projectId) & v.deletedAt.isNull()))
-        .get();
-  }
+  /// Retires a plant and plants a successor in its place.
+  ///
+  /// The successor takes the same position, carrier, offset and number -- so
+  /// the identifier is continuous -- and a fresh UUID, so the dead plant keeps
+  /// its entire history rather than having it reattributed to a plant that was
+  /// never there for it.
+  ///
+  /// [inheritFieldIds] names the static fields copied forward: variety yes,
+  /// plant date no, rootstock ask.
+  Future<String> replacePlant({
+    required String vineId,
+    Set<String> inheritFieldIds = const {},
+    DateTime? now,
+  }) async {
+    final old = await _requirePlant(vineId);
+    final timestamp = now ?? DateTime.now();
+    final id = _uuid.v4();
 
-  /// Live-updating vines, so the canvas follows edits without manual refresh.
-  Stream<List<Vine>> watchVinesInProject(String projectId) {
-    return (_db.select(_db.vines)
-          ..where((v) => v.projectId.equals(projectId) & v.deletedAt.isNull()))
-        .watch();
-  }
+    await _db.transaction(() async {
+      await retirePlant(
+        vineId,
+        change: PlantStatusChange.removed,
+        now: timestamp,
+      );
 
-  Future<List<VineRow>> rowsInProject(String projectId) {
-    return (_db.select(_db.vineRows)
-          ..where((r) => r.projectId.equals(projectId) & r.deletedAt.isNull())
-          ..orderBy([(r) => OrderingTerm.asc(r.sortOrder)]))
-        .get();
-  }
+      await _db
+          .into(_db.vines)
+          .insert(
+            VinesCompanion.insert(
+              id: id,
+              projectId: old.projectId,
+              carrierId: Value(old.carrierId),
+              positionIdx: old.positionIdx,
+              x: Value(old.x),
+              y: Value(old.y),
+              pathOffset: Value(old.pathOffset),
+              plantedAt: Value(timestamp),
+              predecessorId: Value(vineId),
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            ),
+          );
 
-  Stream<List<VineRow>> watchRowsInProject(String projectId) {
-    return (_db.select(_db.vineRows)
-          ..where((r) => r.projectId.equals(projectId) & r.deletedAt.isNull())
-          ..orderBy([(r) => OrderingTerm.asc(r.sortOrder)]))
-        .watch();
-  }
-
-  Future<Vine> _requireVine(String vineId) async {
-    final vine =
-        await (_db.select(_db.vines)
-              ..where((v) => v.id.equals(vineId) & v.deletedAt.isNull()))
+      for (final fieldDefId in inheritFieldIds) {
+        final current = await _db
+            .customSelect(
+              'SELECT value FROM field_events '
+              'WHERE vine_id = ?1 AND field_def_id = ?2 AND deleted_at IS NULL '
+              'ORDER BY observed_at DESC, recorded_at DESC, rowid DESC LIMIT 1',
+              variables: [
+                Variable<String>(vineId),
+                Variable<String>(fieldDefId),
+              ],
+              readsFrom: {_db.fieldEvents},
+            )
             .getSingleOrNull();
-    if (vine == null) throw StateError('Vine $vineId does not exist.');
-    return vine;
+        final value = current?.readNullable<String>('value');
+        if (value == null) continue;
+
+        await _db
+            .into(_db.fieldEvents)
+            .insert(
+              FieldEventsCompanion.insert(
+                id: _uuid.v4(),
+                vineId: id,
+                fieldDefId: fieldDefId,
+                value: Value(value),
+                observedAt: timestamp,
+                recordedAt: timestamp,
+              ),
+            );
+      }
+
+      await _memberships.reconcile(
+        projectId: old.projectId,
+        vineIds: {id},
+        now: timestamp,
+      );
+    });
+
+    return id;
+  }
+
+  /// Every plant in a project, for the canvas to index and paint.
+  Future<List<Vine>> plantsInProject(String projectId) {
+    return (_db.select(_db.vines)
+          ..where((v) => v.projectId.equals(projectId) & v.deletedAt.isNull()))
+        .get();
+  }
+
+  /// Live-updating plants, so the canvas follows edits without manual refresh.
+  Stream<List<Vine>> watchPlantsInProject(String projectId) {
+    return (_db.select(_db.vines)
+          ..where((v) => v.projectId.equals(projectId) & v.deletedAt.isNull()))
+        .watch();
+  }
+
+  /// One plant by id, or null.
+  Future<Vine?> plantById(String vineId) {
+    return (_db.select(_db.vines)
+          ..where((v) => v.id.equals(vineId) & v.deletedAt.isNull()))
+        .getSingleOrNull();
+  }
+
+  Future<Vine> _requirePlant(String vineId) async {
+    final plant = await plantById(vineId);
+    if (plant == null) throw StateError('Plant $vineId does not exist.');
+    return plant;
   }
 }
 
-/// How a vine leaves active service, per plan section 6.4.
-enum VineStatusChange {
+/// How a plant leaves active service, per plan section 6.4.
+enum PlantStatusChange {
   /// Died or was pulled. The position stays as an empty slot, available for a
   /// replant.
   removed(VineStatus.removed),
 
-  /// The position exists in the layout but has never held a vine.
+  /// The position exists in the layout but has never held a plant.
   missing(VineStatus.missing);
 
-  const VineStatusChange(this.status);
+  const PlantStatusChange(this.status);
   final VineStatus status;
 }

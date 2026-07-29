@@ -1,5 +1,3 @@
-import 'dart:ui' show Offset;
-
 import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -20,9 +18,13 @@ import 'package:vine_viewer/core/models/identifier_template.dart';
 /// falls into a different one.
 void main() {
   late AppDatabase db;
+
   late LabelService labels;
+
   late MembershipService memberships;
+
   late OperationRecorder recorder;
+
   const projectId = 'p1';
 
   setUp(() async {
@@ -30,7 +32,6 @@ void main() {
     labels = LabelService(db);
     memberships = MembershipService(db);
     recorder = OperationRecorder(db);
-
     await db.customStatement(
       'INSERT INTO projects (id, name, image_offset_x, image_offset_y, '
       'image_scale_x, image_scale_y, image_rotation, created_at, updated_at, '
@@ -43,7 +44,6 @@ void main() {
         ).toJson(),
       ],
     );
-
     await db
         .into(db.fieldDefs)
         .insert(
@@ -132,7 +132,6 @@ void main() {
     await block('b1', '1', squareAt(0, 100));
     await plant('v', const Offset(50, 50), 7);
     await memberships.reconcile(projectId: projectId);
-
     await gesture(
       'Rename block 1 to 4',
       () => db.customStatement(
@@ -150,13 +149,11 @@ void main() {
     await block('b1', '1', squareAt(0, 100));
     await plant('v', const Offset(50, 50), 7);
     await memberships.reconcile(projectId: projectId);
-
     await gesture(
       'Renumber',
       () =>
           db.customStatement("UPDATE vines SET position_idx = 8 WHERE id='v'"),
     );
-
     expect((await labels.historyOf('v')).map((c) => c.identifier.text), [
       '1.7',
       '1.8',
@@ -167,7 +164,6 @@ void main() {
     await block('b1', '1', squareAt(0, 100));
     await plant('v', const Offset(50, 50), 7);
     await memberships.reconcile(projectId: projectId);
-
     await gesture(
       'Rename block 1 to 4',
       () => db.customStatement(
@@ -175,9 +171,7 @@ void main() {
       ),
     );
     expect(await labels.historyOf('v'), hasLength(2));
-
     await UndoService(db).undo(projectId);
-
     // Undo means it did not happen, matching the decision that undoing a data
     // write erases it.
     final history = await labels.historyOf('v');
@@ -189,7 +183,6 @@ void main() {
     await block('b1', '1', squareAt(0, 100));
     await plant('v', const Offset(50, 50), 7);
     await memberships.reconcile(projectId: projectId);
-
     await gesture(
       'Rename to 2',
       () => db.customStatement(
@@ -202,7 +195,6 @@ void main() {
         "UPDATE map_objects SET label = '3' WHERE id = 'b1'",
       ),
     );
-
     expect((await labels.historyOf('v')).map((c) => c.identifier.text), [
       '1.7',
       '2.7',
@@ -216,7 +208,6 @@ void main() {
     await block('b1', '1', squareAt(0, 100));
     await plant('v', const Offset(50, 50), 7);
     await memberships.reconcile(projectId: projectId);
-
     await db.customStatement(
       "UPDATE map_objects SET label = '9' WHERE id = 'b1'",
     );

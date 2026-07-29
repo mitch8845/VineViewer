@@ -1,402 +1,515 @@
+import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vine_viewer/core/data/label_service.dart';
+import 'package:vine_viewer/core/data/membership_service.dart';
+import 'package:vine_viewer/core/db/daos/field_defs_dao.dart';
 import 'package:vine_viewer/core/db/daos/layout_dao.dart';
 import 'package:vine_viewer/core/db/daos/projects_dao.dart';
+import 'package:vine_viewer/core/db/daos/vines_dao.dart';
 import 'package:vine_viewer/core/db/database.dart';
 import 'package:vine_viewer/core/geometry/polyline.dart';
-import 'package:vine_viewer/core/geometry/row_generation.dart';
+import 'package:vine_viewer/core/geometry/shapes.dart';
+import 'package:vine_viewer/core/models/enums.dart';
 
-/// A 100px horizontal row starting at (0,0).
-Polyline get straight => Polyline([const Offset(0, 0), const Offset(100, 0)]);
-
+/// The layout DAO against the generic object model.
+///
+/// **The invariant under test throughout:** a plant with a non-null carrier is
+/// physically on that line, and its x/y is always `path.pointAt(pathOffset)`.
 void main() {
   late AppDatabase db;
-  late ProjectsDao projects;
-  late LabelService labels;
+
   late LayoutDao layout;
+
+  late FieldDefsDao fields;
+
   late String projectId;
+
+  late String rowField;
+
+  late String blockField;
 
   setUp(() async {
     db = AppDatabase(NativeDatabase.memory());
-    projects = ProjectsDao(db);
-    labels = LabelService(db);
-    layout = LayoutDao(db, labels);
-    projectId = await projects.create(name: 'Home');
+
+    final labels = LabelService(db);
+    layout = LayoutDao(db, labels, MembershipService(db));
+    fields = FieldDefsDao(db);
+    projectId = await ProjectsDao(db).create(name: 'Five Sisters');
+    rowField =
+        ((await fields.create(
+                  projectId: projectId,
+                  name: 'Row',
+                  type: FieldType.text,
+                  role: FieldRole.object,
+                  drawType: DrawType.polyline,
+                  isContainer: true,
+                ))
+                as FieldDefSaved)
+            .id;
+    blockField =
+        ((await fields.create(
+                  projectId: projectId,
+                  name: 'Block',
+                  type: FieldType.text,
+                  role: FieldRole.object,
+                  drawType: DrawType.polygon,
+                  isContainer: true,
+                ))
+                as FieldDefSaved)
+            .id;
   });
 
   tearDown(() async => db.close());
 
-  Future<Vine> vineById(String id) =>
-      (db.select(db.vines)..where((v) => v.id.equals(id))).getSingle();
+  Shape lineFrom(Offset a, Offset b) => PolylineShape(Polyline([a, b]));
 
-  /// The invariant this whole class exists to keep.
-  Future<void> expectSnappedOnRow(String vineId) async {
-    final vine = await vineById(vineId);
-    expect(vine.rowId, isNotNull, reason: 'expected a snapped vine');
-    final path = (await layout.pathOf(vine.rowId!))!;
-    final expected = path.pointAt(vine.pathOffset!);
-    expect(vine.x, closeTo(expected.dx, 1e-9));
-    expect(vine.y, closeTo(expected.dy, 1e-9));
-  }
+  Shape squareAt(double left, double top, double size) => PolygonShape([
+    Offset(left, top),
+    Offset(left + size, top),
+    Offset(left + size, top + size),
+    Offset(left, top + size),
+  ]);
 
-  group('creating layout', () {
-    test('a block rejects the reserved label', () async {
-      expect(
-        () => layout.createBlock(projectId: projectId, label: '0'),
-        throwsArgumentError,
-      );
+  Future<String> row(String label, {Shape? shape}) => layout.createObject(
+    projectId: projectId,
+    fieldDefId: rowField,
+    label: label,
+    geometry: shape ?? lineFrom(const Offset(0, 0), const Offset(400, 0)),
+  );
+
+  Future<Vine> reload(String vineId) async => (await layout.plantById(vineId))!;
+
+  group('objects', () {
+    test('a drawn object round-trips its shape', () async {
+      final id = await row('12');
+
+      final shape = await layout.shapeOf(id);
+      expect(shape, isA<PolylineShape>());
+      expect(shape!.points.last, const Offset(400, 0));
     });
 
-    test('a row stores its polyline', () async {
-      final blockId = await layout.createBlock(
+    test('an object can exist before it is drawn', () async {
+      final id = await layout.createObject(
         projectId: projectId,
-        label: '3',
+        fieldDefId: rowField,
+        label: '13',
       );
-      final rowId = await layout.createRow(
-        projectId: projectId,
-        label: '12',
-        blockId: blockId,
-        path: straight,
-      );
-
-      final path = await layout.pathOf(rowId);
-      expect(path!.length, 100);
+      expect(await layout.shapeOf(id), isNull);
+      expect(await layout.carrierPathOf(id), isNull);
     });
 
-    test('a free vine goes exactly where it is put', () async {
-      final id = await layout.createVine(
+    test('carrierPathOf is null for a polygon', () async {
+      final id = await layout.createObject(
         projectId: projectId,
-        position: const Offset(42, 17),
+        fieldDefId: blockField,
+        label: '1',
+        geometry: squareAt(0, 0, 100),
       );
-      final vine = await vineById(id);
-      expect(vine.x, 42);
-      expect(vine.y, 17);
-      expect(vine.rowId, isNull);
-      expect((await labels.labelOf(id))!.text, '0.0.1');
+      expect(await layout.shapeOf(id), isA<PolygonShape>());
+      expect(await layout.carrierPathOf(id), isNull);
     });
   });
 
-  group('placing vines along a row', () {
-    late String blockId;
-    late String rowId;
+  group('planting', () {
+    test('plants land on the line at their offsets', () async {
+      final id = await row('12');
 
-    setUp(() async {
-      blockId = await layout.createBlock(projectId: projectId, label: '3');
-      rowId = await layout.createRow(
-        projectId: projectId,
-        label: '12',
-        blockId: blockId,
-        path: straight,
+      final ids = await layout.placePlantsAlongCarrier(
+        carrierId: id,
+        offsets: [0, 100, 200],
       );
-    });
+      expect(ids, hasLength(3));
 
-    test('by count places them evenly, numbered along the path', () async {
-      final ids = await layout.placeVinesAlongRow(
-        rowId: rowId,
-        offsets: RowGeneration.byCount(straight, 5),
-      );
-
-      expect(ids, hasLength(5));
-      final all = await labels.labelsForProject(projectId);
-      expect(all[ids.first]!.text, '3.12.1');
-      expect(all[ids.last]!.text, '3.12.5');
-
-      final first = await vineById(ids.first);
+      final first = await reload(ids.first);
+      expect(first.carrierId, id);
       expect(first.x, 0);
-      final last = await vineById(ids.last);
-      expect(last.x, 100);
+      expect(first.pathOffset, 0);
+
+      final last = await reload(ids.last);
+      expect(last.x, 200);
+      expect(last.positionIdx, 3);
     });
 
-    test('every placed vine satisfies the snap invariant', () async {
-      final ids = await layout.placeVinesAlongRow(
-        rowId: rowId,
-        offsets: RowGeneration.bySpacing(straight, 25),
+    test('a second pass continues the numbering', () async {
+      // The obstacle case: plant the near side, then the far side. Contiguous
+      // numbers, a gap in space.
+      final id = await row('12');
+      await layout.placePlantsAlongCarrier(
+        carrierId: id,
+        offsets: [0, 50, 100],
       );
-      for (final id in ids) {
-        await expectSnappedOnRow(id);
-      }
-    });
 
-    test('re-running the tool does not renumber existing vines', () async {
-      // A partly planted row is common: you lay out most of it, then come back
-      // and fill in. Renumbering what is already there would invalidate any
-      // printed map.
-      final first = await layout.placeVinesAlongRow(
-        rowId: rowId,
-        offsets: [0, 50],
+      final second = await layout.placePlantsAlongCarrier(
+        carrierId: id,
+        offsets: [300, 350],
       );
-      final firstLabels = await labels.labelsForProject(projectId);
-      final before = firstLabels[first.first]!.text;
 
-      await layout.placeVinesAlongRow(rowId: rowId, offsets: [25, 75]);
-
-      final after = await labels.labelsForProject(projectId);
-      expect(after[first.first]!.text, before);
-      expect(after.length, 4);
+      final numbers = [
+        for (final v in await VinesDao(db).plantsOnCarrier(id)) v.positionIdx,
+      ];
+      expect(numbers, [1, 2, 3, 4, 5]);
+      expect((await reload(second.first)).x, 300);
     });
 
-    test('refuses to place on a row that has not been drawn', () async {
-      final undrawn = await layout.createRow(
+    test('planting an undrawn object throws rather than guessing', () async {
+      final id = await layout.createObject(
         projectId: projectId,
+        fieldDefId: rowField,
         label: '13',
-        blockId: blockId,
       );
       expect(
-        () => layout.placeVinesAlongRow(rowId: undrawn, offsets: [0]),
+        () => layout.placePlantsAlongCarrier(carrierId: id, offsets: [0]),
         throwsStateError,
       );
     });
-
-    test('placing nothing is a no-op', () async {
-      expect(
-        await layout.placeVinesAlongRow(rowId: rowId, offsets: []),
-        isEmpty,
-      );
-    });
   });
 
-  group('reshaping a row', () {
-    late String rowId;
-    late List<String> vineIds;
+  group('the carrier invariant', () {
+    test('reshaping slides plants by offset, not by projection', () async {
+      // Extending the far end must leave every existing plant exactly where it
+      // was. Re-projecting x/y would nudge each one on every edit and the drift
+      // compounds.
+      final id = await row('12');
 
-    setUp(() async {
-      final blockId = await layout.createBlock(
-        projectId: projectId,
-        label: '3',
+      final ids = await layout.placePlantsAlongCarrier(
+        carrierId: id,
+        offsets: [0, 100],
       );
-      rowId = await layout.createRow(
-        projectId: projectId,
-        label: '12',
-        blockId: blockId,
-        path: straight,
+      await layout.updateObjectGeometry(
+        id,
+        lineFrom(const Offset(0, 0), const Offset(900, 0)),
       );
-      vineIds = await layout.placeVinesAlongRow(
-        rowId: rowId,
-        offsets: [0, 25, 50],
-      );
+
+      final second = await reload(ids[1]);
+      expect(second.pathOffset, 100);
+      expect(second.x, 100);
     });
 
-    test(
-      'extending the far end leaves existing vines exactly where they were',
-      () async {
-        // This is why the offset is stored rather than re-derived. Re-projecting
-        // x/y onto the new path would nudge every vine slightly on each edit,
-        // and the drift compounds.
-        final before = [for (final id in vineIds) await vineById(id)];
+    test('moving an object carries its plants exactly', () async {
+      final id = await row('12');
 
-        await layout.updateRowPath(
-          rowId,
-          Polyline([const Offset(0, 0), const Offset(500, 0)]),
-        );
-
-        for (var i = 0; i < vineIds.length; i++) {
-          final after = await vineById(vineIds[i]);
-          expect(after.x, closeTo(before[i].x!, 1e-9), reason: 'vine $i');
-          expect(after.y, closeTo(before[i].y!, 1e-9), reason: 'vine $i');
-        }
-      },
-    );
-
-    test('bending the row carries its vines around the corner', () async {
-      // An L: right 100, then down 100.
-      await layout.updateRowPath(
-        rowId,
-        Polyline([
-          const Offset(0, 0),
-          const Offset(50, 0),
-          const Offset(50, 50),
-        ]),
+      final ids = await layout.placePlantsAlongCarrier(
+        carrierId: id,
+        offsets: [0, 100],
       );
+      await layout.moveObject(id, const Offset(10, 20));
 
-      // vineIds are at offsets 0, 25, 50. The corner of the new path is at
-      // offset 50, so the third vine lands exactly on it and the second sits
-      // halfway along the first leg.
-      final onCorner = await vineById(vineIds[2]);
-      expect(onCorner.x, closeTo(50, 1e-9));
-      expect(onCorner.y, closeTo(0, 1e-9));
-
-      final middle = await vineById(vineIds[1]);
-      expect(middle.x, closeTo(25, 1e-9));
-      expect(middle.y, closeTo(0, 1e-9));
-
-      for (final id in vineIds) {
-        await expectSnappedOnRow(id);
-      }
+      final first = await reload(ids.first);
+      expect(first.x, 10);
+      expect(first.y, 20);
+      expect(first.pathOffset, 0);
     });
 
-    test(
-      'shortening past a vine parks it at the end rather than losing it',
-      () async {
-        await layout.updateRowPath(
-          rowId,
-          Polyline([const Offset(0, 0), const Offset(30, 0)]),
-        );
+    test('dragging a carried plant slides it along, never off', () async {
+      final id = await row('12');
 
-        // The vine that was at 50 is beyond the new end.
-        final stranded = await vineById(vineIds[2]);
-        expect(stranded.x, 30);
-        // Still visible and still on the row, so the user can see and fix it.
-        expect(stranded.rowId, rowId);
-      },
-    );
+      final ids = await layout.placePlantsAlongCarrier(
+        carrierId: id,
+        offsets: [0],
+      );
+      // Dropped well above the line: it must land on it.
+      await layout.movePlant(ids.first, const Offset(150, 90));
 
-    test('moving a row takes its vines with it', () async {
-      final before = await vineById(vineIds[1]);
+      final moved = await reload(ids.first);
+      expect(moved.carrierId, id);
+      expect(moved.y, 0);
+      expect(moved.x, 150);
+    });
 
-      await layout.moveRow(rowId, const Offset(200, 300));
+    test('a free plant goes exactly where it is put', () async {
+      final id = await layout.createPlant(
+        projectId: projectId,
+        position: const Offset(10, 10),
+      );
+      await layout.movePlant(id, const Offset(77, 88));
 
-      final after = await vineById(vineIds[1]);
-      expect(after.x, closeTo(before.x! + 200, 1e-9));
-      expect(after.y, closeTo(before.y! + 300, 1e-9));
-      await expectSnappedOnRow(vineIds[1]);
+      final moved = await reload(id);
+      expect(moved.carrierId, isNull);
+      expect(moved.x, 77);
+      expect(moved.y, 88);
     });
   });
 
   group('snapping', () {
-    late String rowId;
+    test('snapping renumbers into the carrier sequence', () async {
+      final id = await row('12');
+      await layout.placePlantsAlongCarrier(carrierId: id, offsets: [0, 100]);
 
-    setUp(() async {
-      rowId = await layout.createRow(
+      final free = await layout.createPlant(
         projectId: projectId,
-        label: '1',
-        path: straight,
+        position: const Offset(200, 40),
       );
-      // Give the row a vine so it can be reached from the project.
-      await layout.placeVinesAlongRow(rowId: rowId, offsets: [0]);
+
+      final distance = await layout.snapPlantToCarrier(
+        vineId: free,
+        carrierId: id,
+      );
+      expect(distance, 40);
+
+      final snapped = await reload(free);
+      expect(snapped.carrierId, id);
+      expect(snapped.y, 0);
+      expect(snapped.positionIdx, 3);
     });
 
-    test('snapping slides the vine onto the nearest point', () async {
-      final id = await layout.createVine(
+    test('keeping the number does not renumber', () async {
+      // Insert numbers the plant deliberately; snapping must not undo that.
+      final id = await row('12');
+      await layout.placePlantsAlongCarrier(carrierId: id, offsets: [0, 100]);
+
+      final free = await layout.createPlant(
         projectId: projectId,
-        position: const Offset(60, 40),
+        position: const Offset(50, 40),
       );
-
-      final moved = await layout.snapVineToRow(vineId: id, rowId: rowId);
-
-      expect(moved, closeTo(40, 1e-9));
-      final vine = await vineById(id);
-      expect(vine.x, closeTo(60, 1e-9));
-      expect(vine.y, closeTo(0, 1e-9));
-      await expectSnappedOnRow(id);
+      await db.customStatement(
+        'UPDATE vines SET position_idx = 99 WHERE id = ?',
+        [free],
+      );
+      await layout.snapPlantToCarrierKeepingNumber(vineId: free, carrierId: id);
+      expect((await reload(free)).positionIdx, 99);
     });
 
-    test('snapping gives the vine an address in its new row', () async {
-      final id = await layout.createVine(
-        projectId: projectId,
-        position: const Offset(60, 40),
+    test('unsnapping leaves the plant where it is on screen', () async {
+      final id = await row('12');
+
+      final ids = await layout.placePlantsAlongCarrier(
+        carrierId: id,
+        offsets: [100],
       );
-      // 0.0.1, not 0.0.2: the vine already on the row occupies 0.1.1, which is
-      // a different numbering scope. That separation is the point of scoping
-      // by (block, row) rather than counting vines project-wide.
-      expect((await labels.labelOf(id))!.text, '0.0.1');
+      await layout.unsnapPlant(ids.first);
 
-      await layout.snapVineToRow(vineId: id, rowId: rowId);
-      // Now it joins the row's scope, where 1 is taken.
-      expect((await labels.labelOf(id))!.text, '0.1.2');
-    });
-
-    test('unsnapping leaves the vine where it is on screen', () async {
-      final id = await layout.createVine(
-        projectId: projectId,
-        position: const Offset(60, 40),
-      );
-      await layout.snapVineToRow(vineId: id, rowId: rowId);
-      final onRow = await vineById(id);
-
-      await layout.unsnapVine(id);
-
-      final free = await vineById(id);
-      expect(free.rowId, isNull);
-      expect(free.pathOffset, isNull);
-      expect(free.x, onRow.x, reason: 'it should not jump when detached');
-      expect(free.y, onRow.y);
+      final loose = await reload(ids.first);
+      expect(loose.carrierId, isNull);
+      expect(loose.pathOffset, isNull);
+      expect(loose.x, 100);
     });
   });
 
-  group('moving a vine', () {
-    test('a free vine goes exactly where it is put', () async {
-      final id = await layout.createVine(
-        projectId: projectId,
-        position: const Offset(10, 10),
+  group('deleting an object', () {
+    test('orphans its plants rather than destroying them', () async {
+      final id = await row('12');
+
+      final ids = await layout.placePlantsAlongCarrier(
+        carrierId: id,
+        offsets: [0, 100],
       );
-
-      await layout.moveVine(id, const Offset(80, 90));
-
-      final vine = await vineById(id);
-      expect(vine.x, 80);
-      expect(vine.y, 90);
+      await layout.deleteObject(id);
+      for (final vineId in ids) {
+        final plant = await reload(vineId);
+        expect(plant.carrierId, isNull);
+        expect(plant.deletedAt, isNull, reason: 'the plant must survive');
+      }
+      expect(await layout.shapeOf(id), isNull);
     });
 
-    test('a snapped vine slides along its row instead of leaving it', () async {
-      // Dragging sideways moves it along the row, never off. Detaching is an
-      // explicit action, so a clumsy drag cannot silently break the row.
-      final rowId = await layout.createRow(
+    test('clears the memberships it created', () async {
+      final block = await layout.createObject(
         projectId: projectId,
+        fieldDefId: blockField,
         label: '1',
-        path: straight,
-      );
-      final ids = await layout.placeVinesAlongRow(
-        rowId: rowId,
-        offsets: [0, 50],
+        geometry: squareAt(0, 0, 500),
       );
 
-      await layout.moveVine(ids[1], const Offset(75, 60));
+      final id = await row('12');
 
-      final vine = await vineById(ids[1]);
-      expect(vine.rowId, rowId, reason: 'still on the row');
-      expect(vine.x, closeTo(75, 1e-9));
-      expect(vine.y, closeTo(0, 1e-9), reason: 'pulled back onto the line');
-      await expectSnappedOnRow(ids[1]);
-    });
-
-    test('dragging past the end clamps to the end of the row', () async {
-      final rowId = await layout.createRow(
-        projectId: projectId,
-        label: '1',
-        path: straight,
+      final ids = await layout.placePlantsAlongCarrier(
+        carrierId: id,
+        offsets: [0],
       );
-      final ids = await layout.placeVinesAlongRow(rowId: rowId, offsets: [0]);
 
-      await layout.moveVine(ids.first, const Offset(500, 0));
+      final before = await db.select(db.plantMemberships).get();
+      expect(before.where((m) => m.objectId == block), isNotEmpty);
+      await layout.deleteObject(block);
 
-      final vine = await vineById(ids.first);
-      expect(vine.x, closeTo(100, 1e-9));
-      await expectSnappedOnRow(ids.first);
+      final after = await db.select(db.plantMemberships).get();
+      expect(after.where((m) => m.objectId == block), isEmpty);
+      expect(await reload(ids.first), isNotNull);
     });
   });
 
-  group('reading back for the canvas', () {
-    test('vinesInProject returns everything, snapped or not', () async {
-      final rowId = await layout.createRow(
-        projectId: projectId,
-        label: '1',
-        path: straight,
-      );
-      await layout.placeVinesAlongRow(rowId: rowId, offsets: [0, 50]);
-      await layout.createVine(
-        projectId: projectId,
-        position: const Offset(500, 500),
+  group('overlap', () {
+    test('it finds a same-field object in the way', () async {
+      await row(
+        '12',
+        shape: lineFrom(const Offset(0, 0), const Offset(100, 0)),
       );
 
-      expect(await layout.vinesInProject(projectId), hasLength(3));
+      final hit = await layout.checkOverlap(
+        fieldDefId: rowField,
+        shape: lineFrom(const Offset(50, -50), const Offset(50, 50)),
+      );
+      expect(hit?.label, '12');
     });
 
-    test('rowsInProject includes a freshly drawn, empty row', () async {
-      // Reaching rows only through their vines would hide a row the user just
-      // drew but has not planted yet -- it would vanish from the canvas.
-      final blockId = await layout.createBlock(
+    test('a contained polygon is caught even with no crossing edges', () async {
+      await layout.createObject(
         projectId: projectId,
-        label: '3',
-      );
-      await layout.createRow(
-        projectId: projectId,
-        label: '12',
-        blockId: blockId,
-        path: straight,
+        fieldDefId: blockField,
+        label: '1',
+        geometry: squareAt(0, 0, 100),
       );
 
-      expect(await layout.rowsInProject(projectId), hasLength(1));
+      final hit = await layout.checkOverlap(
+        fieldDefId: blockField,
+        shape: squareAt(20, 20, 20),
+      );
+      expect(hit?.label, '1');
+    });
+
+    test('an object being reshaped does not overlap itself', () async {
+      final id = await row('12');
+
+      final hit = await layout.checkOverlap(
+        fieldDefId: rowField,
+        shape: lineFrom(const Offset(0, 0), const Offset(400, 0)),
+        ignoringObjectId: id,
+      );
+      expect(hit, isNull);
+    });
+
+    test('a row crossing a block is not an overlap', () async {
+      // Different fields entirely -- the normal case, and refusing it would
+      // make the model unusable.
+      await layout.createObject(
+        projectId: projectId,
+        fieldDefId: blockField,
+        label: '1',
+        geometry: squareAt(0, 0, 100),
+      );
+
+      final hit = await layout.checkOverlap(
+        fieldDefId: rowField,
+        shape: lineFrom(const Offset(-50, 50), const Offset(150, 50)),
+      );
+      expect(hit, isNull);
+    });
+  });
+
+  group('replacing a plant', () {
+    test('the successor inherits position and number, not identity', () async {
+      final id = await row('12');
+
+      final ids = await layout.placePlantsAlongCarrier(
+        carrierId: id,
+        offsets: [100],
+      );
+
+      final old = ids.first;
+
+      final replacement = await layout.replacePlant(vineId: old);
+
+      final dead = await (db.select(
+        db.vines,
+      )..where((v) => v.id.equals(old))).getSingle();
+
+      final fresh = await reload(replacement);
+      expect(dead.status, VineStatus.removed);
+      expect(dead.endedAt, isNotNull);
+      expect(fresh.positionIdx, dead.positionIdx);
+      expect(fresh.carrierId, dead.carrierId);
+      expect(fresh.pathOffset, dead.pathOffset);
+      expect(fresh.predecessorId, old);
+      expect(fresh.id, isNot(old));
+    });
+
+    test('only the named static fields are copied forward', () async {
+      final variety =
+          ((await fields.create(
+                    projectId: projectId,
+                    name: 'Variety',
+                    type: FieldType.text,
+                    isStatic: true,
+                  ))
+                  as FieldDefSaved)
+              .id;
+
+      final planted =
+          ((await fields.create(
+                    projectId: projectId,
+                    name: 'Planted',
+                    type: FieldType.text,
+                    isStatic: true,
+                  ))
+                  as FieldDefSaved)
+              .id;
+
+      final id = await row('12');
+
+      final old = (await layout.placePlantsAlongCarrier(
+        carrierId: id,
+        offsets: [0],
+      )).first;
+      for (final pair in [(variety, 'Pinot Noir'), (planted, '2019')]) {
+        await db
+            .into(db.fieldEvents)
+            .insert(
+              FieldEventsCompanion.insert(
+                id: 'e_${pair.$1}',
+                vineId: old,
+                fieldDefId: pair.$1,
+                value: Value(pair.$2),
+                observedAt: DateTime.utc(2026),
+                recordedAt: DateTime.utc(2026),
+              ),
+            );
+      }
+      // Variety carries forward; the old plant's planting date does not belong
+      // to the new one.
+      final replacement = await layout.replacePlant(
+        vineId: old,
+        inheritFieldIds: {variety},
+      );
+
+      final events = await (db.select(
+        db.fieldEvents,
+      )..where((e) => e.vineId.equals(replacement))).get();
+      expect(events, hasLength(1));
+      expect(events.single.fieldDefId, variety);
+      expect(events.single.value, 'Pinot Noir');
+    });
+  });
+
+  group('membership follows geometry', () {
+    test('planting inside a block joins it', () async {
+      final block = await layout.createObject(
+        projectId: projectId,
+        fieldDefId: blockField,
+        label: '1',
+        geometry: squareAt(-50, -50, 200),
+      );
+
+      final id = await row('12');
+
+      final ids = await layout.placePlantsAlongCarrier(
+        carrierId: id,
+        offsets: [0],
+      );
+
+      final held = await db.select(db.plantMemberships).get();
+      expect(
+        held.where((m) => m.vineId == ids.first && m.objectId == block),
+        hasLength(1),
+      );
+    });
+
+    test('moving a plant out of a block leaves it', () async {
+      final block = await layout.createObject(
+        projectId: projectId,
+        fieldDefId: blockField,
+        label: '1',
+        geometry: squareAt(0, 0, 100),
+      );
+
+      final plant = await layout.createPlant(
+        projectId: projectId,
+        position: const Offset(50, 50),
+      );
+      expect(await db.select(db.plantMemberships).get(), hasLength(1));
+      await layout.movePlant(plant, const Offset(500, 500));
+
+      final after = await db.select(db.plantMemberships).get();
+      expect(after.where((m) => m.objectId == block), isEmpty);
     });
   });
 }

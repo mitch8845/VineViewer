@@ -1,5 +1,3 @@
-import 'dart:ui' show Offset;
-
 import 'package:drift/drift.dart' show Value, Variable;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -17,7 +15,9 @@ import 'package:vine_viewer/core/models/enums.dart';
 /// their v3 form yet and this layer does not need them.
 void main() {
   late AppDatabase db;
+
   late MembershipService memberships;
+
   late String projectId;
 
   setUp(() async {
@@ -131,9 +131,7 @@ void main() {
       );
       await plant('inside', const Offset(50, 50));
       await plant('outside', const Offset(500, 500));
-
       await memberships.reconcile(projectId: projectId);
-
       expect(await objectsHolding('inside'), {'b1'});
       expect(await objectsHolding('outside'), isEmpty);
     });
@@ -162,9 +160,7 @@ void main() {
       );
       await plant('in_rock', const Offset(30, 50));
       await plant('in_block', const Offset(80, 50));
-
       await memberships.reconcile(projectId: projectId);
-
       expect(await objectsHolding('in_rock'), isEmpty);
       expect(await objectsHolding('in_block'), {'b1'});
     });
@@ -187,9 +183,7 @@ void main() {
       );
       await plant('on', const Offset(50, 2));
       await plant('off', const Offset(50, 40));
-
       await memberships.reconcile(projectId: projectId);
-
       expect(await objectsHolding('on'), {'r1'});
       expect(await objectsHolding('off'), isEmpty);
     });
@@ -211,7 +205,6 @@ void main() {
       );
       // 20px away: outside the 8px default, inside this field's 30.
       await plant('near', const Offset(50, 20));
-
       await memberships.reconcile(projectId: projectId);
       expect(await objectsHolding('near'), {'r1'});
     });
@@ -235,7 +228,6 @@ void main() {
         ),
       );
       await plant('beside', const Offset(50, 1));
-
       await memberships.reconcile(projectId: projectId);
       expect(await objectsHolding('beside'), isEmpty);
     });
@@ -253,7 +245,6 @@ void main() {
         shape: const PointShape(Offset(50, 50)),
       );
       await plant('right_there', const Offset(50, 50));
-
       await memberships.reconcile(projectId: projectId);
       expect(await objectsHolding('right_there'), isEmpty);
     });
@@ -277,7 +268,6 @@ void main() {
             ),
           );
       await plant('somewhere', const Offset(50, 50));
-
       await memberships.reconcile(projectId: projectId);
       expect(await objectsHolding('somewhere'), isEmpty);
     });
@@ -291,17 +281,18 @@ void main() {
       name: 'Block',
       drawType: DrawType.polygon,
     );
+
     final row = await field(
       id: 'f_row',
       name: 'Row',
       drawType: DrawType.polyline,
     );
+
     final terrace = await field(
       id: 'f_terrace',
       name: 'Terrace',
       drawType: DrawType.polyline,
     );
-
     await object(
       id: 'b1',
       fieldDefId: block,
@@ -324,10 +315,8 @@ void main() {
         Polyline([const Offset(50, 0), const Offset(50, 100)]),
       ),
     );
-
     await plant('crossing', const Offset(50, 50));
     await memberships.reconcile(projectId: projectId);
-
     expect(await objectsHolding('crossing'), {'b1', 'r12', 't3'});
   });
 
@@ -349,7 +338,6 @@ void main() {
       for (var i = 0; i < 20; i++) {
         await plant('v$i', Offset(10.0 + i, 50));
       }
-
       expect(await memberships.reconcile(projectId: projectId), 20);
       expect(await memberships.reconcile(projectId: projectId), 0);
     });
@@ -368,17 +356,14 @@ void main() {
       );
       await plant('stays', const Offset(50, 50));
       await plant('joins', const Offset(150, 50));
-
       await memberships.reconcile(projectId: projectId);
       expect(await objectsHolding('joins'), isEmpty);
-
       // Widen the block to take in the second plant.
       await db.customStatement(
         'UPDATE map_objects SET geometry = ? WHERE id = ?',
         [squareAt(0, 0, 200).toJson(), 'b1'],
       );
       await memberships.reconcile(projectId: projectId);
-
       expect(await objectsHolding('stays'), {'b1'});
       expect(await objectsHolding('joins'), {'b1'});
     });
@@ -398,7 +383,6 @@ void main() {
       await plant('inside', const Offset(50, 50));
       await memberships.reconcile(projectId: projectId);
       expect(await objectsHolding('inside'), {'b1'});
-
       await db.customStatement(
         'UPDATE map_objects SET deleted_at = 1 WHERE id = ?',
         ['b1'],
@@ -422,13 +406,11 @@ void main() {
       await plant('a', const Offset(50, 50));
       await plant('b', const Offset(60, 60));
       await memberships.reconcile(projectId: projectId);
-
       // Move a out, then reconcile only b. a's stale membership must survive:
       // a narrow reconcile that deleted rows it never recomputed would be worse
       // than one that is merely incomplete.
       await db.customStatement("UPDATE vines SET x = 500 WHERE id = 'a'");
       await memberships.reconcile(projectId: projectId, vineIds: {'b'});
-
       expect(await objectsHolding('a'), {'b1'});
       expect(await objectsHolding('b'), {'b1'});
     });

@@ -636,6 +636,90 @@ class LabelService {
     return candidate;
   }
 
+  /// Numbers a plant being inserted into a carrier at a chosen point.
+  ///
+  /// With [shift] true the plant takes `afterPositionIdx + 1` and everything
+  /// beyond it moves up one. With [shift] false it takes the lowest free number
+  /// on that carrier, appending if there are no gaps, and no existing plant is
+  /// touched -- at the cost of the number not matching where the plant sits.
+  ///
+  /// The app asks rather than defaulting: only the user knows whether a printed
+  /// map is in somebody's pocket.
+  Future<int> insertAfter({
+    required String vineId,
+    required String carrierId,
+    required int afterPositionIdx,
+    required bool shift,
+    DateTime? now,
+  }) async {
+    final timestamp = now ?? DateTime.now();
+
+    return _db.transaction(() async {
+      final plant = await (_db.select(
+        _db.vines,
+      )..where((v) => v.id.equals(vineId))).getSingle();
+
+      if (!shift) {
+        final number = await nextPlantNumber(
+          projectId: plant.projectId,
+          carrierId: carrierId,
+        );
+        await _place(vineId, carrierId, number, timestamp);
+        return number;
+      }
+
+      // A single statement rather than descending updates. `position_idx` has
+      // no unique index precisely so renumbering can pass through duplicate
+      // states, and one statement is far cheaper on a 72-plant line.
+      await _db.customStatement(
+        'UPDATE vines SET position_idx = position_idx + 1, updated_at = ?1 '
+        'WHERE carrier_id = ?2 AND deleted_at IS NULL AND position_idx > ?3',
+        [timestamp.toUtc().millisecondsSinceEpoch, carrierId, afterPositionIdx],
+      );
+
+      final number = afterPositionIdx + 1;
+      await _place(vineId, carrierId, number, timestamp);
+      return number;
+    });
+  }
+
+  /// How many plants [insertAfter] would renumber if asked to shift.
+  ///
+  /// The prompt has to name this. "This renames 34 plants" is a decision;
+  /// "labels after this point will change" is a shrug.
+  Future<int> countAffectedByShift({
+    required String carrierId,
+    required int afterPositionIdx,
+  }) async {
+    final row = await _db
+        .customSelect(
+          'SELECT COUNT(*) AS n FROM vines '
+          'WHERE carrier_id = ?1 AND deleted_at IS NULL AND position_idx > ?2',
+          variables: [
+            Variable<String>(carrierId),
+            Variable<int>(afterPositionIdx),
+          ],
+          readsFrom: {_db.vines},
+        )
+        .getSingle();
+    return row.read<int>('n');
+  }
+
+  Future<void> _place(
+    String vineId,
+    String carrierId,
+    int number,
+    DateTime timestamp,
+  ) async {
+    await (_db.update(_db.vines)..where((v) => v.id.equals(vineId))).write(
+      VinesCompanion(
+        carrierId: Value(carrierId),
+        positionIdx: Value(number),
+        updatedAt: Value(timestamp),
+      ),
+    );
+  }
+
   /// The lowest unused integer label among one object field's instances.
   ///
   /// Replaces v2's `nextRowNumber`, which scoped rows inside blocks. That rule

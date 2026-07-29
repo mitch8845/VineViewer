@@ -36,23 +36,27 @@ void main() {
           ),
         );
     await db
-        .into(db.blocks)
+        .into(db.fieldDefs)
         .insert(
-          BlocksCompanion.insert(
-            id: 'b1',
+          FieldDefsCompanion.insert(
+            id: 'f_row',
             projectId: 'p1',
-            label: '3',
+            name: 'Row',
+            type: FieldType.text,
+            role: const Value(FieldRole.object),
+            drawType: const Value(DrawType.polyline),
+            isContainer: const Value(true),
             createdAt: now,
             updatedAt: now,
           ),
         );
     await db
-        .into(db.vineRows)
+        .into(db.mapObjects)
         .insert(
-          VineRowsCompanion.insert(
+          MapObjectsCompanion.insert(
             id: 'r1',
             projectId: 'p1',
-            blockId: const Value('b1'),
+            fieldDefId: 'f_row',
             label: '12',
             createdAt: now,
             updatedAt: now,
@@ -65,8 +69,7 @@ void main() {
             VinesCompanion.insert(
               id: id,
               projectId: 'p1',
-              rowId: const Value('r1'),
-              blockId: const Value('b1'),
+              carrierId: const Value('r1'),
               positionIdx: id == vineId ? 6 : 7,
               createdAt: now,
               updatedAt: now,
@@ -502,33 +505,7 @@ void main() {
     });
   });
 
-  group('transfer', () {
-    test('moves all events to another vine', () async {
-      await dao.record(
-        vineId: vineId,
-        fieldDefId: healthId,
-        value: 'a',
-        observedAt: _jan,
-      );
-      await dao.record(
-        vineId: vineId,
-        fieldDefId: healthId,
-        value: 'b',
-        observedAt: _sep,
-      );
-
-      final moved = await dao.transferEvents(
-        fromVineId: vineId,
-        toVineId: otherVineId,
-      );
-
-      expect(moved, 2);
-      expect(await dao.currentValue(vineId, healthId), isNull);
-      expect(await dao.currentValue(otherVineId, healthId), 'b');
-      // Full history moves with the vine, not just the current value.
-      expect(await dao.history(otherVineId, healthId), hasLength(2));
-    });
-  });
+  group('transfer', () {});
 
   group('referential integrity', () {
     test('an event cannot reference a nonexistent vine', () async {

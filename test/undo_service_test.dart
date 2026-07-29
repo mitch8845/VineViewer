@@ -4,6 +4,8 @@ import 'package:drift/drift.dart' show driftRuntimeOptions;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vine_viewer/core/data/label_service.dart';
+import 'package:vine_viewer/core/data/membership_service.dart';
+import 'package:vine_viewer/core/data/numbering_service.dart';
 import 'package:vine_viewer/core/data/operation_recorder.dart';
 import 'package:vine_viewer/core/data/undo_service.dart';
 import 'package:vine_viewer/core/db/daos/field_defs_dao.dart';
@@ -12,6 +14,7 @@ import 'package:vine_viewer/core/db/daos/layout_dao.dart';
 import 'package:vine_viewer/core/db/daos/projects_dao.dart';
 import 'package:vine_viewer/core/db/database.dart';
 import 'package:vine_viewer/core/geometry/polyline.dart';
+import 'package:vine_viewer/core/geometry/shapes.dart';
 import 'package:vine_viewer/core/models/enums.dart';
 
 void main() {
@@ -25,7 +28,7 @@ void main() {
   late UndoService undo;
 
   late String projectId;
-  late String blockId;
+  late String rowField;
   late String rowId;
   late List<String> vineIds;
 
@@ -33,7 +36,7 @@ void main() {
     db = AppDatabase(NativeDatabase.memory());
     projects = ProjectsDao(db);
     labels = LabelService(db);
-    layout = LayoutDao(db, labels);
+    layout = LayoutDao(db, labels, MembershipService(db));
     fieldDefs = FieldDefsDao(db);
     events = FieldEventsDao(db);
     recorder = OperationRecorder(db);
@@ -42,15 +45,27 @@ void main() {
     // Seeded outside any operation, so the fixture itself is not undoable and
     // every test starts from a clean stack.
     projectId = await projects.create(name: 'Five Sisters');
-    blockId = await layout.createBlock(projectId: projectId, label: '3');
-    rowId = await layout.createRow(
+    rowField =
+        ((await fieldDefs.create(
+                  projectId: projectId,
+                  name: 'Row',
+                  type: FieldType.text,
+                  role: FieldRole.object,
+                  drawType: DrawType.polyline,
+                  isContainer: true,
+                ))
+                as FieldDefSaved)
+            .id;
+    rowId = await layout.createObject(
       projectId: projectId,
+      fieldDefId: rowField,
       label: '12',
-      blockId: blockId,
-      path: Polyline([const Offset(0, 0), const Offset(400, 0)]),
+      geometry: PolylineShape(
+        Polyline([const Offset(0, 0), const Offset(400, 0)]),
+      ),
     );
-    vineIds = await layout.placeVinesAlongRow(
-      rowId: rowId,
+    vineIds = await layout.placePlantsAlongCarrier(
+      carrierId: rowId,
       offsets: [for (var i = 0; i < 8; i++) i * 50.0],
     );
   });
@@ -104,7 +119,7 @@ void main() {
     test('createVine', () async {
       await expectUndoable(
         'create_vine',
-        () => layout.createVine(
+        () => layout.createPlant(
           projectId: projectId,
           position: const Offset(500, 500),
         ),
@@ -114,20 +129,22 @@ void main() {
     test('moveVine along its row', () async {
       await expectUndoable(
         'move_vine',
-        () => layout.moveVine(vineIds.first, const Offset(220, 5)),
+        () => layout.movePlant(vineIds.first, const Offset(220, 5)),
       );
     });
 
     test('updateRowPath, which repositions every vine on it', () async {
       await expectUndoable(
         'reshape_row',
-        () => layout.updateRowPath(
+        () => layout.updateObjectGeometry(
           rowId,
-          Polyline([
-            const Offset(0, 0),
-            const Offset(200, 0),
-            const Offset(200, 300),
-          ]),
+          PolylineShape(
+            Polyline([
+              const Offset(0, 0),
+              const Offset(200, 0),
+              const Offset(200, 300),
+            ]),
+          ),
         ),
       );
     });
@@ -135,53 +152,53 @@ void main() {
     test('moveRow', () async {
       await expectUndoable(
         'move_row',
-        () => layout.moveRow(rowId, const Offset(30, 40)),
+        () => layout.moveObject(rowId, const Offset(30, 40)),
       );
     });
 
     test('placeVinesAlongRow', () async {
       await expectUndoable(
         'place_vines',
-        () => layout.placeVinesAlongRow(rowId: rowId, offsets: [410, 460]),
+        () => layout.placePlantsAlongCarrier(
+          carrierId: rowId,
+          offsets: [410, 460],
+        ),
       );
     });
 
     test('snapVineToRow', () async {
-      final free = await layout.createVine(
+      final free = await layout.createPlant(
         projectId: projectId,
         position: const Offset(180, 60),
       );
       await expectUndoable(
         'snap_vine',
-        () => layout.snapVineToRow(vineId: free, rowId: rowId),
+        () => layout.snapPlantToCarrier(vineId: free, carrierId: rowId),
       );
     });
 
     test('unsnapVine', () async {
       await expectUndoable(
         'unsnap_vine',
-        () => layout.unsnapVine(vineIds.last),
+        () => layout.unsnapPlant(vineIds.last),
       );
     });
 
     test('retireVine', () async {
       await expectUndoable(
         'retire_vine',
-        () => layout.retireVine(vineIds[2], change: VineStatusChange.removed),
+        () => layout.retirePlant(vineIds[2], change: PlantStatusChange.removed),
       );
     });
 
-    test('createBlock', () async {
+    test('createObject', () async {
       await expectUndoable(
-        'create_block',
-        () => layout.createBlock(projectId: projectId, label: '4'),
-      );
-    });
-
-    test('createRow', () async {
-      await expectUndoable(
-        'create_row',
-        () => layout.createRow(projectId: projectId, label: '13'),
+        'create_object',
+        () => layout.createObject(
+          projectId: projectId,
+          fieldDefId: rowField,
+          label: '13',
+        ),
       );
     });
 
@@ -193,40 +210,52 @@ void main() {
       await expectUndoable(
         'delete_row',
         () async =>
-            db.customStatement('DELETE FROM vine_rows WHERE id = ?', [rowId]),
+            db.customStatement('DELETE FROM map_objects WHERE id = ?', [rowId]),
       );
     });
   });
 
-  group('label operations undo cleanly', () {
-    test('assignToRow', () async {
-      final free = await layout.createVine(
+  group('carrier and numbering operations undo cleanly', () {
+    test('snapping a free plant onto a carrier', () async {
+      final free = await layout.createPlant(
         projectId: projectId,
         position: const Offset(900, 900),
       );
       await expectUndoable(
-        'assign_to_row',
-        () => labels.assignToRow(vineId: free, rowId: rowId),
+        'snap',
+        () => layout.snapPlantToCarrier(vineId: free, carrierId: rowId),
       );
     });
 
-    test('assignToBlock', () async {
+    test('detaching a plant from its carrier', () async {
+      await expectUndoable('detach', () => layout.unsnapPlant(vineIds[3]));
+    });
+
+    test('inserting with a shift', () async {
+      final free = await layout.createPlant(
+        projectId: projectId,
+        position: const Offset(275, 0),
+      );
       await expectUndoable(
-        'assign_to_block',
-        () => labels.assignToBlock(vineId: vineIds.first, blockId: null),
+        'insert',
+        () => labels.insertAfter(
+          vineId: free,
+          carrierId: rowId,
+          afterPositionIdx: 4,
+          shift: true,
+        ),
       );
     });
 
-    test('detachFromRow', () async {
-      await expectUndoable(
-        'detach',
-        () => labels.detachFromRow(vineId: vineIds[3]),
-      );
-    });
-
-    test('renumberRow after a gap is opened', () async {
-      await layout.unsnapVine(vineIds[2]);
-      await expectUndoable('renumber', () => labels.renumberRow(rowId));
+    test('numbering a selection', () async {
+      await expectUndoable('renumber', () async {
+        final plan = await NumberingService(db, labels).plan(
+          vineIds: vineIds.toSet(),
+          startAt: 20,
+          order: NumberingOrder.rightToLeft,
+        );
+        await NumberingService(db, labels).apply(plan, projectId: projectId);
+      });
     });
   });
 
@@ -332,7 +361,7 @@ void main() {
       projectId: projectId,
       kind: 'move_vine',
       description: 'Move vine to $x',
-      body: () => layout.moveVine(vineIds.first, Offset(x, 0)),
+      body: () => layout.movePlant(vineIds.first, Offset(x, 0)),
     );
 
     Future<double?> vineX() async {
@@ -398,7 +427,7 @@ void main() {
           kind: 'boom',
           description: 'Explodes halfway',
           body: () async {
-            await layout.moveVine(vineIds.first, const Offset(77, 0));
+            await layout.movePlant(vineIds.first, const Offset(77, 0));
             throw StateError('boom');
           },
         ),
@@ -415,9 +444,9 @@ void main() {
         kind: 'replace_vine',
         description: 'Replace vine 3.12.1',
         body: () async {
-          await layout.retireVine(
+          await layout.retirePlant(
             vineIds.first,
-            change: VineStatusChange.removed,
+            change: PlantStatusChange.removed,
           );
           // An inner recorder call, as a service might make. It must not become
           // a second entry -- the user made one gesture.
@@ -425,7 +454,7 @@ void main() {
             projectId: projectId,
             kind: 'create_vine',
             description: 'Place vine',
-            body: () => layout.createVine(
+            body: () => layout.createPlant(
               projectId: projectId,
               position: const Offset(0, 0),
             ),
@@ -446,7 +475,7 @@ void main() {
       // all read the database directly rather than through a stream.
       final seen = <double?>[];
       final subscription = layout
-          .watchVinesInProject(projectId)
+          .watchPlantsInProject(projectId)
           .listen(
             (vines) =>
                 seen.add(vines.firstWhere((v) => v.id == vineIds.first).x),
@@ -497,10 +526,14 @@ void main() {
 
       var reopened = AppDatabase(NativeDatabase(file));
       final localProjects = ProjectsDao(reopened);
-      final localLayout = LayoutDao(reopened, LabelService(reopened));
+      final localLayout = LayoutDao(
+        reopened,
+        LabelService(reopened),
+        MembershipService(reopened),
+      );
 
       final id = await localProjects.create(name: 'Five Sisters');
-      final vine = await localLayout.createVine(
+      final vine = await localLayout.createPlant(
         projectId: id,
         position: const Offset(10, 10),
       );
@@ -508,7 +541,7 @@ void main() {
         projectId: id,
         kind: 'move_vine',
         description: 'Move vine',
-        body: () => localLayout.moveVine(vine, const Offset(900, 900)),
+        body: () => localLayout.movePlant(vine, const Offset(900, 900)),
       );
       await reopened.close();
 
