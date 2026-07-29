@@ -116,6 +116,83 @@ class LabelService {
     return candidate;
   }
 
+  /// The lowest unused row number **within a block**.
+  ///
+  /// Row numbers restart in every block. That is not a preference, it is what
+  /// the vineyard's own records do: block 1 has rows 1-25, block 2 has 1-24,
+  /// block 3 has 1-26. So `1.12` and `2.12` are different physical rows, and
+  /// allocating row numbers project-wide would number the first row drawn in
+  /// block 2 as 26.
+  ///
+  /// A null [blockId] is the unassigned scope -- rows drawn before their block
+  /// has been decided, which is the normal order of work: rows first, block
+  /// boundaries after.
+  Future<int> nextRowNumber({
+    required String projectId,
+    String? blockId,
+  }) async {
+    final used = await _usedRowNumbersIn(
+      projectId: projectId,
+      blockId: blockId,
+    );
+
+    var candidate = 1;
+    while (used.contains(candidate)) {
+      candidate++;
+    }
+    return candidate;
+  }
+
+  /// Whether [number] is free to use as a row number in this block.
+  ///
+  /// Separate from [nextRowNumber] because the user types the number: the flow
+  /// suggests the next free one but does not impose it, so what they type has
+  /// to be checkable.
+  Future<bool> isRowNumberFree({
+    required String projectId,
+    String? blockId,
+    required String number,
+    String? ignoringRowId,
+  }) async {
+    final rows = await _db
+        .customSelect(
+          'SELECT id, label FROM vine_rows '
+          'WHERE project_id = ?1 AND deleted_at IS NULL '
+          '  AND block_id IS ?2 AND label = ?3',
+          variables: [
+            Variable<String>(projectId),
+            Variable<String>(blockId),
+            Variable<String>(number.trim()),
+          ],
+          readsFrom: {_db.vineRows},
+        )
+        .get();
+
+    // A row does not collide with itself when it is being renamed in place.
+    return rows.every((r) => r.read<String>('id') == ignoringRowId);
+  }
+
+  Future<Set<int>> _usedRowNumbersIn({
+    required String projectId,
+    String? blockId,
+  }) async {
+    // `IS` rather than `=` so the unassigned scope works: `block_id = NULL` is
+    // never true, which would make every unassigned row look like the only one
+    // and number them all 1. The same trap as _usedNumbersIn below.
+    final rows = await _db
+        .customSelect(
+          'SELECT label FROM vine_rows '
+          'WHERE project_id = ?1 AND deleted_at IS NULL AND block_id IS ?2',
+          variables: [Variable<String>(projectId), Variable<String>(blockId)],
+          readsFrom: {_db.vineRows},
+        )
+        .get();
+
+    // Row labels are free text, so a row called "north" simply does not occupy
+    // a number. Skipping it is right: it cannot collide with one.
+    return {for (final r in rows) ?int.tryParse(r.read<String>('label'))};
+  }
+
   Future<Set<int>> _usedNumbersIn({
     required String projectId,
     String? blockId,

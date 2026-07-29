@@ -203,15 +203,17 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     await _promptForVines(rowId: rowId, path: path);
   }
 
-  /// Lowest unused row number, matching how plant numbers are allocated.
-  Future<String> _nextRowLabel(String projectId) async {
-    final rows = await ref.read(layoutDaoProvider).rowsInProject(projectId);
-    final used = {for (final r in rows) int.tryParse(r.label) ?? -1};
-    var n = 1;
-    while (used.contains(n)) {
-      n++;
-    }
-    return '$n';
+  /// Lowest unused row number **in the row's block**.
+  ///
+  /// Rows are drawn before their block is decided, so this is normally the
+  /// unassigned scope. It used to allocate project-wide, which numbered the
+  /// first row drawn in a second block 26 rather than 1 -- not how the vineyard
+  /// counts, where every block restarts at row 1.
+  Future<String> _nextRowLabel(String projectId, {String? blockId}) async {
+    final number = await ref
+        .read(labelServiceProvider)
+        .nextRowNumber(projectId: projectId, blockId: blockId);
+    return '$number';
   }
 
   Future<void> _promptForVines({

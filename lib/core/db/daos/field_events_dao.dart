@@ -192,31 +192,41 @@ class FieldEventsDao {
   Future<Map<String, FieldEvent>> currentValuesForVine(
     String vineId, {
     DateTime? asOf,
-  }) async {
-    final rows = await _db
-        .customSelect(
-          'SELECT * FROM ('
-          '  SELECT *, ROW_NUMBER() OVER ('
-          '    PARTITION BY field_def_id ORDER BY $_latestFirst'
-          '  ) AS rn'
-          '  FROM field_events'
-          '  WHERE vine_id = ?1 AND deleted_at IS NULL'
-          '${asOf != null ? '    AND observed_at <= ?2' : ''}'
-          ') WHERE rn = 1',
-          variables: [
-            Variable<String>(vineId),
-            if (asOf != null)
-              Variable<int>(asOf.toUtc().millisecondsSinceEpoch),
-          ],
-          readsFrom: {_db.fieldEvents},
-        )
-        .get();
+  }) async => _byFieldDef(await _valuesForVine(vineId, asOf: asOf).get());
 
-    return {
-      for (final r in rows)
-        r.read<String>('field_def_id'): _db.fieldEvents.map(r.data),
-    };
+  /// Live version of [currentValuesForVine].
+  ///
+  /// The inspector needs this rather than a one-shot read. Undo writes straight
+  /// to the event log and notifies drift; a panel that refreshed on its own
+  /// bookkeeping instead of on the table kept displaying a value undo had
+  /// already removed, until some unrelated edit dislodged it. Watching the
+  /// table means there is one refresh mechanism rather than two that can
+  /// disagree.
+  Stream<Map<String, FieldEvent>> watchCurrentValuesForVine(String vineId) =>
+      _valuesForVine(vineId).watch().map(_byFieldDef);
+
+  Selectable<QueryRow> _valuesForVine(String vineId, {DateTime? asOf}) {
+    return _db.customSelect(
+      'SELECT * FROM ('
+      '  SELECT *, ROW_NUMBER() OVER ('
+      '    PARTITION BY field_def_id ORDER BY $_latestFirst'
+      '  ) AS rn'
+      '  FROM field_events'
+      '  WHERE vine_id = ?1 AND deleted_at IS NULL'
+      '${asOf != null ? '    AND observed_at <= ?2' : ''}'
+      ') WHERE rn = 1',
+      variables: [
+        Variable<String>(vineId),
+        if (asOf != null) Variable<int>(asOf.toUtc().millisecondsSinceEpoch),
+      ],
+      readsFrom: {_db.fieldEvents},
+    );
   }
+
+  Map<String, FieldEvent> _byFieldDef(List<QueryRow> rows) => {
+    for (final r in rows)
+      r.read<String>('field_def_id'): _db.fieldEvents.map(r.data),
+  };
 
   /// Current value of one field across every vine, keyed by vine id.
   ///

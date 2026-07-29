@@ -109,12 +109,17 @@ final _labelProvider = FutureProvider.family<VineLabel?, String>((
   return ref.watch(labelServiceProvider).labelOf(vineId);
 });
 
-final _valuesProvider = FutureProvider.family<Map<String, FieldEvent>, String>((
+/// The vine's current values, live.
+///
+/// A watched query rather than a one-shot read plus a refresh counter. Undo
+/// writes to the event log directly, so anything that refreshed on the
+/// inspector's own bookkeeping would sit there showing a value that had already
+/// been reverted.
+final _valuesProvider = StreamProvider.family<Map<String, FieldEvent>, String>((
   ref,
   vineId,
-) async {
-  ref.watch(_valuesRevisionProvider);
-  return ref.watch(fieldEventsDaoProvider).currentValuesForVine(vineId);
+) {
+  return ref.watch(fieldEventsDaoProvider).watchCurrentValuesForVine(vineId);
 });
 
 final _historyProvider = FutureProvider.family<List<LabelChange>, String>((
@@ -201,12 +206,6 @@ class _LabelHistorySheet extends ConsumerWidget {
       '${at.year}-${at.month.toString().padLeft(2, '0')}-'
       '${at.day.toString().padLeft(2, '0')}';
 }
-
-/// Bumped after a write so the inspector re-reads.
-///
-/// The event log is append-only and written through a service rather than a
-/// watched query, so nothing else would tell the panel its value changed.
-final _valuesRevisionProvider = StateProvider<int>((ref) => 0);
 
 class _FieldRow extends ConsumerWidget {
   const _FieldRow({
@@ -311,7 +310,9 @@ class _FieldRow extends ConsumerWidget {
     switch (result) {
       case WriteSucceeded():
       case WriteBulkSucceeded():
-        ref.read(_valuesRevisionProvider.notifier).update((n) => n + 1);
+        // Nothing to do: the values are a watched query, so the write that just
+        // landed refreshes the panel on its own.
+        break;
 
       case WriteRejected(:final message):
         ScaffoldMessenger.of(
