@@ -32,6 +32,34 @@ enum FieldType {
       this == FieldType.categorical || this == FieldType.multiSelect;
 }
 
+/// What a field *is*.
+///
+/// The v3 pivot: nothing structural is built in except the plant. A vineyard
+/// that wants rows creates a field named Row with role [object] and draw type
+/// polyline; one that wants blocks creates Block as a polygon. One that wants
+/// neither gets neither.
+enum FieldRole {
+  /// A value carried by a plant -- health, clone, variety, rating.
+  attribute,
+
+  /// Something drawn on the map. Instances live in `map_objects`.
+  object,
+}
+
+/// How an [FieldRole.object] field is drawn.
+enum DrawType {
+  /// A line. **Carries plants**: they snap to it and hold an arc-length offset
+  /// along it, which is what makes reshape-and-slide work.
+  polyline,
+
+  /// A closed area. Contains plants but never carries them.
+  polygon,
+
+  /// A single position. Never a container -- a point has no interior, so there
+  /// is nothing for it to contain. `FieldDefsDao` enforces that.
+  point,
+}
+
 /// Lifecycle state of a vine at a position.
 ///
 /// A retired vine keeps its full history (decision D7); it is never deleted.

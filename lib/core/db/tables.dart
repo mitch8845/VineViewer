@@ -57,28 +57,16 @@ class Projects extends Table {
   /// 'ft' or 'm'. Stored rather than assumed so exports can label numbers.
   TextColumn get scaleUnit => text().nullable()();
 
-  IntColumn get createdAt => integer().map(const DateTimeMsConverter())();
-  IntColumn get updatedAt => integer().map(const DateTimeMsConverter())();
-  IntColumn get deletedAt =>
-      integer().nullable().map(const DateTimeMsConverter())();
-
-  @override
-  Set<Column> get primaryKey => {id};
-}
-
-/// Top level of the `block.row.plant` hierarchy (decision D9).
-class Blocks extends Table {
-  TextColumn get id => text()();
-  TextColumn get projectId =>
-      text().references(Projects, #id, onDelete: KeyAction.cascade)();
-
-  /// The "block" segment of the label. Not unique by constraint -- renumbering
-  /// flows move through transient duplicate states.
-  TextColumn get label => text().withLength(min: 1, max: 100)();
-
-  /// JSON polygon in image pixel coordinates. No georeferencing (non-goal).
-  TextColumn get boundary => text().nullable()();
-  IntColumn get sortOrder => integer().withDefault(const Constant(0))();
+  /// How a plant's identifier is composed, as JSON:
+  /// `{"delimiter":".","parts":[{"field":"<uuid>"},{"plant":true}]}`
+  ///
+  /// Null means the project has not composed one yet, and identifiers fall back
+  /// to the bare plant number -- so a half-configured project is still usable
+  /// rather than showing nothing.
+  ///
+  /// `projects` is already journaled, so changing this is undoable and shows up
+  /// in label history without any extra machinery.
+  TextColumn get identifierTemplate => text().nullable()();
 
   IntColumn get createdAt => integer().map(const DateTimeMsConverter())();
   IntColumn get updatedAt => integer().map(const DateTimeMsConverter())();
@@ -89,42 +77,37 @@ class Blocks extends Table {
   Set<Column> get primaryKey => {id};
 }
 
-/// A row of vines, optionally within a block.
+/// One drawn thing: a row, a block, a road, a post.
 ///
-/// Named `vine_rows` rather than `rows`: ROWS is a keyword in SQLite's window
-/// function syntax, and an unquoted reference in any hand-written statement
-/// would be a parse error. Not worth the ambiguity for four characters.
-@DataClassName('VineRow')
-class VineRows extends Table {
-  @override
-  String get tableName => 'vine_rows';
-
+/// Replaces the `blocks` and `vine_rows` tables. Both were the same idea with
+/// different geometry, and hardcoding them fixed the hierarchy at
+/// `block.row.plant` -- which is one vineyard's convention, not a law. An
+/// instance's kind comes from its [fieldDefId]: the field carries the draw
+/// type, whether it is a container, and its name.
+@DataClassName('MapObject')
+class MapObjects extends Table {
   TextColumn get id => text()();
 
-  /// Always set, for the same reason vines carry one: the block is nullable,
-  /// so a row drawn before it is assigned to a block -- and before it has any
-  /// vines -- would otherwise have no path to a project and would vanish from
-  /// the canvas that just drew it.
+  /// Always set. The field is nullable-free too, but a project reference means
+  /// an object drawn before anything else still has somewhere to belong.
   TextColumn get projectId =>
       text().references(Projects, #id, onDelete: KeyAction.cascade)();
 
-  /// Nullable: a row can exist before it is assigned to a block, which is what
-  /// makes the label `0.1.1` -- no block, row 1 -- expressible.
-  TextColumn get blockId =>
-      text().nullable().references(Blocks, #id, onDelete: KeyAction.setNull)();
+  /// Which object field this is an instance of -- Row, Block, Road.
+  TextColumn get fieldDefId =>
+      text().references(FieldDefs, #id, onDelete: KeyAction.cascade)();
 
+  /// This instance's name: `12` for a row, `north gate` for a point. Not unique
+  /// by constraint -- renumbering flows pass through transient duplicates.
   TextColumn get label => text().withLength(min: 1, max: 100)();
 
-  /// The row's shape, as JSON `[[x,y], ...]` in image pixel coordinates.
-  /// At least two points.
+  /// JSON `[[x,y], ...]` in image pixel coordinates. No georeferencing.
   ///
-  /// A polyline of straight segments, not a curve. Vines are trained on
-  /// stakes, so a row that changes direction does so at a hard angle -- a
-  /// spline would add arc-length maths and control-point UI to model something
-  /// that does not exist in the vineyard.
-  ///
-  /// Null until the row has been drawn.
-  TextColumn get path => text().nullable()();
+  /// One point for a point, at least two for a polyline, at least three for a
+  /// polygon, which is implicitly closed. Null until drawn -- an object can be
+  /// named before it has a shape, the same reason `vine_rows.path` was
+  /// nullable.
+  TextColumn get geometry => text().nullable()();
 
   IntColumn get sortOrder => integer().withDefault(const Constant(0))();
 
@@ -133,6 +116,48 @@ class VineRows extends Table {
   IntColumn get deletedAt =>
       integer().nullable().map(const DateTimeMsConverter())();
 
+  @override
+  Set<Column> get primaryKey => {id};
+}
+
+/// Which container objects a plant falls inside, derived from geometry.
+///
+/// **Stored rather than computed at read time**, for three reasons that all
+/// matter:
+///
+///  * This table is journaled, so the capture triggers record every membership
+///    change for free. That is what lets label history answer "what was this
+///    called in 2025?" after a boundary edit swept a plant into another block.
+///  * Undo replays membership changes generically, with no inverse code.
+///  * Reads stay a join. Point-in-polygon per plant per frame is not a budget.
+///
+/// Distinct from `vines.carrierId`, which is the **one** polyline a plant is
+/// physically snapped to. Membership is many: a plant can be in Row 12 and
+/// Terrace 3 at once while sliding along only Row 12.
+class PlantMemberships extends Table {
+  /// Required even though a composite key would do: the capture triggers
+  /// reference `NEW.id` on every journaled table.
+  TextColumn get id => text()();
+
+  TextColumn get vineId =>
+      text().references(Vines, #id, onDelete: KeyAction.cascade)();
+  TextColumn get objectId =>
+      text().references(MapObjects, #id, onDelete: KeyAction.cascade)();
+
+  /// Denormalised from the object, because every read asks "this plant's value
+  /// for this field" and the join to find it would be on the hot path.
+  TextColumn get fieldDefId =>
+      text().references(FieldDefs, #id, onDelete: KeyAction.cascade)();
+
+  IntColumn get createdAt => integer().map(const DateTimeMsConverter())();
+  IntColumn get updatedAt => integer().map(const DateTimeMsConverter())();
+
+  /// **No `deletedAt`**, deliberately breaking this file's convention.
+  ///
+  /// Memberships are derived: any device can recompute them from geometry, so
+  /// a tombstone carries nothing a sync would need. And a boundary edit that
+  /// sweeps 400 plants would otherwise leave 400 tombstones behind, every
+  /// time.
   @override
   Set<Column> get primaryKey => {id};
 }
@@ -150,31 +175,31 @@ class Vines extends Table {
   TextColumn get projectId =>
       text().references(Projects, #id, onDelete: KeyAction.cascade)();
 
-  /// **Non-null means the vine is physically snapped to that row.** That is
-  /// the whole snap model: there is no separate flag that could disagree with
-  /// reality. Clearing it detaches the vine, which then keeps its own x/y.
+  /// The polyline this plant is physically snapped to, and the only thing
+  /// [pathOffset] is measured along. **At most one.**
   ///
-  /// `setNull` on delete rather than cascade: deleting a row should orphan its
-  /// vines, not destroy them along with their entire recorded history.
-  TextColumn get rowId => text().nullable().references(
-    VineRows,
+  /// Non-null means the plant really is on that line: there is no separate flag
+  /// that could disagree with reality. Clearing it detaches the plant, which
+  /// then keeps its own x/y.
+  ///
+  /// Container membership is a *different relationship* and may be many -- see
+  /// [PlantMemberships]. A plant can be inside Block 2 and on Terrace 3 while
+  /// sliding along only Row 12.
+  ///
+  /// `setNull` on delete rather than cascade: deleting a line should orphan its
+  /// plants, not destroy them along with their entire recorded history.
+  TextColumn get carrierId => text().nullable().references(
+    MapObjects,
     #id,
     onDelete: KeyAction.setNull,
   )();
 
-  /// The vine's block, held directly rather than derived through its row.
+  /// The plant's own number, and usually the last part of its identifier.
   ///
-  /// A vine can have a block but no row -- the label `1.0.1` -- so the block
-  /// cannot be looked up via the row. When a vine is snapped to a row this is
-  /// kept equal to that row's block.
-  TextColumn get blockId =>
-      text().nullable().references(Blocks, #id, onDelete: KeyAction.setNull)();
-
-  /// The "plant" segment of the label. Unique within its (block, row) scope,
-  /// including the unassigned scope, but **not** enforced by a database
-  /// constraint: inserting a vine mid-row shifts subsequent indices, and the
-  /// intermediate states of that operation would violate a unique index.
-  /// LabelService enforces it inside a transaction instead.
+  /// Unique within its carrier's scope, including the carrier-less scope, but
+  /// **not** enforced by a database constraint: inserting a plant mid-line
+  /// shifts subsequent indices, and the intermediate states would violate a
+  /// unique index. Enforced in application code inside a transaction instead.
   IntColumn get positionIdx => integer()();
 
   RealColumn get x => real().nullable()();
@@ -309,7 +334,41 @@ class FieldDefs extends Table {
   TextColumn get name => text().withLength(min: 1, max: 100)();
 
   /// Immutable once created (decision D5).
+  ///
+  /// Always [FieldType.text] for an object field -- object labels are text.
   TextColumn get type => textEnum<FieldType>()();
+
+  /// Whether this field is a value on a plant or something drawn on the map.
+  TextColumn get role =>
+      textEnum<FieldRole>().withDefault(const Constant('attribute'))();
+
+  /// Null for attributes.
+  ///
+  /// **Immutable once created**, like [type] and for the same reason: changing
+  /// a polyline field to a polygon would invalidate every geometry already
+  /// drawn against it.
+  TextColumn get drawType => textEnum<DrawType>().nullable()();
+
+  /// Objects only. A container puts a value on **every** plant, blank or not,
+  /// derived from which of its instances the plant falls inside. A
+  /// non-container touches plants not at all -- draw a road, and no plant
+  /// gains a field or changes in any way.
+  BoolColumn get isContainer => boolean().withDefault(const Constant(false))();
+
+  /// What an identifier renders where this field has no value.
+  ///
+  /// The generic form of the old reserved `"0"`, now chosen per field: `0` for
+  /// Row, `none` for Clone. A real value equal to this is refused, or `0.12.7`
+  /// becomes ambiguous between a genuine address and an unassigned one -- the
+  /// exact trap the hardcoded version documented.
+  TextColumn get blankPlaceholder => text().nullable()();
+
+  /// Polyline containers only: how close a plant must be, in layout pixels, to
+  /// count as on the line. Null uses `MembershipService.defaultTolerance`.
+  ///
+  /// Needed because a polygon has an interior and a line does not: "inside" is
+  /// exact, "on" is a judgement about how accurately someone tapped.
+  RealColumn get tolerance => real().nullable()();
 
   /// Static = write-once and then locked (variety, rootstock, plant date).
   /// Tracked = full event history (health, spray, water). Decision D6.

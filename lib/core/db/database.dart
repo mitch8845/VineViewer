@@ -13,8 +13,8 @@ part 'database.g.dart';
 @DriftDatabase(
   tables: [
     Projects,
-    Blocks,
-    VineRows,
+    MapObjects,
+    PlantMemberships,
     Vines,
     FieldDefs,
     FieldEvents,
@@ -42,8 +42,12 @@ class AppDatabase extends _$AppDatabase {
   ///
   /// * v2 -- the undo journal: `operations`, `operation_rows`, `undo_context`,
   ///   and the capture triggers.
+  /// * v3 -- the generic data engine. `blocks` and `vine_rows` become
+  ///   `map_objects` instances of user-defined object fields, containment moves
+  ///   to `plant_memberships`, and the identifier becomes a template. **This
+  ///   one wipes.** See [migration].
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -61,6 +65,7 @@ class AppDatabase extends _$AppDatabase {
         await m.createTable(undoContext);
         await _installUndoJournal();
       }
+      if (from < 3) await _wipeToV3(m);
     },
     beforeOpen: (details) async {
       // Must be enabled per connection: SQLite defaults foreign keys OFF, so
@@ -70,14 +75,65 @@ class AppDatabase extends _$AppDatabase {
     },
   );
 
+  /// Drops everything and rebuilds at v3.
+  ///
+  /// **This destroys all data, deliberately.** v3 is a fresh schema rather than
+  /// surgery on v2: `blocks` and `vine_rows` do not map onto `map_objects`
+  /// without inventing the object fields they are instances of, the container
+  /// flags, the blank placeholders, and an identifier template. Both v2
+  /// projects in existence were throwaway -- one seeded by a button, one
+  /// holding a single row drawn as a check -- so writing that migration would
+  /// have cost more than redrawing them.
+  ///
+  /// **The next migration will be the first one written against data anyone
+  /// wants to keep.** That one needs a real fixture and a real test; this one
+  /// only needs to leave a working empty database behind.
+  Future<void> _wipeToV3(Migrator m) async {
+    // Off while dropping, or the cascades fire in an order SQLite objects to
+    // as tables disappear out from under their references.
+    await customStatement('PRAGMA foreign_keys = OFF');
+
+    // Triggers first. `DROP TABLE` leaves a trigger naming a vanished table in
+    // sqlite_master as a dangling definition, which then breaks the *next*
+    // migration rather than this one -- the worst place for it to surface.
+    for (final table in ['blocks', 'vine_rows', 'vines', 'field_events',
+                         'field_defs', 'projects']) {
+      for (final suffix in ['insert', 'update', 'delete']) {
+        await customStatement('DROP TRIGGER IF EXISTS jr_${table}_$suffix');
+      }
+    }
+
+    for (final table in [
+      'operation_rows',
+      'operations',
+      'undo_context',
+      'field_events',
+      'field_defs',
+      'vines',
+      'vine_rows',
+      'blocks',
+      'projects',
+    ]) {
+      await customStatement('DROP TABLE IF EXISTS $table');
+    }
+
+    await m.createAll();
+    await _createIndexes();
+    await _installUndoJournal();
+    await customStatement('PRAGMA foreign_keys = ON');
+  }
+
   /// Tables whose every change is captured for undo.
   ///
   /// Note what is absent: the three journal tables themselves. Capturing the
   /// journal in the journal would recurse.
   List<TableInfo<Table, dynamic>> get journaledTables => [
     projects,
-    blocks,
-    vineRows,
+    mapObjects,
+    // Memberships are derived, but journaling them is what makes a boundary
+    // edit undoable and what lets label history explain why a plant's
+    // identifier changed when the plant itself was never touched.
+    plantMemberships,
     vines,
     fieldDefs,
     fieldEvents,
@@ -171,9 +227,10 @@ class AppDatabase extends _$AppDatabase {
       'ON field_events (batch_id) WHERE batch_id IS NOT NULL',
     );
 
-    // Hierarchy traversal, all frequent enough to matter at 4,000 vines.
+    // Plants along one line, in order: what numbering and insertion both walk.
     await customStatement(
-      'CREATE INDEX IF NOT EXISTS ix_vines_row ON vines (row_id, position_idx)',
+      'CREATE INDEX IF NOT EXISTS ix_vines_carrier '
+      'ON vines (carrier_id, position_idx)',
     );
 
     // The canvas loads every vine in a project at once, so this is the single
@@ -182,18 +239,27 @@ class AppDatabase extends _$AppDatabase {
       'CREATE INDEX IF NOT EXISTS ix_vines_project ON vines (project_id)',
     );
 
-    // Label allocation asks "what numbers are taken in this scope", including
-    // the unassigned scope where both parents are null.
+    // Drawing and painting both ask for a project's objects, and the canvas
+    // asks for one field's instances when a draw tool is active.
     await customStatement(
-      'CREATE INDEX IF NOT EXISTS ix_vines_label_scope '
-      'ON vines (project_id, block_id, row_id, position_idx)',
+      'CREATE INDEX IF NOT EXISTS ix_objects_project '
+      'ON map_objects (project_id)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS ix_objects_field '
+      'ON map_objects (field_def_id)',
     );
 
+    // Rendering an identifier asks "this plant's value for this field", which
+    // is the whole reason field_def_id is denormalised onto the membership.
     await customStatement(
-      'CREATE INDEX IF NOT EXISTS ix_rows_block ON vine_rows (block_id)',
+      'CREATE INDEX IF NOT EXISTS ix_membership_vine '
+      'ON plant_memberships (vine_id, field_def_id)',
     );
+    // Reconciliation after a geometry edit asks the other direction.
     await customStatement(
-      'CREATE INDEX IF NOT EXISTS ix_blocks_project ON blocks (project_id)',
+      'CREATE INDEX IF NOT EXISTS ix_membership_object '
+      'ON plant_memberships (object_id)',
     );
     await customStatement(
       'CREATE INDEX IF NOT EXISTS ix_field_defs_project ON field_defs (project_id)',
