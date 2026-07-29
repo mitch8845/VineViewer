@@ -15,6 +15,13 @@ enum CanvasTool {
   /// Tap adds a point to the row being drawn.
   drawRow,
 
+  /// Tap inserts a vine into the nearest row, between its neighbours.
+  ///
+  /// Distinct from [placeVine] because it renumbers: the app has to ask whether
+  /// to shift every label downstream or reuse a gap, and that question only
+  /// makes sense for a vine going *into* an existing sequence.
+  insertVine,
+
   /// Drag moves the vine under the pointer.
   move,
 }

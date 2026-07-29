@@ -215,23 +215,32 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
     final projectId = ref.read(activeProjectIdProvider);
     if (projectId == null) return;
 
-    final result = _isNew
-        ? await dao.create(
-            projectId: projectId,
-            name: _name.text,
-            type: _type,
-            isStatic: _isStatic,
-            config: _config,
-          )
-        // Type is deliberately not passed: it is immutable once created (D5),
-        // and the editor disables the control rather than offering something
-        // that would throw.
-        : await dao.update(
-            widget.existing!.id,
-            name: _name.text,
-            isStatic: _isStatic,
-            config: _config,
-          );
+    final result = await ref
+        .read(operationRecorderProvider)
+        .run(
+          projectId: projectId,
+          kind: _isNew ? 'create_field' : 'edit_field',
+          description: _isNew
+              ? 'Add field ${_name.text}'
+              : 'Edit field ${widget.existing!.name}',
+          body: () => _isNew
+              ? dao.create(
+                  projectId: projectId,
+                  name: _name.text,
+                  type: _type,
+                  isStatic: _isStatic,
+                  config: _config,
+                )
+              // Type is deliberately not passed: it is immutable once created
+              // (D5), and the editor disables the control rather than offering
+              // something that would throw.
+              : dao.update(
+                  widget.existing!.id,
+                  name: _name.text,
+                  isStatic: _isStatic,
+                  config: _config,
+                ),
+        );
 
     switch (result) {
       case FieldDefInvalid(:final problems):

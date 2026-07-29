@@ -51,10 +51,23 @@ class VineInspector extends ConsumerWidget {
                         if (!label.hasRow) 'not on a row',
                       ].join(' · '),
               ),
-              trailing: IconButton(
-                icon: const Icon(Icons.close),
-                onPressed: () =>
-                    ref.read(selectionProvider.notifier).state = const {},
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: 'Label history',
+                    icon: const Icon(Icons.history),
+                    onPressed: () => showModalBottomSheet<void>(
+                      context: context,
+                      builder: (context) => _LabelHistorySheet(vineId: vineId),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () =>
+                        ref.read(selectionProvider.notifier).state = const {},
+                  ),
+                ],
               ),
             ),
             const Divider(height: 1),
@@ -103,6 +116,91 @@ final _valuesProvider = FutureProvider.family<Map<String, FieldEvent>, String>((
   ref.watch(_valuesRevisionProvider);
   return ref.watch(fieldEventsDaoProvider).currentValuesForVine(vineId);
 });
+
+final _historyProvider = FutureProvider.family<List<LabelChange>, String>((
+  ref,
+  vineId,
+) async {
+  ref.watch(layoutSnapshotProvider);
+  return ref.watch(labelServiceProvider).historyOf(vineId);
+});
+
+/// Every label this vine has carried.
+///
+/// The point is reconciling paper: a 2025 notebook saying "3.12.7 looks weak"
+/// is guesswork once numbers have been reused or shifted, and this is what
+/// turns it back into a fact.
+class _LabelHistorySheet extends ConsumerWidget {
+  const _LabelHistorySheet({required this.vineId});
+
+  final String vineId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final history = ref.watch(_historyProvider(vineId));
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: history.when(
+          loading: () => const Center(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: CircularProgressIndicator(),
+            ),
+          ),
+          error: (e, _) => Text('$e'),
+          data: (changes) => Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Label history',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 12),
+              for (final change in changes)
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    change == changes.last
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_unchecked,
+                    size: 18,
+                  ),
+                  title: Text(
+                    change.label.text,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text(
+                    change.at == null
+                        // Honest about the limit: the journal records what
+                        // changed a label, never when it was first given.
+                        ? 'as far back as the record goes'
+                        : '${_date(change.at!)}'
+                              '${change.reason == null ? '' : ' -- ${change.reason}'}',
+                  ),
+                ),
+              if (changes.length == 1)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text(
+                    'This vine has never been renumbered.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  static String _date(DateTime at) =>
+      '${at.year}-${at.month.toString().padLeft(2, '0')}-'
+      '${at.day.toString().padLeft(2, '0')}';
+}
 
 /// Bumped after a write so the inspector re-reads.
 ///
@@ -186,13 +284,26 @@ class _FieldRow extends ConsumerWidget {
     Object? value, {
     bool force = false,
   }) async {
+    final projectId = ref.read(activeProjectIdProvider);
+    if (projectId == null) return;
+
+    // One press of undo puts the old value back, and because undo replays the
+    // journal rather than appending a correction, the mistaken entry does not
+    // linger in this vine's history.
     final result = await ref
-        .read(vineDataServiceProvider)
-        .setValue(
-          vineId: vineId,
-          fieldDefId: field.id,
-          input: value,
-          force: force,
+        .read(operationRecorderProvider)
+        .run(
+          projectId: projectId,
+          kind: 'set_value',
+          description: 'Set ${field.name}',
+          body: () => ref
+              .read(vineDataServiceProvider)
+              .setValue(
+                vineId: vineId,
+                fieldDefId: field.id,
+                input: value,
+                force: force,
+              ),
         );
 
     if (!context.mounted) return;

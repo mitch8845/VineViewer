@@ -1,6 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'data/label_service.dart';
+import 'data/operation_recorder.dart';
+import 'data/undo_service.dart';
 import 'data/vine_data_service.dart';
 import 'db/daos/field_defs_dao.dart';
 import 'db/daos/field_events_dao.dart';
@@ -49,6 +51,18 @@ final vineDataServiceProvider = Provider(
     fieldDefs: ref.watch(fieldDefsDaoProvider),
     events: ref.watch(fieldEventsDaoProvider),
   ),
+);
+
+/// Wraps a user gesture so it can be undone as one thing.
+///
+/// Called from the feature layer, never from inside a DAO -- a DAO cannot know
+/// where a gesture begins or ends.
+final operationRecorderProvider = Provider(
+  (ref) => OperationRecorder(ref.watch(databaseProvider)),
+);
+
+final undoServiceProvider = Provider(
+  (ref) => UndoService(ref.watch(databaseProvider)),
 );
 
 /// Live list of projects for the project picker.

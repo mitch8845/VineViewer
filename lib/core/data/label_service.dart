@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:drift/drift.dart';
 
 import '../db/database.dart';
@@ -40,6 +42,24 @@ class VineLabel {
 
   @override
   int get hashCode => Object.hash(block, row, plant);
+}
+
+/// A label this vine carried, and what gave it that label.
+class LabelChange {
+  const LabelChange({required this.label, this.at, this.reason});
+
+  final VineLabel label;
+
+  /// When the vine took this label, or null when the journal cannot say --
+  /// which happens for the label it carries right now if that was set before
+  /// the journal existed, or by something that bypasses it such as an import.
+  final DateTime? at;
+
+  /// The description of the operation responsible, e.g. "Insert vine in row 12".
+  final String? reason;
+
+  @override
+  String toString() => '${label.text}${at == null ? '' : ' from $at'}';
 }
 
 /// Assigns and resolves vine labels.
@@ -329,6 +349,97 @@ class LabelService {
     });
   }
 
+  /// Numbers a vine being inserted into a row at a chosen point.
+  ///
+  /// Plan section 6.3 recommended defaulting to a suffix (`3.12.6a`) so nothing
+  /// downstream had to move. **That is superseded**: plant numbers are integers
+  /// assigned next-available, and `3.12.6a` is not expressible in an
+  /// `IntColumn`. The user is asked instead, per insertion, which is the honest
+  /// version of the trade -- only they know whether a printed map is in a
+  /// pocket somewhere.
+  ///
+  /// With [shift] true the new vine takes `afterPositionIdx + 1` and everything
+  /// beyond it moves up one. With [shift] false it takes the lowest free number
+  /// in the row, appending if there are no gaps, and no existing vine is
+  /// touched -- at the cost of the number not matching where the vine sits.
+  ///
+  /// Returns the number given to [vineId].
+  Future<int> insertAfter({
+    required String vineId,
+    required String rowId,
+    required int afterPositionIdx,
+    required bool shift,
+    DateTime? now,
+  }) async {
+    final timestamp = now ?? DateTime.now();
+
+    return _db.transaction(() async {
+      final vine = await _requireVine(vineId);
+
+      if (!shift) {
+        final plant = await nextPlantNumber(
+          projectId: vine.projectId,
+          rowId: rowId,
+        );
+        await _place(vineId, rowId, plant, timestamp);
+        return plant;
+      }
+
+      // Descending order is not required -- position_idx has no unique index,
+      // precisely so renumbering can pass through duplicate states -- but a
+      // single statement is one journal row per vine either way and is far
+      // cheaper on a 72-vine row.
+      await _db.customStatement(
+        'UPDATE vines SET position_idx = position_idx + 1, updated_at = ?1 '
+        'WHERE row_id = ?2 AND deleted_at IS NULL AND position_idx > ?3',
+        [timestamp.toUtc().millisecondsSinceEpoch, rowId, afterPositionIdx],
+      );
+
+      final plant = afterPositionIdx + 1;
+      await _place(vineId, rowId, plant, timestamp);
+      return plant;
+    });
+  }
+
+  /// How many labels [insertAfter] would change if asked to shift.
+  ///
+  /// The prompt has to name this number. "This renames 34 vines" is a decision;
+  /// "labels after this point will change" is a shrug.
+  Future<int> countAffectedByShift({
+    required String rowId,
+    required int afterPositionIdx,
+  }) async {
+    final row = await _db
+        .customSelect(
+          'SELECT COUNT(*) AS n FROM vines '
+          'WHERE row_id = ?1 AND deleted_at IS NULL AND position_idx > ?2',
+          variables: [Variable<String>(rowId), Variable<int>(afterPositionIdx)],
+          readsFrom: {_db.vines},
+        )
+        .getSingle();
+    return row.read<int>('n');
+  }
+
+  Future<void> _place(
+    String vineId,
+    String rowId,
+    int plant,
+    DateTime timestamp,
+  ) async {
+    final row = await (_db.select(
+      _db.vineRows,
+    )..where((r) => r.id.equals(rowId))).getSingle();
+
+    await (_db.update(_db.vines)..where((v) => v.id.equals(vineId))).write(
+      VinesCompanion(
+        rowId: Value(rowId),
+        blockId: Value(row.blockId),
+        positionIdx: Value(plant),
+        updatedAt: Value(timestamp),
+      ),
+    );
+  }
+
   /// Finds duplicate labels in a project.
   ///
   /// Uniqueness is maintained in application code, not by a constraint, so it
@@ -346,6 +457,198 @@ class LabelService {
     ]..sort();
   }
 
+  // --------------------------------------------------------------- history
+
+  /// Every label this vine has carried, oldest first.
+  ///
+  /// Answers "what was 3.12.7 in 2025?" -- the question that makes a shelf of
+  /// paper notebooks worth keeping. Labels are mutable *and* reused from gaps,
+  /// so the same text genuinely does mean different vines at different times,
+  /// and without this reconciling an old record is guesswork.
+  ///
+  /// Derived from the undo journal rather than from a table of its own. The
+  /// journal already records the before and after of every `position_idx`,
+  /// `row_id`, and `block_id` change, so a second store would be a duplicate
+  /// source of truth for the same fact -- and the two would eventually
+  /// disagree. This is a per-vine query shown in the inspector, not a hot path,
+  /// so the scan is the right trade.
+  ///
+  /// **It begins where the journal begins.** Anything that happened before the
+  /// journal existed, or was written outside an operation (an import, a
+  /// restored archive), is not in here. The current label is always the last
+  /// entry, whether or not the journal explains how it got there.
+  Future<List<LabelChange>> historyOf(String vineId) async {
+    final vine = await (_db.select(
+      _db.vines,
+    )..where((v) => v.id.equals(vineId))).getSingleOrNull();
+    final entries = await _journalFor(table: 'vines', ids: {vineId});
+    if (vine == null && entries.isEmpty) return const [];
+
+    // Which rows and blocks this vine has ever pointed at, so their renames can
+    // be folded in: 3.12.7 also becomes 3.13.7 when row 12 is renamed to 13,
+    // without the vine itself being touched at all.
+    final rowIds = <String>{if (vine?.rowId != null) vine!.rowId!};
+    final blockIds = <String>{if (vine?.blockId != null) vine!.blockId!};
+    for (final entry in entries) {
+      for (final state in [entry.before, entry.after]) {
+        if (state == null) continue;
+        final rowId = state['row_id'] as String?;
+        final blockId = state['block_id'] as String?;
+        if (rowId != null) rowIds.add(rowId);
+        if (blockId != null) blockIds.add(blockId);
+      }
+    }
+
+    final merged = [
+      ...entries,
+      ...await _journalFor(table: 'vine_rows', ids: rowIds),
+      ...await _journalFor(table: 'blocks', ids: blockIds),
+    ]..sort((a, b) => a.id.compareTo(b.id));
+
+    // Parent labels as they stood when the journal opens, found by taking the
+    // current labels and rewinding every recorded rename. A parent with no
+    // journal entry has never been renamed, so its current label is also its
+    // oldest one.
+    final names = <String, String>{
+      for (final entry in await _currentLabels('vine_rows', rowIds))
+        entry.$1: entry.$2,
+      for (final entry in await _currentLabels('blocks', blockIds))
+        entry.$1: entry.$2,
+    };
+    for (final entry in merged.reversed) {
+      final before = entry.before;
+      if (entry.table == 'vines' || before == null) continue;
+      names[entry.rowId] = before['label'] as String;
+    }
+
+    // The vine's own starting state: what it looked like before the first
+    // operation that touched it, or -- if no operation ever has -- what it looks
+    // like now. A null `before` on the first entry means the vine was created
+    // during the journal and had no label before that.
+    var state = entries.isNotEmpty
+        ? entries.first.before
+        : {
+            'position_idx': vine!.positionIdx,
+            'row_id': vine.rowId,
+            'block_id': vine.blockId,
+          };
+
+    final history = <LabelChange>[];
+    void record(DateTime? at, String? reason) {
+      final current = state;
+      if (current == null) return; // the vine did not exist yet
+
+      final label = VineLabel(
+        block: names[current['block_id']] ?? VineLabel.unassigned,
+        row: names[current['row_id']] ?? VineLabel.unassigned,
+        plant: current['position_idx'] as int,
+      );
+
+      // Only transitions are interesting. Most operations touch a vine without
+      // moving its address at all -- a drag along a row is the common case --
+      // and listing every one of those would bury the renames that matter.
+      if (history.isNotEmpty && history.last.label == label) return;
+      history.add(LabelChange(label: label, at: at, reason: reason));
+    }
+
+    // The starting label carries no date: the journal records what changed it,
+    // never when it was first given.
+    record(null, null);
+
+    for (final entry in merged) {
+      if (entry.table == 'vines') {
+        state = entry.after;
+      } else {
+        final after = entry.after;
+        if (after != null) names[entry.rowId] = after['label'] as String;
+      }
+      record(entry.at, entry.description);
+    }
+
+    // Anything that bypassed the journal -- an import, a restored archive --
+    // leaves the walk disagreeing with reality. Reality wins.
+    final current = await labelOf(vineId);
+    if (current != null && (history.isEmpty || history.last.label != current)) {
+      history.add(LabelChange(label: current));
+    }
+
+    return history;
+  }
+
+  Future<List<_JournalEntry>> _journalFor({
+    required String table,
+    required Set<String> ids,
+  }) async {
+    if (ids.isEmpty) return const [];
+
+    final placeholders = List.generate(
+      ids.length,
+      (i) => '?${i + 2}',
+    ).join(',');
+    final rows = await _db
+        .customSelect(
+          'SELECT r.id AS id, r.row_id AS row_id, r.before AS before, '
+          '       r.after AS after, o.created_at AS created_at, '
+          '       o.description AS description '
+          'FROM operation_rows r '
+          'JOIN operations o ON o.id = r.operation_id '
+          // Undone operations are excluded, so undo means the rename did not
+          // happen rather than "it happened and then happened backwards". That
+          // matches the decision that undoing a data write erases it: an undo
+          // is a correction, not an event worth preserving.
+          'WHERE o.undone_at IS NULL '
+          '  AND r.target_table = ?1 AND r.row_id IN ($placeholders) '
+          'ORDER BY r.id',
+          variables: [
+            Variable<String>(table),
+            for (final id in ids) Variable<String>(id),
+          ],
+          readsFrom: {_db.operationRows, _db.operations},
+        )
+        .get();
+
+    return [
+      for (final r in rows)
+        _JournalEntry(
+          id: r.read<int>('id'),
+          table: table,
+          rowId: r.read<String>('row_id'),
+          before: _decode(r.readNullable<String>('before')),
+          after: _decode(r.readNullable<String>('after')),
+          at: DateTime.fromMillisecondsSinceEpoch(
+            r.read<int>('created_at'),
+            isUtc: true,
+          ).toLocal(),
+          description: r.read<String>('description'),
+        ),
+    ];
+  }
+
+  Future<List<(String, String)>> _currentLabels(
+    String table,
+    Set<String> ids,
+  ) async {
+    if (ids.isEmpty) return const [];
+
+    final placeholders = List.generate(
+      ids.length,
+      (i) => '?${i + 1}',
+    ).join(',');
+    final rows = await _db
+        .customSelect(
+          'SELECT id, label FROM $table WHERE id IN ($placeholders)',
+          variables: [for (final id in ids) Variable<String>(id)],
+        )
+        .get();
+
+    return [
+      for (final r in rows) (r.read<String>('id'), r.read<String>('label')),
+    ];
+  }
+
+  static Map<String, dynamic>? _decode(String? json) =>
+      json == null ? null : jsonDecode(json) as Map<String, dynamic>;
+
   Future<Vine> _requireVine(String vineId) async {
     final vine =
         await (_db.select(_db.vines)
@@ -354,4 +657,27 @@ class LabelService {
     if (vine == null) throw StateError('Vine $vineId does not exist.');
     return vine;
   }
+}
+
+/// One captured row from the undo journal, decoded.
+class _JournalEntry {
+  const _JournalEntry({
+    required this.id,
+    required this.table,
+    required this.rowId,
+    required this.before,
+    required this.after,
+    required this.at,
+    required this.description,
+  });
+
+  /// The journal row's own id, which is also the order things happened in.
+  final int id;
+
+  final String table;
+  final String rowId;
+  final Map<String, dynamic>? before;
+  final Map<String, dynamic>? after;
+  final DateTime at;
+  final String description;
 }

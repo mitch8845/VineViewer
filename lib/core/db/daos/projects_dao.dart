@@ -128,6 +128,15 @@ class ProjectsDao {
   /// field definition, and event with it. Callers must confirm explicitly --
   /// the plan requires typed confirmation for permanent deletion.
   Future<void> purge(String id) async {
-    await (_db.delete(_db.projects)..where((p) => p.id.equals(id))).go();
+    await _db.transaction(() async {
+      // The undo journal goes with it. `operations.project_id` is deliberately
+      // not a foreign key -- a cascade would delete the journal rows describing
+      // the purge as they were being written -- so it is cleared here instead.
+      // There is nothing worth keeping: purge is irreversible by design.
+      await (_db.delete(
+        _db.operations,
+      )..where((o) => o.projectId.equals(id))).go();
+      await (_db.delete(_db.projects)..where((p) => p.id.equals(id))).go();
+    });
   }
 }

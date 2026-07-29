@@ -3,7 +3,9 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../../core/geometry/polyline.dart';
 import '../../core/providers.dart';
@@ -60,6 +62,12 @@ class ProjectListScreen extends ConsumerWidget {
                           ? 'No aerial image'
                           : 'Image ${project.imageWidth}x${project.imageHeight}',
                     ),
+                    trailing: IconButton(
+                      tooltip: 'Use the bundled aerial',
+                      icon: const Icon(Icons.image_outlined),
+                      onPressed: () =>
+                          _useSampleAerial(context, ref, project.id),
+                    ),
                     onTap: () => _open(context, ref, project.id, project.name),
                   );
                 },
@@ -90,6 +98,21 @@ class ProjectListScreen extends ConsumerWidget {
     if (name == null || name.trim().isEmpty) return;
 
     await ref.read(projectsDaoProvider).create(name: name.trim());
+  }
+
+  Future<void> _useSampleAerial(
+    BuildContext context,
+    WidgetRef ref,
+    String projectId,
+  ) async {
+    try {
+      await installSampleAerial(ref, projectId);
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Could not set the image: $e')));
+    }
   }
 }
 
@@ -226,4 +249,29 @@ Future<void> setProjectImage(
   await ref
       .read(projectsDaoProvider)
       .setImage(projectId, imagePath: path, width: width, height: height);
+}
+
+/// The Five Sisters aerial that ships with the app.
+const sampleAerialAsset = 'assets/aerial/five_sisters_aerial.jpg';
+
+/// Copies the bundled aerial out to disk and attaches it to a project.
+///
+/// The asset is copied rather than referenced in place because everything
+/// downstream -- [setProjectImage] above, and the canvas decoder in
+/// `backgroundImageProvider` -- works from a real filesystem path. Bundled
+/// assets have none; they live inside the APK behind [rootBundle].
+///
+/// Named per project so two vineyards can be given the same starting image and
+/// then have it repositioned independently.
+Future<void> installSampleAerial(WidgetRef ref, String projectId) async {
+  final directory = await getApplicationDocumentsDirectory();
+  final file = File('${directory.path}/aerials/$projectId.jpg');
+  await file.parent.create(recursive: true);
+
+  // Overwrites deliberately: re-running this is the user asking for a clean
+  // copy, most likely after having dragged the image somewhere unhelpful.
+  final bytes = await rootBundle.load(sampleAerialAsset);
+  await file.writeAsBytes(bytes.buffer.asUint8List(), flush: true);
+
+  await setProjectImage(ref, projectId, file.path);
 }

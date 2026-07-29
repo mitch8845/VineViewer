@@ -211,6 +211,96 @@ class Vines extends Table {
   Set<Column> get primaryKey => {id};
 }
 
+// --------------------------------------------------------------- undo journal
+//
+// Three tables implementing durable undo. Undo has to survive the app being
+// killed: an Android tablet carried around a vineyard gets backgrounded and
+// reaped by the OS routinely, and an in-memory undo stack would be gone by the
+// time the user noticed the mistake.
+//
+// These three deliberately break two conventions stated at the top of this
+// file, for one reason: **the journal is device-local and is never synced.**
+// It describes edits made on this device to this database file.
+//
+//  * Integer autoincrement keys, not UUIDs. There is no cross-device collision
+//    to avoid, and the key doubles as the replay order for free -- SQLite's
+//    rowid increases monotonically per insert.
+//  * No soft deletes. Pruning the journal is meant to reclaim space; a
+//    `deleted_at` that kept the rows would defeat the entire point.
+
+/// One user gesture. The unit of undo.
+///
+/// A gesture is not a DAO call: "Replace with New Vine" retires one vine,
+/// creates another, and copies its static fields -- three writes, one row here,
+/// one press of undo.
+class Operations extends Table {
+  IntColumn get id => integer().autoIncrement()();
+
+  /// Plain text, deliberately **not** a foreign key to [Projects].
+  ///
+  /// A cascade here would be self-defeating: purging a project would delete the
+  /// journal rows describing that purge, so the operation could never be
+  /// replayed. Purge is documented as irreversible and clears the project's
+  /// journal explicitly instead.
+  TextColumn get projectId => text()();
+
+  /// Machine-readable operation type, e.g. `move_vine`, `delete_row`.
+  TextColumn get kind => text()();
+
+  /// The text on the undo button: "Delete row 12 (40 vines)".
+  ///
+  /// Composed when the operation is recorded, while the labels it names are
+  /// still current. Deriving it at undo time would describe the vineyard as it
+  /// is now rather than as it was when the mistake was made.
+  TextColumn get description => text()();
+
+  /// Null while applied; set when undone, which also makes it redoable.
+  IntColumn get undoneAt =>
+      integer().nullable().map(const DateTimeMsConverter())();
+
+  IntColumn get createdAt => integer().map(const DateTimeMsConverter())();
+}
+
+/// One touched database row, captured before and after.
+///
+/// Written by the triggers in `database.dart`, never by Dart. Undo replays
+/// these in descending [id] restoring [before]; redo ascends applying [after].
+class OperationRows extends Table {
+  IntColumn get id => integer().autoIncrement()();
+
+  IntColumn get operationId =>
+      integer().references(Operations, #id, onDelete: KeyAction.cascade)();
+
+  /// Named `targetTable` rather than the obvious `tableName`: drift's own
+  /// [Table.tableName] getter is what `VineRows` overrides above, and a column
+  /// of that name would shadow it.
+  TextColumn get targetTable => text()();
+
+  TextColumn get rowId => text()();
+
+  /// The row as JSON before the change. Null means it did not exist -- so
+  /// undoing this entry deletes the row.
+  TextColumn get before => text().nullable()();
+
+  /// The row as JSON after. Null means it was deleted.
+  TextColumn get after => text().nullable()();
+}
+
+/// Single row (`id` is always 1) naming the operation currently being recorded.
+///
+/// The capture triggers read this and do nothing when it is null. That null is
+/// the escape hatch for writes that own their rollback and must not be
+/// journaled: XLSX import (which rolls back by `batchId`), test seeding, and
+/// undo's own replay -- without the last, undo would record its own inverse and
+/// recurse forever.
+class UndoContext extends Table {
+  IntColumn get id => integer()();
+  IntColumn get operationId => integer().nullable()();
+
+  @override
+  Set<Column> get primaryKey => {id};
+}
+
 /// A user-defined field definition.
 class FieldDefs extends Table {
   TextColumn get id => text()();

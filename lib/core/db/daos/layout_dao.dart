@@ -296,6 +296,46 @@ class LayoutDao {
     return nearest.distance;
   }
 
+  /// Slides a vine onto a row it has **already been numbered into**.
+  ///
+  /// The geometry half of [snapVineToRow] without the addressing half. Insert
+  /// Vine has to number the vine first -- the whole point is that the user
+  /// chose whether to shift or gap-fill -- and calling [snapVineToRow]
+  /// afterwards would renumber it straight back to the next free slot,
+  /// silently undoing that choice.
+  Future<double> snapVineToRowKeepingNumber({
+    required String vineId,
+    required String rowId,
+    DateTime? now,
+  }) async {
+    final path = await pathOf(rowId);
+    if (path == null) {
+      throw StateError('Row $rowId has no path to snap to.');
+    }
+
+    final vine = await _requireVine(vineId);
+    final nearest = path.closestTo(Offset(vine.x ?? 0, vine.y ?? 0));
+
+    await (_db.update(_db.vines)..where((v) => v.id.equals(vineId))).write(
+      VinesCompanion(
+        rowId: Value(rowId),
+        pathOffset: Value(nearest.offset),
+        x: Value(nearest.point.dx),
+        y: Value(nearest.point.dy),
+        updatedAt: Value(now ?? DateTime.now()),
+      ),
+    );
+
+    return nearest.distance;
+  }
+
+  /// One vine by id, or null if it does not exist.
+  Future<Vine?> vineById(String vineId) {
+    return (_db.select(_db.vines)
+          ..where((v) => v.id.equals(vineId) & v.deletedAt.isNull()))
+        .getSingleOrNull();
+  }
+
   /// Detaches a vine from its row, leaving it where it is on screen.
   Future<void> unsnapVine(String vineId, {DateTime? now}) =>
       _labels.detachFromRow(vineId: vineId, now: now);

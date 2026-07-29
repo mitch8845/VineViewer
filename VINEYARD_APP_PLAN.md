@@ -319,11 +319,23 @@ Stack
 2. **Suffix** — new vine becomes 3.12.6a. No downstream change. Ugly but stable.
 3. **Gap fill** — if 3.12.6 was previously removed and its slot is empty, reuse the number.
 
-**Recommendation:** Default to Suffix (non-destructive), offer Shift with a clear warning showing how many labels will change. Provide an explicit "Renumber Row" tool for when the user *wants* clean sequential IDs and accepts the churn.
+**Recommendation:** ~~Default to Suffix (non-destructive), offer Shift with a clear warning showing how many labels will change.~~ Provide an explicit "Renumber Row" tool for when the user *wants* clean sequential IDs and accepts the churn.
+
+> **SUPERSEDED (Phase 3a).** Suffix is not expressible: plant numbers are integers assigned "next available", and `position_idx` is an `IntColumn`. Adding a suffix column would put a second sort key into every ordering, export, and import path.
+>
+> **The app asks instead, per insertion,** and names the cost: "Shifting renames 34 vines." Declining fills the lowest free number in the row, appending if there are no gaps — which renames nothing, at the cost of the number not matching where the vine physically sits. Only the user knows whether a printed map is in somebody's pocket, so neither option is defaulted.
+>
+> Implemented as `LabelService.insertAfter` and `countAffectedByShift`, with the Insert tool on the canvas toolbar.
 
 **Critical invariant:** `vines.id` (UUID) NEVER changes. Only `position_idx` and derived labels change. All field events reference the UUID, so data is never orphaned.
 
-> **OPEN QUESTION Q1:** Should a renumber operation write an audit record so old labels can be resolved historically? ("What was 3.12.7 in 2025?") Leaning yes — cheap to add, valuable for reconciling old paper records.
+> **~~OPEN QUESTION~~ Q1 — RESOLVED (Phase 3a): yes, full history.**
+>
+> It got more pressing than "leaning yes": labels are now explicitly mutable *and* reused from gaps, so `3.12.7` genuinely does mean different vines at different times.
+>
+> **No separate audit table was needed.** The undo journal already records the before and after of every `position_idx`, `row_id`, and `block_id` change, so it *is* the label history — `LabelService.historyOf(vineId)` derives the answer from it, folding in block and row renames so `3.12.7` → `3.13.7` shows up even when the vine itself was never touched. A second store would have been a duplicate source of truth for the same fact, and the two would eventually have disagreed.
+>
+> Two honest limits: it begins where the journal begins (v2, Phase 3a — nothing before that is recoverable), and undone operations are excluded, so undo means a rename did not happen rather than happened-and-was-reversed.
 
 ### 6.4 Vine Deletion / Replacement Flow
 
@@ -495,15 +507,42 @@ test/
 
       Build time (7.8ms) is now the larger half. If more headroom is ever
       needed, that is where to look — not the painting.
-- [ ] Basic vine inspector panel
+- [x] Basic vine inspector panel
+- [ ] Choose an aerial image from the UI — still open. `file_picker` had to be
+      dropped (its Gradle skips the Kotlin plugin under AGP 9, breaking the
+      release build). The real Five Sisters aerial now ships in
+      `assets/aerial/` and can be attached to a project from the picker, which
+      covers the common case but is not a chooser.
+- [ ] Non-categorical field config (min/max, precision, rating scale) — the data
+      layer supports all of them; the editor exposes only options and colours.
 
 ### Phase 3 — Layout Tools (3–4 weeks)
+
+**Phase 3a — the foundation, done first so no tool is written twice.**
+- [x] Durable undo journal (`operations`, `operation_rows`, `undo_context`),
+      schema v2 with a migration test against populated v1 data
+- [x] Capture by SQLite trigger, generated from drift's table metadata — every
+      existing mutating entry point became undoable without being touched
+- [x] `OperationRecorder`: the unit of undo is a **gesture**, not a DAO call
+- [x] Undo/redo with generic replay, capped at 100 operations per project
+- [x] Survives the app being killed — proven by close-and-reopen, and to be
+      confirmed by force-stopping on the tablet
+- [x] Label history derived from the journal (Q1)
+- [x] Insert Vine with the shift / gap-fill prompt (§6.3, superseded above)
+
+**Phase 3b — the tools, each journaled from birth.**
 - [ ] Multi-row array (perpendicular vector generation)
-- [ ] Block polygon drawing
+- [ ] Block polygon drawing — on a boundary edit, one prompt covering both
+      directions: vines that fell outside (offered removal to block `0`) and
+      vines swept in (offered assignment), each accepted or declined separately
 - [ ] Block fill
-- [ ] Move / delete / insert with renumber flows
+- [ ] Move / delete flows (§6.4)
 - [ ] Split, merge, reverse, renumber row
-- [ ] Undo/redo across all operations
+
+Three questions deliberately deferred until those tools are being built: which
+half of a split row keeps the number sequence; which direction wins on merge;
+and whether Reverse Row renumbers in place or flips a direction flag (a flag
+keeps every `position_idx` stable, which both undo and label history prefer).
 
 ### Phase 4 — Data Entry UX (2–3 weeks)
 - [ ] Vine detail with full event history timeline

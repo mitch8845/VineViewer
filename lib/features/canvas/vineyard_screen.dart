@@ -10,6 +10,7 @@ import 'canvas_controller.dart';
 import '../data_entry/vine_inspector.dart';
 import '../schema/field_editor_screen.dart';
 import 'frame_stats_overlay.dart';
+import 'undo_controls.dart';
 import 'viewport.dart';
 import 'vineyard_canvas.dart';
 import 'vineyard_painter.dart';
@@ -36,6 +37,29 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
 
   String? get _projectId => ref.read(activeProjectIdProvider);
 
+  /// Runs a write as one undoable gesture.
+  ///
+  /// Every path in this screen that touches the database goes through here.
+  /// The unit of undo is what the user did, not what the DAO did -- planting a
+  /// row is one press of undo even though it writes a row and forty vines.
+  Future<T?> _gesture<T>(
+    String kind,
+    String description,
+    Future<T> Function() body,
+  ) async {
+    final projectId = _projectId;
+    if (projectId == null) return null;
+
+    return ref
+        .read(operationRecorderProvider)
+        .run(
+          projectId: projectId,
+          kind: kind,
+          description: description,
+          body: body,
+        );
+  }
+
   Future<void> _onTap(ui.Offset layoutPoint) async {
     final tool = ref.read(activeToolProvider);
     switch (tool) {
@@ -43,6 +67,8 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
         _selectAt(layoutPoint);
       case CanvasTool.placeVine:
         await _placeVineAt(layoutPoint);
+      case CanvasTool.insertVine:
+        await _insertVineAt(layoutPoint);
       case CanvasTool.drawRow:
         ref
             .read(pendingRowProvider.notifier)
@@ -71,9 +97,88 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
   Future<void> _placeVineAt(ui.Offset layoutPoint) async {
     final projectId = _projectId;
     if (projectId == null) return;
-    await ref
-        .read(layoutDaoProvider)
-        .createVine(projectId: projectId, position: layoutPoint);
+    await _gesture(
+      'place_vine',
+      'Place vine',
+      () => ref
+          .read(layoutDaoProvider)
+          .createVine(projectId: projectId, position: layoutPoint),
+    );
+  }
+
+  /// Inserts a vine into an existing row, asking how to renumber.
+  ///
+  /// Plan section 6.3 recommended defaulting to a suffix (`3.12.6a`) so nothing
+  /// downstream moved. That is superseded -- plant numbers are integers -- so
+  /// the real choice is between shifting every label after the insertion point
+  /// and reusing a gap left by a vine that was pulled. Only the user knows
+  /// whether a printed map is in somebody's pocket, so the app asks and names
+  /// the cost.
+  Future<void> _insertVineAt(ui.Offset layoutPoint) async {
+    final projectId = _projectId;
+    final snapshot = ref.read(layoutSnapshotProvider).valueOrNull;
+    if (projectId == null || snapshot == null) return;
+
+    final neighbour = snapshot.index.nearest(
+      layoutPoint,
+      maxDistance: _viewport.screenToLayoutDistance(_tapRadiusScreenPx * 3),
+    );
+    if (neighbour == null) {
+      _say('Tap next to a vine in the row you want to insert into.');
+      return;
+    }
+
+    final layout = ref.read(layoutDaoProvider);
+    final labels = ref.read(labelServiceProvider);
+    final anchor = await layout.vineById(neighbour.id);
+    final rowId = anchor?.rowId;
+    if (anchor == null || rowId == null) {
+      _say('That vine is not on a row, so there is nothing to insert into.');
+      return;
+    }
+
+    final anchorLabel = await labels.labelOf(anchor.id);
+    final affected = await labels.countAffectedByShift(
+      rowId: rowId,
+      afterPositionIdx: anchor.positionIdx,
+    );
+    if (!mounted) return;
+
+    final shift = await showDialog<bool>(
+      context: context,
+      builder: (context) => _RenumberDialog(
+        affected: affected,
+        after: anchorLabel?.text ?? 'the vine you tapped',
+      ),
+    );
+    if (shift == null || !mounted) return;
+
+    await _gesture(
+      'insert_vine',
+      'Insert vine in row ${anchorLabel?.row ?? ''}'.trimRight(),
+      () async {
+        final vineId = await layout.createVine(
+          projectId: projectId,
+          position: layoutPoint,
+        );
+        await labels.insertAfter(
+          vineId: vineId,
+          rowId: rowId,
+          afterPositionIdx: anchor.positionIdx,
+          shift: shift,
+        );
+        // Put it on the row properly: insertAfter owns the address, snapping owns
+        // the geometry, and a vine with a row must physically be on it.
+        await layout.snapVineToRowKeepingNumber(vineId: vineId, rowId: rowId);
+        return vineId;
+      },
+    );
+  }
+
+  void _say(String message) {
+    ScaffoldMessenger.of(context)
+      ..removeCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _finishRow() async {
@@ -82,13 +187,15 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     if (projectId == null || points.length < 2) return;
 
     final path = Polyline(points);
-    final rowId = await ref
-        .read(layoutDaoProvider)
-        .createRow(
-          projectId: projectId,
-          label: await _nextRowLabel(projectId),
-          path: path,
-        );
+    final label = await _nextRowLabel(projectId);
+    final rowId = await _gesture(
+      'draw_row',
+      'Draw row $label',
+      () => ref
+          .read(layoutDaoProvider)
+          .createRow(projectId: projectId, label: label, path: path),
+    );
+    if (rowId == null) return;
 
     ref.read(pendingRowProvider.notifier).state = const [];
     if (!mounted) return;
@@ -123,9 +230,13 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     );
 
     if (result == null || result.isEmpty) return;
-    await ref
-        .read(layoutDaoProvider)
-        .placeVinesAlongRow(rowId: rowId, offsets: result);
+    await _gesture(
+      'plant_row',
+      'Plant ${result.length} vines',
+      () => ref
+          .read(layoutDaoProvider)
+          .placeVinesAlongRow(rowId: rowId, offsets: result),
+    );
   }
 
   @override
@@ -151,6 +262,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
       appBar: AppBar(
         title: Text(widget.projectName),
         actions: [
+          const UndoControls(),
           IconButton(
             tooltip: 'Fields',
             icon: const Icon(Icons.list_alt),
@@ -277,6 +389,7 @@ class _Toolbar extends StatelessWidget {
   static const _tools = [
     (CanvasTool.select, Icons.touch_app, 'Select'),
     (CanvasTool.placeVine, Icons.add_circle_outline, 'Vine'),
+    (CanvasTool.insertVine, Icons.playlist_add, 'Insert'),
     (CanvasTool.drawRow, Icons.timeline, 'Row'),
     (CanvasTool.move, Icons.open_with, 'Move'),
   ];
@@ -332,6 +445,67 @@ class _Toolbar extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Asks whether inserting a vine should renumber the rest of the row.
+///
+/// Both options are legitimate and the app cannot tell which is right, so it
+/// names the cost of each instead of picking. The shift count is the whole
+/// point: "this renames 34 vines" is a decision, "labels will change" is a
+/// shrug.
+class _RenumberDialog extends StatelessWidget {
+  const _RenumberDialog({required this.affected, required this.after});
+
+  final int affected;
+  final String after;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Insert a vine'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Placing a vine after $after.'),
+          const SizedBox(height: 16),
+          Text(
+            affected == 0
+                // Nothing downstream, so the two options do the same thing and
+                // offering a choice would be noise.
+                ? 'It goes on the end of the row, so nothing is renamed.'
+                : 'Shifting renames $affected '
+                      '${affected == 1 ? 'vine' : 'vines'} further along the '
+                      'row. Any printed map showing their old numbers will be '
+                      'out of date.',
+          ),
+          if (affected > 0) ...[
+            const SizedBox(height: 12),
+            const Text(
+              'Filling a gap instead renames nothing, but the new vine takes '
+              'the lowest free number rather than one matching where it sits.',
+              style: TextStyle(fontSize: 12),
+            ),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        if (affected > 0)
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Fill a gap'),
+          ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: Text(affected == 0 ? 'Insert' : 'Shift the rest'),
+        ),
+      ],
     );
   }
 }
