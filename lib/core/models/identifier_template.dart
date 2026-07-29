@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 /// How a plant's identifier is composed.
 ///
 /// v2 hardcoded `block.row.plant`. That is one vineyard's convention, and this
@@ -11,6 +9,8 @@ import 'dart:convert';
 /// (Variety, Clone), and the plant's own number -- in any order, joined by any
 /// delimiter, or none at all.
 library;
+
+import 'dart:convert';
 
 /// One component of an identifier.
 sealed class IdPart {
@@ -87,10 +87,10 @@ class IdentifierTemplate {
 
   bool get isEmpty => parts.isEmpty;
 
-  String toJson() =>
-      jsonEncode({'delimiter': delimiter, 'parts': [
-        for (final part in parts) part.toMap(),
-      ]});
+  String toJson() => jsonEncode({
+    'delimiter': delimiter,
+    'parts': [for (final part in parts) part.toMap()],
+  });
 
   /// Parses stored JSON, returning null for anything malformed.
   ///
@@ -130,9 +130,9 @@ class IdentifierTemplate {
       other is IdentifierTemplate &&
       other.delimiter == delimiter &&
       other.parts.length == parts.length &&
-      Iterable<int>.generate(parts.length).every(
-        (i) => other.parts[i] == parts[i],
-      );
+      Iterable<int>.generate(
+        parts.length,
+      ).every((i) => other.parts[i] == parts[i]);
 
   @override
   int get hashCode => Object.hash(delimiter, Object.hashAll(parts));
@@ -157,9 +157,9 @@ class PlantIdentifier {
       other is PlantIdentifier &&
       other.delimiter == delimiter &&
       other.parts.length == parts.length &&
-      Iterable<int>.generate(parts.length).every(
-        (i) => other.parts[i] == parts[i],
-      );
+      Iterable<int>.generate(
+        parts.length,
+      ).every((i) => other.parts[i] == parts[i]);
 
   @override
   int get hashCode => Object.hash(delimiter, Object.hashAll(parts));

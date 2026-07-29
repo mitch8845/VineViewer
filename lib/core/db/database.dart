@@ -96,8 +96,14 @@ class AppDatabase extends _$AppDatabase {
     // Triggers first. `DROP TABLE` leaves a trigger naming a vanished table in
     // sqlite_master as a dangling definition, which then breaks the *next*
     // migration rather than this one -- the worst place for it to surface.
-    for (final table in ['blocks', 'vine_rows', 'vines', 'field_events',
-                         'field_defs', 'projects']) {
+    for (final table in [
+      'blocks',
+      'vine_rows',
+      'vines',
+      'field_events',
+      'field_defs',
+      'projects',
+    ]) {
       for (final suffix in ['insert', 'update', 'delete']) {
         await customStatement('DROP TRIGGER IF EXISTS jr_${table}_$suffix');
       }
