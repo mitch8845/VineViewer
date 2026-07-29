@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/db/daos/field_defs_dao.dart';
 import '../../core/db/database.dart';
+import '../../core/data/label_service.dart';
+import '../../core/data/membership_service.dart';
 import '../../core/models/enums.dart';
 import '../../core/models/field_config.dart';
 import '../../core/providers.dart';
@@ -169,6 +171,18 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
   final _optionInput = TextEditingController();
   List<String> _problems = const [];
 
+  /// Whether this field is a value on a plant or something drawn on the map.
+  late FieldRole _role;
+
+  /// Objects only. Immutable once created, like [_type].
+  late DrawType? _drawType;
+
+  /// Whether this object puts a value on every plant, derived from geometry.
+  late bool _isContainer;
+
+  late final TextEditingController _placeholder;
+  late final TextEditingController _tolerance;
+
   /// The config this field was opened with. Everything the form does not touch
   /// is carried forward from here on save.
   late FieldConfig _existingConfig;
@@ -197,6 +211,16 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
     _type = existing?.type ?? FieldType.categorical;
     _isStatic = existing?.isStatic ?? false;
 
+    _role = existing?.role ?? FieldRole.attribute;
+    _drawType = existing?.drawType;
+    _isContainer = existing?.isContainer ?? false;
+    _placeholder = TextEditingController(
+      text: existing?.blankPlaceholder ?? '',
+    );
+    _tolerance = TextEditingController(
+      text: existing?.tolerance == null ? '' : '${existing!.tolerance}',
+    );
+
     _existingConfig = existing == null
         ? FieldConfig.empty
         : FieldConfig.parse(existing.config);
@@ -208,6 +232,8 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
   void dispose() {
     _name.dispose();
     _optionInput.dispose();
+    _placeholder.dispose();
+    _tolerance.dispose();
     super.dispose();
   }
 
@@ -219,6 +245,14 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
   /// renaming a field silently destroyed its configuration.
   FieldConfig get _config =>
       _existingConfig.copyWith(options: _options, optionColors: _optionColors);
+
+  /// Blank means "no placeholder chosen", not an empty placeholder.
+  String? get _blankPlaceholder =>
+      _placeholder.text.trim().isEmpty ? null : _placeholder.text.trim();
+
+  double? get _toleranceValue => double.tryParse(_tolerance.text.trim());
+
+  bool get _isObject => _role == FieldRole.object;
 
   Future<void> _save() async {
     final dao = ref.read(fieldDefsDaoProvider);
@@ -237,17 +271,27 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
               ? dao.create(
                   projectId: projectId,
                   name: _name.text,
-                  type: _type,
+                  // An object's value is its name, and names are text.
+                  type: _role == FieldRole.object ? FieldType.text : _type,
+                  role: _role,
+                  drawType: _drawType,
+                  isContainer: _isContainer,
+                  blankPlaceholder: _blankPlaceholder,
+                  tolerance: _toleranceValue,
                   isStatic: _isStatic,
                   config: _config,
                 )
-              // Type is deliberately not passed: it is immutable once created
-              // (D5), and the editor disables the control rather than offering
-              // something that would throw.
+              // Neither type nor draw type is passed: both are immutable once
+              // created (D5 and its geometric equivalent), and the editor
+              // disables those controls rather than offering something that
+              // would throw.
               : dao.update(
                   widget.existing!.id,
                   name: _name.text,
                   isStatic: _isStatic,
+                  isContainer: _isContainer,
+                  blankPlaceholder: _blankPlaceholder,
+                  tolerance: _toleranceValue,
                   config: _config,
                 ),
         );
@@ -273,6 +317,132 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
       _optionInput.clear();
     });
   }
+
+  /// Controls for a drawable object: how it is drawn, and what it contains.
+  List<Widget> _objectControls(BuildContext context) => [
+    DropdownButtonFormField<DrawType>(
+      initialValue: _drawType,
+      decoration: InputDecoration(
+        labelText: 'Drawn as',
+        helperText: _isNew
+            ? null
+            : 'Cannot be changed -- every shape drawn would be invalid',
+      ),
+      onChanged: _isNew
+          ? (t) => setState(() {
+              _drawType = t;
+              // A point has no interior, so it can contain nothing. Silently
+              // clearing the flag beats saving something the DAO will refuse.
+              if (t == DrawType.point) _isContainer = false;
+            })
+          : null,
+      items: const [
+        DropdownMenuItem(
+          value: DrawType.polyline,
+          child: Text('Line -- carries plants, like a row'),
+        ),
+        DropdownMenuItem(
+          value: DrawType.polygon,
+          child: Text('Area -- contains plants, like a block'),
+        ),
+        DropdownMenuItem(
+          value: DrawType.point,
+          child: Text('Point -- a post, a gate, a well'),
+        ),
+      ],
+    ),
+    const SizedBox(height: 8),
+    SwitchListTile(
+      contentPadding: EdgeInsets.zero,
+      value: _isContainer,
+      // A point contains nothing, so the switch is not merely unchecked, it is
+      // unavailable.
+      onChanged: _drawType == DrawType.point
+          ? null
+          : (v) => setState(() => _isContainer = v),
+      title: const Text('Plants belong to it'),
+      subtitle: Text(
+        _drawType == DrawType.point
+            ? 'A point has no inside, so nothing can belong to it.'
+            : 'Every plant gets a value for this, worked out from where it '
+                  'sits. Leave off for a road or a fence -- something drawn '
+                  'that has nothing to do with the plants.',
+      ),
+    ),
+    if (_isContainer && _drawType == DrawType.polyline) ...[
+      const SizedBox(height: 8),
+      TextField(
+        controller: _tolerance,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        decoration: InputDecoration(
+          labelText: 'How close counts as on the line',
+          helperText:
+              'Pixels. Blank uses ${MembershipService.defaultTolerance.toInt()}. '
+              'An area has an inside; a line does not, so this is a judgement '
+              'about how accurately you tapped.',
+        ),
+      ),
+    ],
+  ];
+
+  /// Controls for an attribute: its type, write-once, and any option list.
+  List<Widget> _valueControls() => [
+    DropdownButtonFormField<FieldType>(
+      initialValue: _type,
+      decoration: InputDecoration(
+        labelText: 'Type',
+        helperText: _isNew ? null : 'Cannot be changed once a field exists',
+      ),
+      // D5: changing a type would reinterpret every value already recorded.
+      // The supported path is a new field.
+      onChanged: _isNew ? (t) => setState(() => _type = t ?? _type) : null,
+      items: [
+        for (final type in FieldType.values)
+          DropdownMenuItem(value: type, child: Text(type.name)),
+      ],
+    ),
+    const SizedBox(height: 8),
+    SwitchListTile(
+      contentPadding: EdgeInsets.zero,
+      value: _isStatic,
+      onChanged: (v) => setState(() => _isStatic = v),
+      title: const Text('Write-once'),
+      subtitle: const Text(
+        'For facts that do not change: variety, rootstock, plant date',
+      ),
+    ),
+    if (_type.hasOptions) ...[
+      const Divider(height: 32),
+      const Text(
+        'Options -- each gets a colour, which is what colours the map.',
+        style: TextStyle(fontSize: 12),
+      ),
+      const SizedBox(height: 8),
+      for (final option in _options)
+        _OptionRow(
+          option: option,
+          color: _parseColor(_optionColors[option]),
+          swatches: _swatches,
+          onColor: (c) => setState(() => _optionColors[option] = _toHex(c)),
+          onDelete: () => setState(() {
+            _options = _options.where((o) => o != option).toList();
+            _optionColors.remove(option);
+          }),
+        ),
+      Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _optionInput,
+              decoration: const InputDecoration(labelText: 'Add an option'),
+              onSubmitted: (_) => _addOption(),
+            ),
+          ),
+          IconButton(icon: const Icon(Icons.add), onPressed: _addOption),
+        ],
+      ),
+    ],
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -300,73 +470,62 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
                 helperText: 'Import matches spreadsheet columns to this name',
               ),
             ),
-            const SizedBox(height: 16),
-            DropdownButtonFormField<FieldType>(
-              initialValue: _type,
-              decoration: InputDecoration(
-                labelText: 'Type',
-                helperText: _isNew
-                    ? null
-                    : 'Type cannot be changed once a field exists',
-              ),
-              // D5: changing a type would reinterpret every value already
-              // recorded. The supported path is a new field.
-              onChanged: _isNew
-                  ? (t) => setState(() => _type = t ?? _type)
-                  : null,
-              items: [
-                for (final type in FieldType.values)
-                  DropdownMenuItem(value: type, child: Text(type.name)),
-              ],
+            const SizedBox(height: 20),
+
+            // The fork the whole model turns on. Everything below switches on
+            // it, so it sits above everything.
+            Text(
+              'What is this?',
+              style: Theme.of(context).textTheme.titleSmall,
             ),
             const SizedBox(height: 8),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: _isStatic,
-              onChanged: (v) => setState(() => _isStatic = v),
-              title: const Text('Write-once'),
-              subtitle: const Text(
-                'For facts that do not change: variety, rootstock, plant date',
-              ),
-            ),
-            if (_type.hasOptions) ...[
-              const Divider(height: 32),
-              Text('Options', style: Theme.of(context).textTheme.titleMedium),
-              const Text(
-                'Each option gets a colour, which is what colours the map.',
-                style: TextStyle(fontSize: 12),
-              ),
-              const SizedBox(height: 8),
-              for (final option in _options)
-                _OptionRow(
-                  option: option,
-                  color: _parseColor(_optionColors[option]),
-                  swatches: _swatches,
-                  onColor: (c) =>
-                      setState(() => _optionColors[option] = _toHex(c)),
-                  onDelete: () => setState(() {
-                    _options = _options.where((o) => o != option).toList();
-                    _optionColors.remove(option);
-                  }),
+            SegmentedButton<FieldRole>(
+              segments: const [
+                ButtonSegment(
+                  value: FieldRole.attribute,
+                  label: Text('A value'),
+                  icon: Icon(Icons.notes),
                 ),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _optionInput,
-                      decoration: const InputDecoration(
-                        labelText: 'Add an option',
-                      ),
-                      onSubmitted: (_) => _addOption(),
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.add),
-                    onPressed: _addOption,
-                  ),
-                ],
+                ButtonSegment(
+                  value: FieldRole.object,
+                  label: Text('Something drawn'),
+                  icon: Icon(Icons.gesture),
+                ),
+              ],
+              selected: {_role},
+              // Immutable once created for the same reason type is: an
+              // attribute has values recorded against it and an object has
+              // shapes drawn, and neither survives being reinterpreted as the
+              // other.
+              onSelectionChanged: _isNew
+                  ? (s) => setState(() => _role = s.first)
+                  : null,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _isObject
+                  ? 'Rows, blocks, roads, posts -- anything on the map.'
+                  : 'Health, variety, clone -- anything recorded about a plant.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 16),
+
+            if (_isObject) ..._objectControls(context) else ..._valueControls(),
+
+            const SizedBox(height: 16),
+            TextField(
+              controller: _placeholder,
+              decoration: InputDecoration(
+                labelText: 'Shown when blank',
+                helperText: _isContainer
+                    ? 'Plants outside every ${_name.text.isEmpty ? 'one' : _name.text} '
+                          'read this in their ID'
+                    : 'What an ID shows when this has no value',
+                hintText: LabelService.defaultPlaceholder,
               ),
-            ],
+              onChanged: (_) => setState(() {}),
+            ),
+
             if (_problems.isNotEmpty) ...[
               const SizedBox(height: 16),
               for (final problem in _problems)

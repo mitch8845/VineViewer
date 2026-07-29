@@ -1,6 +1,7 @@
 import 'package:drift/drift.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../models/identifier_template.dart';
 import '../database.dart';
 
 /// CRUD for vineyards. Each project owns its image, schema, and vines (D10).
@@ -87,6 +88,23 @@ class ProjectsDao {
         imagePath: Value(imagePath),
         imageWidth: Value(width),
         imageHeight: Value(height),
+        updatedAt: Value(now ?? DateTime.now()),
+      ),
+    );
+  }
+
+  /// Sets how plant identifiers are composed.
+  ///
+  /// `projects` is journaled, so this is undoable and shows up in each plant's
+  /// identifier history without any extra machinery.
+  Future<void> setIdentifierTemplate(
+    String id,
+    IdentifierTemplate template, {
+    DateTime? now,
+  }) async {
+    await (_db.update(_db.projects)..where((p) => p.id.equals(id))).write(
+      ProjectsCompanion(
+        identifierTemplate: Value(template.toJson()),
         updatedAt: Value(now ?? DateTime.now()),
       ),
     );

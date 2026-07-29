@@ -7,6 +7,7 @@ import '../../core/geometry/polyline.dart';
 import '../../core/providers.dart';
 import '../canvas/canvas_controller.dart';
 import '../canvas/vineyard_screen.dart';
+import '../schema/project_setup_wizard.dart';
 import '../updater/update_button.dart';
 import 'aerial_image.dart';
 
@@ -93,7 +94,19 @@ class ProjectListScreen extends ConsumerWidget {
     );
     if (name == null || name.trim().isEmpty) return;
 
-    await ref.read(projectsDaoProvider).create(name: name.trim());
+    final id = await ref.read(projectsDaoProvider).create(name: name.trim());
+    if (!context.mounted) return;
+
+    // Straight into setup: the identifier is composed from fields, so there is
+    // an order to this that a new project cannot discover on its own. Every
+    // step is skippable, and all of it is reachable later from the fields
+    // screen.
+    ref.read(activeProjectIdProvider.notifier).state = id;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ProjectSetupWizard(projectId: id),
+      ),
+    );
   }
 
   /// Offers the bundled aerial or a photo from the device.
