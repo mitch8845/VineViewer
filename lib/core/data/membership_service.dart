@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' show Offset, Rect;
 
 import 'package:drift/drift.dart';
@@ -62,15 +63,30 @@ class MembershipService {
       objectIds: objectIds,
     );
 
-    var changed = 0;
-
     // Written as a diff rather than delete-all-then-reinsert. An unchanged
     // membership must produce no journal row, or dragging one plant would
     // capture 3,000 no-op captures and bury the operation that mattered.
-    for (final key in wanted.difference(existing.keys.toSet())) {
-      await _db
-          .into(_db.plantMemberships)
-          .insert(
+    final gained = wanted.difference(existing.keys.toSet());
+    final lost = [
+      for (final entry in existing.entries)
+        if (!wanted.contains(entry.key)) entry.value,
+    ];
+    if (gained.isEmpty && lost.isEmpty) return 0;
+
+    // **Batched, in two statements rather than a few thousand.**
+    //
+    // A boundary edit that sweeps a whole block is thousands of membership
+    // changes, and issuing them one at a time measured 446ms for 3,000 rows on a
+    // desktop -- seconds on the tablet, for dragging one corner. Nearly all of it
+    // was per-statement overhead rather than work.
+    //
+    // The capture triggers still fire **per row**, because SQLite triggers are
+    // FOR EACH ROW. That is the point: the operation stays undoable in full, and
+    // batching changes only how the statements are delivered.
+    await _db.batch((batch) {
+      if (gained.isNotEmpty) {
+        batch.insertAll(_db.plantMemberships, [
+          for (final key in gained)
             PlantMembershipsCompanion.insert(
               id: _uuid.v4(),
               plantId: key.plantId,
@@ -79,20 +95,22 @@ class MembershipService {
               createdAt: timestamp,
               updatedAt: timestamp,
             ),
-          );
-      changed++;
-    }
+        ]);
+      }
+      // Chunked, because SQLite caps the number of variables in one statement
+      // (999 by default) and a full-block sweep is well past that.
+      for (var i = 0; i < lost.length; i += _deleteChunk) {
+        final chunk = lost.sublist(i, math.min(i + _deleteChunk, lost.length));
+        batch.deleteWhere(_db.plantMemberships, (m) => m.id.isIn(chunk));
+      }
+    });
 
-    for (final entry in existing.entries) {
-      if (wanted.contains(entry.key)) continue;
-      await (_db.delete(
-        _db.plantMemberships,
-      )..where((m) => m.id.equals(entry.value))).go();
-      changed++;
-    }
-
-    return changed;
+    return gained.length + lost.length;
   }
+
+  /// Ids per `DELETE ... WHERE id IN (...)`, kept clear of SQLite's default
+  /// 999-variable limit.
+  static const _deleteChunk = 500;
 
   /// Container values as geometry would have them, **without writing**.
   ///

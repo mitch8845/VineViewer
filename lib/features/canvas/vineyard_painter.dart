@@ -154,16 +154,29 @@ class VineyardPainter extends CustomPainter {
     // lines become thick slabs.
     final width = 1.5 / viewport.scale;
 
+    // Three Paints for the whole pass, recoloured per object rather than
+    // reallocated. Skia copies a Paint's state at draw time, so mutating and
+    // reusing one within a pass is safe -- and the old version allocated three
+    // Paints per object per frame, which at 76 objects is 4,560 a second to draw
+    // exactly the same lines.
+    //
+    // Whether this is where v3's frame regression went is **not** established:
+    // desktop paint timings came out too noisy to attribute (see
+    // `paint_benchmark_test.dart`). It is removed because it is waste, not
+    // because it is proven to be the waste that mattered.
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..strokeWidth = width;
+    final fill = Paint();
+    final marker = Paint();
+
     for (final object in scene.objects) {
       if (!object.shape.bounds.inflate(10).overlaps(visible)) continue;
 
       final colour = _objectColour(object);
-      final stroke = Paint()
-        ..color = colour.withValues(alpha: 0.75)
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
-        ..strokeWidth = width;
+      stroke.color = colour.withValues(alpha: 0.75);
 
       switch (object.shape) {
         case final PolylineShape line:
@@ -173,10 +186,7 @@ class VineyardPainter extends CustomPainter {
           final path = _pathOf(polygon.vertices, close: true);
           // Faint fill so the area reads as an area without hiding the aerial
           // underneath it -- the photo is what the user is drawing against.
-          canvas.drawPath(
-            path,
-            Paint()..color = colour.withValues(alpha: 0.10),
-          );
+          canvas.drawPath(path, fill..color = colour.withValues(alpha: 0.10));
           canvas.drawPath(path, stroke);
 
         case final PointShape point:
@@ -190,7 +200,7 @@ class VineyardPainter extends CustomPainter {
               ..lineTo(point.at.dx, point.at.dy + r)
               ..lineTo(point.at.dx - r, point.at.dy)
               ..close(),
-            Paint()..color = colour,
+            marker..color = colour,
           );
       }
     }

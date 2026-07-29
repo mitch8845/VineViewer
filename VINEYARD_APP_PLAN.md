@@ -38,7 +38,7 @@ A winemaker walking the vineyard with a tablet, making updates on the fly. Also 
 | D6 | **Static vs. Tracked field flag** | User marks each field. Static = write-once, locked (variety, rootstock, plant date). Tracked = full event history (health, spray, water). |
 | D7 | **Vine replacement = retire + new record** | Dead vine gets `end_date` + status `removed`, retains full history. New vine is a new UUID inheriting position and selected fields. `block.row.plant` label resolves to the *active* vine at that position. |
 | D8 | **Full drawing capability on mobile** | Not desktop-only. Fire Max 11 has stylus support, which makes this viable. |
-| D9 | **Hierarchy fixed at `block.row.plant`** | No sub-blocks in v1. |
+| D9 | ~~**Hierarchy fixed at `block.row.plant`**~~ | **SUPERSEDED 2026-07-29 by V3_PLAN.md.** `block.row.plant` was one vineyard's convention, not a law -- and hardcoding it put `blocks` and `vine_rows` in the schema as two spellings of the same idea. The hierarchy is now composed by the user: any field can be a drawn object, any object field can be a container, and the identifier is an ordered template over them. Sub-blocks are no longer a feature to add, they are a field to create. |
 | D10 | **Multiple projects supported** | Each project = one vineyard, own image, own schema, own vines. |
 | D11 | **Import format: `.xlsx`, first column `plantID`** | Subsequent columns must match existing field names and types, or the row/column is rejected. |
 | D12 | **Image source: user-uploaded raster** | Google Maps screenshot expected. No tiling/GIS pipeline. |
@@ -302,7 +302,7 @@ Stack
 | Merge Rows | Combine two rows |
 | Renumber Row | Re-sequence `position_idx`, with direction control |
 | Reverse Row | Flip vine numbering direction |
-| Transfer Data | Move all field events from one vine to another |
+| ~~Transfer Data~~ | **DROPPED 2026-07-29.** Move all field events from one plant to another. Not wanted: a plant's history belongs to that plant, and the case it was written for (a mis-entered plant) is served by undo. `FieldEventsDao.transferEvents` was written and tested before anyone asked whether it should exist; it and its tests are deleted rather than left looking like an unfinished feature. |
 
 **View tools**
 - Color-by-field (uses the color ramp)
@@ -596,9 +596,9 @@ keeps every `position_idx` stable, which both undo and label history prefer).
 |---|---|---|
 | Q1 | Audit trail for label renumbering — resolve historical labels? | Leaning yes |
 | Q2 | Is archive-based sync sufficient in practice for tablet↔desktop? | Needs pressure-test |
-| Q3 | Should vines support arbitrary position (drag anywhere) or snap to row geometry? | Undecided |
+| Q3 | Should plants support arbitrary position (drag anywhere) or snap to row geometry? | **Resolved 2026-07-29: both, and the distinction is a column.** `plants.carrier_id` is the one polyline a plant is snapped to and the only thing `path_offset` is measured along; null means free-standing and the plant keeps its own x/y. A carried plant dragged sideways slides *along* its line rather than off it -- detaching is an explicit action, so a clumsy drag cannot silently break a plant's membership of its row. |
 | Q4 | Multiple background images per project (different years/seasons)? | Undecided |
-| Q5 | Do blocks need their own user-defined fields, or vines only? | **Resolved 2026-07-27: vines only for v1.** Adding block scope later is additive (a `scope` column defaulting to `'vine'`), so nothing is foreclosed. |
+| Q5 | Do blocks need their own user-defined fields, or plants only? | **REOPENED 2026-07-29.** The 2026-07-27 answer was "plants only, and block scope is additive later". v3 changed the ground under it: a block is now a `map_objects` row instancing a user-defined object field, and it already carries a `label` that every plant inside it reads. So blocks have *one* attribute and no way to have a second -- there is nowhere to record an area's acreage or its own spray log. Still additive (an object-scoped event log, or `field_events` gaining a nullable `object_id`), but it is now a question about a thing that exists rather than one that might. |
 | Q6 | Row-level operations (spray whole row) — bulk-select sugar, or first-class row events? | **Resolved 2026-07-27: per-vine events.** See D13. |
 | Q7 | Should `observed_at` support date-only vs. datetime precision per field? | Likely yes |
 | Q8 | Photo attachment per vine — how deferred is this really? Field users tend to want it immediately. | Deferred, but watch |

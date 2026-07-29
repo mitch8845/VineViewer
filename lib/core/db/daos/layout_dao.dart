@@ -120,14 +120,39 @@ class LayoutDao {
         ),
       );
 
-      if (geometry is PolylineShape) {
-        await _repositionCarried(objectId, geometry.path, timestamp);
-      }
+      final carried = geometry is PolylineShape
+          ? await _repositionCarried(objectId, geometry.path, timestamp)
+          : const <String>{};
 
-      // Reshaping a boundary sweeps plants in and out. Scoped to the whole
-      // project rather than to this object, because a plant that *left* is no
-      // longer found by looking at what this object now covers.
-      await _memberships.reconcile(projectId: projectId, now: timestamp);
+      // **Two narrow reconciles, not one project-wide one.**
+      //
+      // An earlier version went project-wide on the grounds that "a plant that
+      // *left* is no longer found by looking at what this object now covers".
+      // That reasoning is wrong: departures are found through their stored
+      // membership row, which is keyed by `object_id` and does not care where the
+      // geometry went. Scoping by object therefore catches both directions.
+      //
+      // It was also expensive. At 4,000 plants and ~100 containers a project-wide
+      // reconcile measured 481ms on a desktop, which is seconds on the tablet --
+      // for dragging one corner.
+      await _memberships.reconcile(
+        projectId: projectId,
+        objectIds: {objectId},
+        now: timestamp,
+      );
+
+      // The second reconcile is the part that genuinely is not about this object:
+      // the plants it *carries* have physically moved, so their membership of
+      // every **other** container may have changed. Dragging a row's end out of a
+      // block takes its plants with it, and they leave the block even though the
+      // block never moved.
+      if (carried.isNotEmpty) {
+        await _memberships.reconcile(
+          projectId: projectId,
+          plantIds: carried,
+          now: timestamp,
+        );
+      }
     });
   }
 
@@ -414,7 +439,10 @@ class LayoutDao {
   }
 
   /// Recomputes x/y for every carried plant from its stored offset.
-  Future<void> _repositionCarried(
+  ///
+  /// Returns the ids it moved, so the caller can reconcile exactly those plants
+  /// against the other containers they may have entered or left.
+  Future<Set<String>> _repositionCarried(
     String objectId,
     Polyline path,
     DateTime timestamp,
@@ -442,6 +470,8 @@ class LayoutDao {
         ),
       );
     }
+
+    return {for (final plant in plants) plant.id};
   }
 
   // ------------------------------------------------------------------ plants

@@ -233,15 +233,22 @@ class _EmptyState extends ConsumerWidget {
       ),
     );
 
-    // Mirrors the real vineyard's shape: 75 rows of wildly varying length
-    // (9-72 plants), not a uniform grid. A uniform grid would flatter the
-    // spatial index and hide clustering costs.
+    // Rows of wildly varying length (9-72 plants), not a uniform grid: a grid
+    // would flatter the spatial index and hide the cost of clustering.
+    //
+    // **Rows are added until 4,000 plants are placed**, however many that takes.
+    // An earlier version capped it at 75 rows to mirror the real vineyard, which
+    // averaged ~40 plants a row and so produced about 3,030 -- a button labelled
+    // "4,000-plant" that quietly built three-quarters of one. The gate is meant
+    // to have headroom over the real 3,025, so the count is what matters and the
+    // row total follows from it.
+    const target = 4000;
     final random = math.Random(42);
     final rows = <({double y, int count})>[];
     var placed = 0;
-    for (var r = 0; r < 75 && placed < 4000; r++) {
-      final count = math.min(9 + random.nextInt(64), 4000 - placed);
-      rows.add((y: 100.0 + r * 45, count: count));
+    while (placed < target) {
+      final count = math.min(9 + random.nextInt(64), target - placed);
+      rows.add((y: 100.0 + rows.length * 45, count: count));
       placed += count;
     }
 
