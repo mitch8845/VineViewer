@@ -1,3 +1,27 @@
+<!--
+  Base specification for the v3 rework, produced by an Ultraplan session on
+  2026-07-29 and reviewed against the codebase before acceptance.
+
+  READ WITH THE AMENDMENTS. Six things were changed after review; where this
+  document and the list below disagree, the list wins:
+
+    1. Fill (phase 7) is NOT built. Multi-row array is.
+    2. Multi-row array generates independent, individually editable lines and
+       never sets attribute values.
+    3. NEW: a point array tool, placing whichever point-typed field is selected
+       (including Plant) along an existing object or a throwaway guide line.
+    4. Transfer Data is out. FieldEventsDao.transferEvents gets deleted.
+    5. NEW: "plant more" into an existing carrier, for a row interrupted by an
+       obstacle -- contiguous numbers, a gap in space.
+    6. Boundary edits are all-or-nothing, as written here. This supersedes an
+       earlier decision allowing each direction to be declined separately.
+
+  Verified against the code before acceptance: the FieldConfig round-trip bug
+  it reports is real (fixed in 81e1267); VineyardCanvas exposes drag callbacks
+  that vineyard_screen.dart never passes; moveRow/moveVine/updateRowPath have
+  no callers in lib/.
+-->
+
 # VineViewer v3 — generic data engine
 
 ## Context
