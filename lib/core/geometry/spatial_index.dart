@@ -6,15 +6,15 @@ typedef IndexedPoint = ({String id, Offset position});
 
 /// Uniform grid over the layout, for viewport culling and tap hit-testing.
 ///
-/// A quadtree would adapt better to clustering, but vines in a vineyard are
+/// A quadtree would adapt better to clustering, but plants in a vineyard are
 /// close to evenly distributed by construction -- that is what a vineyard is --
 /// so a uniform grid gets the same result with a fraction of the code and no
 /// rebalancing. The plan calls this "cheap insurance"; the cheapness is the
 /// point.
 ///
 /// Rebuilt whenever the layout changes rather than updated in place. At 3,000
-/// vines a rebuild is well under a millisecond, and an index that can drift out
-/// of sync with the data would produce taps selecting the wrong vine, which is
+/// plants a rebuild is well under a millisecond, and an index that can drift out
+/// of sync with the data would produce taps selecting the wrong plant, which is
 /// maddening to diagnose.
 class SpatialIndex {
   SpatialIndex._(this._cells, this._cellSize, this._origin, this.count);
@@ -26,7 +26,7 @@ class SpatialIndex {
   /// Number of indexed points.
   final int count;
 
-  /// Empty index, for a project with no vines yet.
+  /// Empty index, for a project with no plants yet.
   static final empty = SpatialIndex._({}, 1, Offset.zero, 0);
 
   /// Builds an index over [points].
@@ -77,7 +77,7 @@ class SpatialIndex {
   /// Every point whose position falls inside [rect].
   ///
   /// The canvas calls this each frame with the visible rectangle. Painting all
-  /// 3,000 vines when 40 are on screen is the difference between 60fps and a
+  /// 3,000 plants when 40 are on screen is the difference between 60fps and a
   /// visible stutter while panning.
   List<IndexedPoint> inRect(Rect rect) {
     if (count == 0) return const [];

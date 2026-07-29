@@ -5,7 +5,7 @@ import 'package:vine_viewer/core/data/membership_service.dart';
 import 'package:vine_viewer/core/db/daos/field_defs_dao.dart';
 import 'package:vine_viewer/core/db/daos/layout_dao.dart';
 import 'package:vine_viewer/core/db/daos/projects_dao.dart';
-import 'package:vine_viewer/core/db/daos/vines_dao.dart';
+import 'package:vine_viewer/core/db/daos/plants_dao.dart';
 import 'package:vine_viewer/core/db/database.dart';
 import 'package:vine_viewer/core/geometry/polyline.dart';
 import 'package:vine_viewer/core/geometry/shapes.dart';
@@ -21,7 +21,7 @@ void main() {
 
   late LayoutDao layout;
 
-  late VinesDao vines;
+  late PlantsDao plants;
 
   late String projectId;
 
@@ -32,7 +32,7 @@ void main() {
   setUp(() async {
     db = AppDatabase(NativeDatabase.memory());
     layout = LayoutDao(db, LabelService(db), MembershipService(db));
-    vines = VinesDao(db);
+    plants = PlantsDao(db);
 
     final fields = FieldDefsDao(db);
     projectId = await ProjectsDao(db).create(name: 'Five Sisters');
@@ -83,7 +83,7 @@ void main() {
       );
 
   test('an empty selection resolves to nothing', () async {
-    expect(await vines.resolveSelection(), isEmpty);
+    expect(await plants.resolveSelection(), isEmpty);
   });
 
   test('individual plants resolve to themselves', () async {
@@ -93,7 +93,7 @@ void main() {
       carrierId: row,
       offsets: [0, 100, 200],
     );
-    expect(await vines.resolveSelection(vineIds: [ids.first, ids.last]), {
+    expect(await plants.resolveSelection(plantIds: [ids.first, ids.last]), {
       ids.first,
       ids.last,
     });
@@ -107,7 +107,7 @@ void main() {
       offsets: [0, 100, 200],
     );
     await lineAt('13', 300);
-    expect(await vines.resolveSelection(objectIds: [row]), ids.toSet());
+    expect(await plants.resolveSelection(objectIds: [row]), ids.toSet());
   });
 
   test('selecting a block resolves through membership', () async {
@@ -119,7 +119,7 @@ void main() {
       projectId: projectId,
       position: const Offset(50, 50),
     );
-    expect(await vines.resolveSelection(objectIds: [block]), {loose});
+    expect(await plants.resolveSelection(objectIds: [block]), {loose});
   });
 
   test('a carried plant with no membership is still found', () async {
@@ -153,7 +153,7 @@ void main() {
       offsets: [0, 50],
     );
     expect(await db.select(db.plantMemberships).get(), isEmpty);
-    expect(await vines.resolveSelection(objectIds: [line]), ids.toSet());
+    expect(await plants.resolveSelection(objectIds: [line]), ids.toSet());
   });
 
   test('mixing plants and objects unions them', () async {
@@ -168,7 +168,7 @@ void main() {
       projectId: projectId,
       position: const Offset(900, 900),
     );
-    expect(await vines.resolveSelection(vineIds: [loose], objectIds: [row]), {
+    expect(await plants.resolveSelection(plantIds: [loose], objectIds: [row]), {
       ...onRow,
       loose,
     });
@@ -182,7 +182,7 @@ void main() {
       offsets: [0],
     );
     expect(
-      await vines.resolveSelection(vineIds: ids, objectIds: [row]),
+      await plants.resolveSelection(plantIds: ids, objectIds: [row]),
       hasLength(1),
     );
   });
@@ -198,7 +198,7 @@ void main() {
         offsets: [0, 100],
       );
       await layout.retirePlant(ids.first, change: PlantStatusChange.removed);
-      expect(await vines.resolveSelection(objectIds: [row]), {ids.last});
+      expect(await plants.resolveSelection(objectIds: [row]), {ids.last});
     });
 
     test('are included when asked for', () async {
@@ -210,7 +210,7 @@ void main() {
       );
       await layout.retirePlant(ids.first, change: PlantStatusChange.removed);
       expect(
-        await vines.resolveSelection(objectIds: [row], includeInactive: true),
+        await plants.resolveSelection(objectIds: [row], includeInactive: true),
         ids.toSet(),
       );
     });
@@ -223,7 +223,7 @@ void main() {
       offsets: [200, 0, 100],
     );
 
-    final ordered = await vines.plantsOnCarrier(row);
+    final ordered = await plants.plantsOnCarrier(row);
     expect([for (final v in ordered) v.positionIdx], [1, 2, 3]);
     expect([for (final v in ordered) v.x], [0, 100, 200]);
   });

@@ -15,7 +15,7 @@ part 'database.g.dart';
     Projects,
     MapObjects,
     PlantMemberships,
-    Vines,
+    Plants,
     FieldDefs,
     FieldEvents,
     Operations,
@@ -26,6 +26,11 @@ part 'database.g.dart';
 class AppDatabase extends _$AppDatabase {
   /// Pass an executor for tests (`NativeDatabase.memory()`); omit it in the app
   /// to open the on-device file.
+  ///
+  /// The file is still called `vineviewer` after the vine-to-plant rename, and
+  /// deliberately so: renaming it would not migrate anything, it would make the
+  /// app open a *different, empty* file and abandon the old one on disk under a
+  /// name nothing looks for.
   AppDatabase([QueryExecutor? executor])
     : super(executor ?? driftDatabase(name: 'vineviewer'));
 
@@ -44,10 +49,15 @@ class AppDatabase extends _$AppDatabase {
   ///   and the capture triggers.
   /// * v3 -- the generic data engine. `blocks` and `vine_rows` become
   ///   `map_objects` instances of user-defined object fields, containment moves
-  ///   to `plant_memberships`, and the identifier becomes a template. **This
-  ///   one wipes.** See [migration].
+  ///   to `plant_memberships`, and the identifier becomes a template.
+  /// * v4 -- `vines` becomes `plants`, and `field_events.vine_id` becomes
+  ///   `plant_id`. Purely a rename, but a rename of a table and a column is a
+  ///   schema change like any other.
+  ///
+  /// **v3 and v4 both wipe**, and [_wipeToV4] serves every upgrade path from
+  /// v1, v2 or v3. See [migration].
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -59,13 +69,11 @@ class AppDatabase extends _$AppDatabase {
       await _installUndoJournal();
     },
     onUpgrade: (m, from, to) async {
-      if (from < 2) {
-        await m.createTable(operations);
-        await m.createTable(operationRows);
-        await m.createTable(undoContext);
-        await _installUndoJournal();
-      }
-      if (from < 3) await _wipeToV3(m);
+      // One branch, not a chain. Every version below 4 is wiped, so the old
+      // v1-to-v2 step that carefully added the three journal tables would only
+      // be building tables that the next line drops. Deleted rather than left
+      // in place looking load-bearing.
+      if (from < 4) await _wipeToV4(m);
     },
     beforeOpen: (details) async {
       // Must be enabled per connection: SQLite defaults foreign keys OFF, so
@@ -75,20 +83,33 @@ class AppDatabase extends _$AppDatabase {
     },
   );
 
-  /// Drops everything and rebuilds at v3.
+  /// Drops everything and rebuilds at v4.
   ///
-  /// **This destroys all data, deliberately.** v3 is a fresh schema rather than
-  /// surgery on v2: `blocks` and `vine_rows` do not map onto `map_objects`
-  /// without inventing the object fields they are instances of, the container
-  /// flags, the blank placeholders, and an identifier template. Both v2
-  /// projects in existence were throwaway -- one seeded by a button, one
-  /// holding a single row drawn as a check -- so writing that migration would
-  /// have cost more than redrawing them.
+  /// **This destroys all data, deliberately**, and it is the single upgrade path
+  /// from v1, v2 and v3 alike.
+  ///
+  /// v3 was a fresh schema rather than surgery on v2: `blocks` and `vine_rows`
+  /// do not map onto `map_objects` without inventing the object fields they are
+  /// instances of, the container flags, the blank placeholders, and an
+  /// identifier template. Both v2 projects in existence were throwaway -- one
+  /// seeded by a button, one holding a single row drawn as a check -- so writing
+  /// that migration would have cost more than redrawing them.
+  ///
+  /// v4 renames `vines` to `plants`. That *is* expressible as
+  /// `ALTER TABLE ... RENAME`, and if there were data worth keeping it would
+  /// have been written that way. There is not: v3 shipped as 0.4.0 and nothing
+  /// real has been drawn against it, so it takes the same wipe.
   ///
   /// **The next migration will be the first one written against data anyone
   /// wants to keep.** That one needs a real fixture and a real test; this one
   /// only needs to leave a working empty database behind.
-  Future<void> _wipeToV3(Migrator m) async {
+  ///
+  /// The table names below are **historical strings, not the current schema**.
+  /// `vines`, `vine_rows` and `blocks` no longer have Dart definitions, which is
+  /// precisely why they have to be named literally here -- a rename sweep that
+  /// "tidied" `vines` into `plants` would silently stop dropping the table that
+  /// actually exists on the device.
+  Future<void> _wipeToV4(Migrator m) async {
     // Off while dropping, or the cascades fire in an order SQLite objects to
     // as tables disappear out from under their references.
     await customStatement('PRAGMA foreign_keys = OFF');
@@ -97,9 +118,12 @@ class AppDatabase extends _$AppDatabase {
     // sqlite_master as a dangling definition, which then breaks the *next*
     // migration rather than this one -- the worst place for it to surface.
     for (final table in [
-      'blocks',
-      'vine_rows',
-      'vines',
+      'blocks', // v1, v2
+      'vine_rows', // v1, v2
+      'vines', // v1, v2, v3
+      'map_objects', // v3
+      'plant_memberships', // v3
+      'plants', // v4, if a half-finished upgrade left one behind
       'field_events',
       'field_defs',
       'projects',
@@ -109,15 +133,20 @@ class AppDatabase extends _$AppDatabase {
       }
     }
 
+    // Children before parents. Foreign keys are off, so this is for legibility
+    // rather than correctness.
     for (final table in [
       'operation_rows',
       'operations',
       'undo_context',
       'field_events',
-      'field_defs',
+      'plant_memberships',
+      'plants',
       'vines',
       'vine_rows',
       'blocks',
+      'map_objects',
+      'field_defs',
       'projects',
     ]) {
       await customStatement('DROP TABLE IF EXISTS $table');
@@ -140,7 +169,7 @@ class AppDatabase extends _$AppDatabase {
     // edit undoable and what lets label history explain why a plant's
     // identifier changed when the plant itself was never touched.
     plantMemberships,
-    vines,
+    plants,
     fieldDefs,
     fieldEvents,
   ];
@@ -168,7 +197,7 @@ class AppDatabase extends _$AppDatabase {
       'CREATE INDEX IF NOT EXISTS ix_operation_rows_op '
       'ON operation_rows (operation_id, id)',
     );
-    // Label history asks for one vine's whole past.
+    // Label history asks for one plant's whole past.
     await customStatement(
       'CREATE INDEX IF NOT EXISTS ix_operation_rows_row '
       'ON operation_rows (row_id, id)',
@@ -219,12 +248,12 @@ class AppDatabase extends _$AppDatabase {
   }
 
   Future<void> _createIndexes() async {
-    // The hot path: resolving a vine's current value for one field.
+    // The hot path: resolving a plant's current value for one field.
     // Ordering matches the query exactly (observed desc, then recorded desc)
     // so SQLite can satisfy it from the index without a sort.
     await customStatement(
       'CREATE INDEX IF NOT EXISTS ix_events_lookup '
-      'ON field_events (vine_id, field_def_id, observed_at DESC, recorded_at DESC)',
+      'ON field_events (plant_id, field_def_id, observed_at DESC, recorded_at DESC)',
     );
 
     // Rolling back an import means finding every event it wrote.
@@ -235,14 +264,14 @@ class AppDatabase extends _$AppDatabase {
 
     // Plants along one line, in order: what numbering and insertion both walk.
     await customStatement(
-      'CREATE INDEX IF NOT EXISTS ix_vines_carrier '
-      'ON vines (carrier_id, position_idx)',
+      'CREATE INDEX IF NOT EXISTS ix_plants_carrier '
+      'ON plants (carrier_id, position_idx)',
     );
 
-    // The canvas loads every vine in a project at once, so this is the single
+    // The canvas loads every plant in a project at once, so this is the single
     // most-used index in the app.
     await customStatement(
-      'CREATE INDEX IF NOT EXISTS ix_vines_project ON vines (project_id)',
+      'CREATE INDEX IF NOT EXISTS ix_plants_project ON plants (project_id)',
     );
 
     // Drawing and painting both ask for a project's objects, and the canvas
@@ -259,8 +288,8 @@ class AppDatabase extends _$AppDatabase {
     // Rendering an identifier asks "this plant's value for this field", which
     // is the whole reason field_def_id is denormalised onto the membership.
     await customStatement(
-      'CREATE INDEX IF NOT EXISTS ix_membership_vine '
-      'ON plant_memberships (vine_id, field_def_id)',
+      'CREATE INDEX IF NOT EXISTS ix_membership_plant '
+      'ON plant_memberships (plant_id, field_def_id)',
     );
     // Reconciliation after a geometry edit asks the other direction.
     await customStatement(

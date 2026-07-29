@@ -4,7 +4,7 @@ import '../db/database.dart';
 import '../models/enums.dart';
 import '../models/field_value.dart';
 
-/// Outcome of writing a value to a vine.
+/// Outcome of writing a value to a plant.
 sealed class WriteResult {
   const WriteResult();
 }
@@ -15,9 +15,9 @@ class WriteSucceeded extends WriteResult {
 }
 
 class WriteBulkSucceeded extends WriteResult {
-  const WriteBulkSucceeded({required this.batchId, required this.vineCount});
+  const WriteBulkSucceeded({required this.batchId, required this.plantCount});
   final String batchId;
-  final int vineCount;
+  final int plantCount;
 }
 
 /// The value failed validation for the field's type. [message] names the rule.
@@ -52,19 +52,19 @@ class WriteUnknownField extends WriteResult {
 /// restore need to write whatever the source says -- so the type and
 /// write-once rules live at this layer, where a user is on the other end and
 /// can be told what went wrong.
-class VineDataService {
-  VineDataService({required this.fieldDefs, required this.events});
+class PlantDataService {
+  PlantDataService({required this.fieldDefs, required this.events});
 
   final FieldDefsDao fieldDefs;
   final FieldEventsDao events;
 
-  /// Records a value for one vine.
+  /// Records a value for one plant.
   ///
   /// Set [force] to overwrite a static field that already holds a value. The
   /// lock exists to stop a plant date being clobbered by a stray tap, not to
   /// make a typo permanent -- so there is an escape hatch, and it is explicit.
   Future<WriteResult> setValue({
-    required String vineId,
+    required String plantId,
     required String fieldDefId,
     required Object? input,
     DateTime? observedAt,
@@ -77,7 +77,7 @@ class VineDataService {
     if (def == null) return WriteUnknownField(fieldDefId);
 
     if (def.isStatic && !force) {
-      final existing = await events.currentEvent(vineId, fieldDefId);
+      final existing = await events.currentEvent(plantId, fieldDefId);
       // A cleared static field is writable again -- clearing is the deliberate
       // act of unlocking it.
       if (existing != null && existing.value != null) {
@@ -102,7 +102,7 @@ class VineDataService {
         return WriteRejected('${def.name}: $message');
       case FieldValueAccepted(:final stored):
         final id = await events.record(
-          vineId: vineId,
+          plantId: plantId,
           fieldDefId: fieldDefId,
           value: stored,
           observedAt: observedAt,
@@ -114,19 +114,19 @@ class VineDataService {
     }
   }
 
-  /// Records the same value across a resolved selection of vines.
+  /// Records the same value across a resolved selection of plants.
   ///
-  /// Validation happens once -- the value is identical for every vine, so
-  /// validating per vine would repeat identical work thousands of times for a
+  /// Validation happens once -- the value is identical for every plant, so
+  /// validating per plant would repeat identical work thousands of times for a
   /// block-wide edit.
   ///
   /// Static fields are **not** individually checked here. Doing so would mean
-  /// a query per vine, and a partial result where some vines took the value
+  /// a query per plant, and a partial result where some plants took the value
   /// and others silently did not is worse than either outcome. Callers doing a
   /// bulk write to a static field should confirm with the user first; the
   /// batch is undoable either way.
   Future<WriteResult> setValueForSelection({
-    required Iterable<String> vineIds,
+    required Iterable<String> plantIds,
     required String fieldDefId,
     required Object? input,
     DateTime? observedAt,
@@ -147,30 +147,30 @@ class VineDataService {
       case FieldValueRejected(:final message):
         return WriteRejected('${def.name}: $message');
       case FieldValueAccepted(:final stored):
-        final ids = vineIds.toList();
+        final ids = plantIds.toList();
         final batchId = await events.recordBulk(
-          vineIds: ids,
+          plantIds: ids,
           fieldDefId: fieldDefId,
           value: stored,
           observedAt: observedAt,
           note: note,
           now: now,
         );
-        return WriteBulkSucceeded(batchId: batchId, vineCount: ids.length);
+        return WriteBulkSucceeded(batchId: batchId, plantCount: ids.length);
     }
   }
 
-  /// Current values for one vine, rendered for display.
+  /// Current values for one plant, rendered for display.
   ///
   /// Keyed by field id, with labels and formatting already applied, so the
   /// inspector does not need the config to show a row.
   Future<Map<String, String?>> displayValues(
     String projectId,
-    String vineId, {
+    String plantId, {
     DateTime? asOf,
   }) async {
     final defs = await fieldDefs.forProject(projectId);
-    final current = await events.currentValuesForVine(vineId, asOf: asOf);
+    final current = await events.currentValuesForPlant(plantId, asOf: asOf);
 
     return {
       for (final def in defs)

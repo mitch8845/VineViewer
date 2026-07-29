@@ -1,14 +1,19 @@
 # VineViewer
 
-Vineyard layout drawing and per-vine data tracking.
+Layout drawing and per-plant data tracking.
 
-Draw a vineyard's rows and blocks over an aerial image, then attach a
-user-defined data schema to every individual vine with full change history.
+Draw over an aerial image, then attach a user-defined data schema to every
+individual plant with full change history.
 
-See [VINEYARD_APP_PLAN.md](VINEYARD_APP_PLAN.md) for architecture, decisions,
-and phasing. That document is the source of truth.
+Nothing here is specific to grapes. What a drawn object *is* — a row, a block, a
+terrace, a road — is a field the user defines, and so is the way a plant's
+identifier is composed from them. It grew out of a vineyard and still carries the
+name, but an orchard would work the same way.
 
-**Status:** Phase 0 complete. Next: Phase 1 — data core (drift schema, event log).
+See [VINEYARD_APP_PLAN.md](VINEYARD_APP_PLAN.md) for architecture, decisions and
+phasing, and [V3_PLAN.md](V3_PLAN.md) for the generic-engine rework that
+supersedes parts of it. Read V3_PLAN.md's amendments block first; where the two
+disagree, the amendments win.
 
 ## Shipping a release
 

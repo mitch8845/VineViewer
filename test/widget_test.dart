@@ -33,7 +33,7 @@ Future<void> pumpShell(WidgetTester tester, List<Project> projects) async {
       overrides: [
         projectListProvider.overrideWith((ref) => Stream.value(projects)),
       ],
-      child: const VineViewerApp(),
+      child: const PlantViewerApp(),
     ),
   );
   // Not pumpAndSettle: the loading state spins a CircularProgressIndicator
@@ -46,19 +46,19 @@ void main() {
   testWidgets('launches to the project list', (tester) async {
     await pumpShell(tester, const []);
 
-    expect(find.text('VineViewer'), findsOneWidget);
+    expect(find.text('PlantViewer'), findsOneWidget);
     expect(find.text('New vineyard'), findsOneWidget);
   });
 
   testWidgets('an empty install offers the performance test vineyard', (
     tester,
   ) async {
-    // The 4,000-vine gate needs a layout at realistic scale long before anyone
+    // The 4,000-plant gate needs a layout at realistic scale long before anyone
     // has drawn one by hand, so seeding is reachable from a cold start.
     await pumpShell(tester, const []);
 
     expect(find.text('No vineyards yet.'), findsOneWidget);
-    expect(find.text('Create 4,000-vine test vineyard'), findsOneWidget);
+    expect(find.text('Create 4,000-plant test vineyard'), findsOneWidget);
   });
 
   testWidgets('projects are listed once they exist', (tester) async {

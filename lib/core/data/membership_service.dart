@@ -14,7 +14,7 @@ import '../models/enums.dart';
 /// inside Block 2's polygon is in Block 2. That is what makes the map and the
 /// data incapable of disagreeing.
 ///
-/// **Membership is not the carrier.** `vines.carrierId` is the one polyline a
+/// **Membership is not the carrier.** `plants.carrierId` is the one polyline a
 /// plant is physically snapped to and the only thing `pathOffset` is measured
 /// along. Membership is many, and a plant can be inside Block 2 and within
 /// tolerance of Terrace 3 while sliding along only Row 12.
@@ -39,11 +39,11 @@ class MembershipService {
   /// unundoable -- a boundary edit whose membership changes could not be taken
   /// back.
   ///
-  /// Narrow it with [vineIds] or [objectIds] when the caller knows what moved;
+  /// Narrow it with [plantIds] or [objectIds] when the caller knows what moved;
   /// null means everything. Returns how many membership rows changed.
   Future<int> reconcile({
     required String projectId,
-    Set<String>? vineIds,
+    Set<String>? plantIds,
     Set<String>? objectIds,
     DateTime? now,
   }) async {
@@ -52,13 +52,13 @@ class MembershipService {
     final containers = await _containersIn(projectId, objectIds);
     // Every plant still has to be considered even when no container exists:
     // deleting the last block must clear the memberships it created.
-    final plants = await _plantsIn(projectId, vineIds);
+    final plants = await _plantsIn(projectId, plantIds);
     if (plants.isEmpty) return 0;
 
     final wanted = _derive(plants, containers);
     final existing = await _existingFor(
       projectId,
-      vineIds: vineIds,
+      plantIds: plantIds,
       objectIds: objectIds,
     );
 
@@ -73,7 +73,7 @@ class MembershipService {
           .insert(
             PlantMembershipsCompanion.insert(
               id: _uuid.v4(),
-              vineId: key.vineId,
+              plantId: key.plantId,
               objectId: key.objectId,
               fieldDefId: key.fieldDefId,
               createdAt: timestamp,
@@ -149,20 +149,23 @@ class MembershipService {
     return containers;
   }
 
-  Future<List<_Plant>> _plantsIn(String projectId, Set<String>? vineIds) async {
+  Future<List<_Plant>> _plantsIn(
+    String projectId,
+    Set<String>? plantIds,
+  ) async {
     final rows = await _db
         .customSelect(
-          'SELECT id, x, y FROM vines '
+          'SELECT id, x, y FROM plants '
           'WHERE project_id = ?1 AND deleted_at IS NULL '
           '  AND x IS NOT NULL AND y IS NOT NULL',
           variables: [Variable<String>(projectId)],
-          readsFrom: {_db.vines},
+          readsFrom: {_db.plants},
         )
         .get();
 
     return [
       for (final r in rows)
-        if (vineIds == null || vineIds.contains(r.read<String>('id')))
+        if (plantIds == null || plantIds.contains(r.read<String>('id')))
           _Plant(
             r.read<String>('id'),
             Offset(r.read<double>('x'), r.read<double>('y')),
@@ -183,7 +186,7 @@ class MembershipService {
 
         wanted.add(
           _Key(
-            vineId: plant.id,
+            plantId: plant.id,
             objectId: container.id,
             fieldDefId: container.fieldDefId,
           ),
@@ -196,31 +199,31 @@ class MembershipService {
   /// Membership rows already stored, keyed the same way, mapped to their ids.
   Future<Map<_Key, String>> _existingFor(
     String projectId, {
-    Set<String>? vineIds,
+    Set<String>? plantIds,
     Set<String>? objectIds,
   }) async {
     final rows = await _db
         .customSelect(
-          'SELECT m.id AS id, m.vine_id AS vine_id, m.object_id AS object_id, '
+          'SELECT m.id AS id, m.plant_id AS plant_id, m.object_id AS object_id, '
           '       m.field_def_id AS field_def_id '
           'FROM plant_memberships m '
-          'JOIN vines v ON v.id = m.vine_id '
+          'JOIN plants v ON v.id = m.plant_id '
           'WHERE v.project_id = ?1',
           variables: [Variable<String>(projectId)],
-          readsFrom: {_db.plantMemberships, _db.vines},
+          readsFrom: {_db.plantMemberships, _db.plants},
         )
         .get();
 
     final existing = <_Key, String>{};
     for (final r in rows) {
       final key = _Key(
-        vineId: r.read<String>('vine_id'),
+        plantId: r.read<String>('plant_id'),
         objectId: r.read<String>('object_id'),
         fieldDefId: r.read<String>('field_def_id'),
       );
       // Scoped the same way the derivation was, or a narrow reconcile would
       // delete memberships it never recomputed.
-      if (vineIds != null && !vineIds.contains(key.vineId)) continue;
+      if (plantIds != null && !plantIds.contains(key.plantId)) continue;
       if (objectIds != null && !objectIds.contains(key.objectId)) continue;
       existing[key] = r.read<String>('id');
     }
@@ -263,22 +266,22 @@ class _Container {
 /// A membership, identified by what it relates rather than by its row id.
 class _Key {
   const _Key({
-    required this.vineId,
+    required this.plantId,
     required this.objectId,
     required this.fieldDefId,
   });
 
-  final String vineId;
+  final String plantId;
   final String objectId;
   final String fieldDefId;
 
   @override
   bool operator ==(Object other) =>
       other is _Key &&
-      other.vineId == vineId &&
+      other.plantId == plantId &&
       other.objectId == objectId &&
       other.fieldDefId == fieldDefId;
 
   @override
-  int get hashCode => Object.hash(vineId, objectId, fieldDefId);
+  int get hashCode => Object.hash(plantId, objectId, fieldDefId);
 }

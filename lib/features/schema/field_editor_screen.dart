@@ -17,7 +17,7 @@ final fieldDefsProvider = StreamProvider<List<FieldDef>>((ref) {
   return ref.watch(fieldDefsDaoProvider).watchForProject(projectId);
 });
 
-/// Manages what can be recorded about a vine.
+/// Manages what can be recorded about a plant.
 class FieldListScreen extends ConsumerWidget {
   const FieldListScreen({super.key});
 
@@ -36,7 +36,7 @@ class FieldListScreen extends ConsumerWidget {
                   padding: EdgeInsets.all(32),
                   child: Text(
                     'No fields yet.\n\nA field is anything you want to record '
-                    'about a vine: variety, health, spray date.',
+                    'about a plant: variety, health, spray date.',
                     textAlign: TextAlign.center,
                   ),
                 ),

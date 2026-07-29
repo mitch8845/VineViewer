@@ -138,7 +138,7 @@ class IdentifierTemplate {
   int get hashCode => Object.hash(delimiter, Object.hashAll(parts));
 }
 
-/// A rendered identifier. Replaces v2's `VineLabel`.
+/// A rendered identifier. Replaces v2's `PlantLabel`.
 class PlantIdentifier {
   const PlantIdentifier({required this.parts, required this.delimiter});
 

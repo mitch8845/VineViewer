@@ -11,7 +11,7 @@ import '../models/identifier_template.dart';
 /// template says, from container memberships, attribute values, and the plant's
 /// own number.
 ///
-/// **`vines.id` still never changes.** Only the human-facing identifier moves,
+/// **`plants.id` still never changes.** Only the human-facing identifier moves,
 /// so renumbering, renaming an object, or editing the template cannot orphan a
 /// single field event.
 ///
@@ -49,10 +49,10 @@ class LabelService {
   Future<IdentifierData> dataFor(String projectId) async {
     final plants = await _db
         .customSelect(
-          'SELECT id, position_idx FROM vines '
+          'SELECT id, position_idx FROM plants '
           'WHERE project_id = ?1 AND deleted_at IS NULL',
           variables: [Variable<String>(projectId)],
-          readsFrom: {_db.vines},
+          readsFrom: {_db.plants},
         )
         .get();
 
@@ -61,14 +61,14 @@ class LabelService {
     // the same reason v2 used a single join.
     final containers = await _db
         .customSelect(
-          'SELECT m.vine_id AS vine_id, m.field_def_id AS field_def_id, '
+          'SELECT m.plant_id AS plant_id, m.field_def_id AS field_def_id, '
           '       o.label AS label '
           'FROM plant_memberships m '
           'JOIN map_objects o ON o.id = m.object_id AND o.deleted_at IS NULL '
-          'JOIN vines v ON v.id = m.vine_id '
+          'JOIN plants v ON v.id = m.plant_id '
           'WHERE v.project_id = ?1 AND v.deleted_at IS NULL',
           variables: [Variable<String>(projectId)],
-          readsFrom: {_db.plantMemberships, _db.mapObjects, _db.vines},
+          readsFrom: {_db.plantMemberships, _db.mapObjects, _db.plants},
         )
         .get();
 
@@ -78,19 +78,19 @@ class LabelService {
     // names a field the current one does not.
     final attributes = await _db
         .customSelect(
-          'SELECT vine_id, field_def_id, value FROM ('
-          '  SELECT e.vine_id AS vine_id, e.field_def_id AS field_def_id, '
+          'SELECT plant_id, field_def_id, value FROM ('
+          '  SELECT e.plant_id AS plant_id, e.field_def_id AS field_def_id, '
           '         e.value AS value, ROW_NUMBER() OVER ('
-          '    PARTITION BY e.vine_id, e.field_def_id '
+          '    PARTITION BY e.plant_id, e.field_def_id '
           '    ORDER BY e.observed_at DESC, e.recorded_at DESC, e.rowid DESC'
           '  ) AS rn '
           '  FROM field_events e '
-          '  JOIN vines v ON v.id = e.vine_id '
+          '  JOIN plants v ON v.id = e.plant_id '
           '  WHERE v.project_id = ?1 AND v.deleted_at IS NULL '
           '    AND e.deleted_at IS NULL'
           ') WHERE rn = 1',
           variables: [Variable<String>(projectId)],
-          readsFrom: {_db.fieldEvents, _db.vines},
+          readsFrom: {_db.fieldEvents, _db.plants},
         )
         .get();
 
@@ -101,7 +101,7 @@ class LabelService {
 
     final values = <String, Map<String, String>>{};
     for (final r in containers) {
-      (values[r.read<String>('vine_id')] ??= {})[r.read<String>(
+      (values[r.read<String>('plant_id')] ??= {})[r.read<String>(
         'field_def_id',
       )] = r.read<String>(
         'label',
@@ -110,7 +110,7 @@ class LabelService {
     for (final r in attributes) {
       final value = r.readNullable<String>('value');
       if (value == null) continue; // cleared, so the placeholder applies
-      (values[r.read<String>('vine_id')] ??= {})[r.read<String>(
+      (values[r.read<String>('plant_id')] ??= {})[r.read<String>(
             'field_def_id',
           )] =
           value;
@@ -157,7 +157,7 @@ class LabelService {
     final out = <String, PlantIdentifier>{};
 
     for (final entry in data.plantNumbers.entries) {
-      final vineId = entry.key;
+      final plantId = entry.key;
       final parts = <String>[];
 
       for (final part in template.parts) {
@@ -166,14 +166,14 @@ class LabelService {
             parts.add('${entry.value}');
           case FieldPart(:final fieldDefId):
             parts.add(
-              data.values[vineId]?[fieldDefId] ??
+              data.values[plantId]?[fieldDefId] ??
                   data.placeholders[fieldDefId] ??
                   defaultPlaceholder,
             );
         }
       }
 
-      out[vineId] = PlantIdentifier(
+      out[plantId] = PlantIdentifier(
         parts: parts,
         delimiter: template.delimiter,
       );
@@ -187,14 +187,14 @@ class LabelService {
   ) async => render(await dataFor(projectId), await templateFor(projectId));
 
   /// One plant's identifier, or null if it does not exist.
-  Future<PlantIdentifier?> identifierOf(String vineId) async {
-    final vine =
-        await (_db.select(_db.vines)
-              ..where((v) => v.id.equals(vineId) & v.deletedAt.isNull()))
+  Future<PlantIdentifier?> identifierOf(String plantId) async {
+    final plant =
+        await (_db.select(_db.plants)
+              ..where((v) => v.id.equals(plantId) & v.deletedAt.isNull()))
             .getSingleOrNull();
-    if (vine == null) return null;
+    if (plant == null) return null;
 
-    return (await identifiersForProject(vine.projectId))[vineId];
+    return (await identifiersForProject(plant.projectId))[plantId];
   }
 
   // -------------------------------------------------------------- checking
@@ -294,7 +294,7 @@ class LabelService {
   /// one source of truth rather than two that can disagree. v2 merged three
   /// journals; v3 merges four, because containment moved out of the plant:
   ///
-  ///  * `vines` -- the plant's own number
+  ///  * `plants` -- the plant's own number
   ///  * `plant_memberships` -- containment gained or lost, which is how a
   ///    boundary edit that swept the plant into another block appears here
   ///  * `map_objects` -- an object renamed, which changes every identifier on
@@ -306,28 +306,28 @@ class LabelService {
   /// And the walk renders under the *current* template: changing the template
   /// rewrites how past identifiers read, which is the honest answer given the
   /// parts themselves are what was recorded.
-  Future<List<IdentifierChangeRecord>> historyOf(String vineId) async {
-    final vine = await (_db.select(
-      _db.vines,
-    )..where((v) => v.id.equals(vineId))).getSingleOrNull();
-    if (vine == null) return const [];
+  Future<List<IdentifierChangeRecord>> historyOf(String plantId) async {
+    final plant = await (_db.select(
+      _db.plants,
+    )..where((v) => v.id.equals(plantId))).getSingleOrNull();
+    if (plant == null) return const [];
 
-    final template = await templateFor(vine.projectId);
-    final data = await dataFor(vine.projectId);
+    final template = await templateFor(plant.projectId);
+    final data = await dataFor(plant.projectId);
 
     // Everything the journal remembers about this plant, and about the objects
     // it has ever belonged to.
-    final own = await _journal(table: 'vines', rowIds: {vineId});
+    final own = await _journal(table: 'plants', rowIds: {plantId});
     final memberships = await _journal(
       table: 'plant_memberships',
-      vineId: vineId,
+      plantId: plantId,
     );
 
     // Which objects to watch for renames. **Both** the ones the journal
     // mentions and the ones holding this plant right now: containment usually
     // predates any recorded operation -- reconcile ran when the block was
     // drawn -- so the journal alone names nothing at all in the common case.
-    final currentHolders = await _currentHolders(vineId);
+    final currentHolders = await _currentHolders(plantId);
     final objectIds = <String>{
       ...currentHolders.values,
       for (final e in memberships) ...[
@@ -340,7 +340,7 @@ class LabelService {
     final attributeIds = template.fieldIds.toSet();
     final events = attributeIds.isEmpty
         ? <_JournalEntry>[]
-        : await _journal(table: 'field_events', vineId: vineId);
+        : await _journal(table: 'field_events', plantId: plantId);
 
     final merged = [...own, ...memberships, ...renames, ...events]
       ..sort((a, b) => a.id.compareTo(b.id));
@@ -348,11 +348,11 @@ class LabelService {
     // Starting state: what the plant looked like before the first operation
     // that touched it, or -- if none ever did -- what it looks like now.
     var number = own.isNotEmpty
-        ? (own.first.before?['position_idx'] as int? ?? vine.positionIdx)
-        : vine.positionIdx;
+        ? (own.first.before?['position_idx'] as int? ?? plant.positionIdx)
+        : plant.positionIdx;
 
     // field id -> value, rewound to the start by undoing every recorded change.
-    final values = <String, String>{...?data.values[vineId]};
+    final values = <String, String>{...?data.values[plantId]};
     final labels = <String, String>{}; // object id -> label
     final holders = <String, String>{}; // field id -> object id
 
@@ -369,7 +369,7 @@ class LabelService {
 
     // Which of the template's fields are containers, so `record` knows whether
     // an absent value means "no container holds it" or "no value recorded".
-    final containerFields = await _containerFieldIds(vine.projectId);
+    final containerFields = await _containerFieldIds(plant.projectId);
 
     for (final entry in merged.reversed) {
       switch (entry.table) {
@@ -422,12 +422,12 @@ class LabelService {
 
       final rendered = render(
         IdentifierData(
-          plantNumbers: {vineId: number},
-          values: {vineId: composed},
+          plantNumbers: {plantId: number},
+          values: {plantId: composed},
           placeholders: data.placeholders,
         ),
         template,
-      )[vineId]!;
+      )[plantId]!;
 
       // Only transitions matter. Most operations touch a plant without moving
       // its address, and listing those would bury the renames that are the
@@ -444,7 +444,7 @@ class LabelService {
 
     for (final entry in merged) {
       switch (entry.table) {
-        case 'vines':
+        case 'plants':
           final after = entry.after;
           if (after != null) number = after['position_idx'] as int;
         case 'plant_memberships':
@@ -479,7 +479,7 @@ class LabelService {
 
     // Anything that bypassed the journal -- an import, a restored archive --
     // leaves the walk disagreeing with reality. Reality wins.
-    final current = (await identifiersForProject(vine.projectId))[vineId];
+    final current = (await identifiersForProject(plant.projectId))[plantId];
     if (current != null &&
         (history.isEmpty || history.last.identifier != current)) {
       history.add(IdentifierChangeRecord(identifier: current));
@@ -506,16 +506,16 @@ class LabelService {
   /// What the inspector shows under the identifier. Read-only by nature: these
   /// are derived from geometry, so the way to change one is to move the plant or
   /// move the boundary.
-  Future<Map<String, String>> containersOf(String vineId) async {
+  Future<Map<String, String>> containersOf(String plantId) async {
     final rows = await _db
         .customSelect(
           'SELECT f.name AS field, o.label AS label '
           'FROM plant_memberships m '
           'JOIN map_objects o ON o.id = m.object_id AND o.deleted_at IS NULL '
           'JOIN field_defs f ON f.id = m.field_def_id AND f.deleted_at IS NULL '
-          'WHERE m.vine_id = ?1 '
+          'WHERE m.plant_id = ?1 '
           'ORDER BY f.sort_order',
-          variables: [Variable<String>(vineId)],
+          variables: [Variable<String>(plantId)],
           readsFrom: {_db.plantMemberships, _db.mapObjects, _db.fieldDefs},
         )
         .get();
@@ -526,12 +526,12 @@ class LabelService {
   }
 
   /// Which object currently holds each container field for this plant.
-  Future<Map<String, String>> _currentHolders(String vineId) async {
+  Future<Map<String, String>> _currentHolders(String plantId) async {
     final rows = await _db
         .customSelect(
           'SELECT field_def_id, object_id FROM plant_memberships '
-          'WHERE vine_id = ?1',
-          variables: [Variable<String>(vineId)],
+          'WHERE plant_id = ?1',
+          variables: [Variable<String>(plantId)],
           readsFrom: {_db.plantMemberships},
         )
         .get();
@@ -569,7 +569,7 @@ class LabelService {
   Future<List<_JournalEntry>> _journal({
     required String table,
     Set<String>? rowIds,
-    String? vineId,
+    String? plantId,
   }) async {
     if (rowIds != null && rowIds.isEmpty) return const [];
 
@@ -619,10 +619,10 @@ class LabelService {
 
     // Membership and event rows are found by the plant they name rather than
     // by their own id, which the SQL above cannot express generically.
-    if (vineId == null) return entries;
+    if (plantId == null) return entries;
     return [
       for (final e in entries)
-        if ((e.before ?? e.after)?['vine_id'] == vineId) e,
+        if ((e.before ?? e.after)?['plant_id'] == plantId) e,
     ];
   }
 
@@ -645,10 +645,10 @@ class LabelService {
     // one and number them all 1.
     final rows = await _db
         .customSelect(
-          'SELECT position_idx FROM vines '
+          'SELECT position_idx FROM plants '
           'WHERE project_id = ?1 AND deleted_at IS NULL AND carrier_id IS ?2',
           variables: [Variable<String>(projectId), Variable<String>(carrierId)],
-          readsFrom: {_db.vines},
+          readsFrom: {_db.plants},
         )
         .get();
 
@@ -670,7 +670,7 @@ class LabelService {
   /// The app asks rather than defaulting: only the user knows whether a printed
   /// map is in somebody's pocket.
   Future<int> insertAfter({
-    required String vineId,
+    required String plantId,
     required String carrierId,
     required int afterPositionIdx,
     required bool shift,
@@ -680,15 +680,15 @@ class LabelService {
 
     return _db.transaction(() async {
       final plant = await (_db.select(
-        _db.vines,
-      )..where((v) => v.id.equals(vineId))).getSingle();
+        _db.plants,
+      )..where((v) => v.id.equals(plantId))).getSingle();
 
       if (!shift) {
         final number = await nextPlantNumber(
           projectId: plant.projectId,
           carrierId: carrierId,
         );
-        await _place(vineId, carrierId, number, timestamp);
+        await _place(plantId, carrierId, number, timestamp);
         return number;
       }
 
@@ -696,13 +696,13 @@ class LabelService {
       // no unique index precisely so renumbering can pass through duplicate
       // states, and one statement is far cheaper on a 72-plant line.
       await _db.customStatement(
-        'UPDATE vines SET position_idx = position_idx + 1, updated_at = ?1 '
+        'UPDATE plants SET position_idx = position_idx + 1, updated_at = ?1 '
         'WHERE carrier_id = ?2 AND deleted_at IS NULL AND position_idx > ?3',
         [timestamp.toUtc().millisecondsSinceEpoch, carrierId, afterPositionIdx],
       );
 
       final number = afterPositionIdx + 1;
-      await _place(vineId, carrierId, number, timestamp);
+      await _place(plantId, carrierId, number, timestamp);
       return number;
     });
   }
@@ -717,26 +717,26 @@ class LabelService {
   }) async {
     final row = await _db
         .customSelect(
-          'SELECT COUNT(*) AS n FROM vines '
+          'SELECT COUNT(*) AS n FROM plants '
           'WHERE carrier_id = ?1 AND deleted_at IS NULL AND position_idx > ?2',
           variables: [
             Variable<String>(carrierId),
             Variable<int>(afterPositionIdx),
           ],
-          readsFrom: {_db.vines},
+          readsFrom: {_db.plants},
         )
         .getSingle();
     return row.read<int>('n');
   }
 
   Future<void> _place(
-    String vineId,
+    String plantId,
     String carrierId,
     int number,
     DateTime timestamp,
   ) async {
-    await (_db.update(_db.vines)..where((v) => v.id.equals(vineId))).write(
-      VinesCompanion(
+    await (_db.update(_db.plants)..where((v) => v.id.equals(plantId))).write(
+      PlantsCompanion(
         carrierId: Value(carrierId),
         positionIdx: Value(number),
         updatedAt: Value(timestamp),
@@ -799,10 +799,10 @@ class IdentifierData {
     required this.placeholders,
   });
 
-  /// vine id -> `position_idx`.
+  /// plant id -> `position_idx`.
   final Map<String, int> plantNumbers;
 
-  /// vine id -> field id -> value, covering containers and attributes alike.
+  /// plant id -> field id -> value, covering containers and attributes alike.
   /// A field absent for a plant renders as that field's placeholder.
   final Map<String, Map<String, String>> values;
 
@@ -813,11 +813,11 @@ class IdentifierData {
   ///
   /// How a caller previews a rename before committing it: renaming Block 1 to
   /// Block 4 is this, applied to every plant in it.
-  IdentifierData withValues(String fieldDefId, Map<String, String> byVine) {
+  IdentifierData withValues(String fieldDefId, Map<String, String> byPlant) {
     final next = <String, Map<String, String>>{
       for (final e in values.entries) e.key: {...e.value},
     };
-    for (final e in byVine.entries) {
+    for (final e in byPlant.entries) {
       (next[e.key] ??= {})[fieldDefId] = e.value;
     }
     return IdentifierData(
@@ -828,8 +828,8 @@ class IdentifierData {
   }
 
   /// A copy with some plants renumbered -- how a numbering plan is previewed.
-  IdentifierData withNumbers(Map<String, int> byVine) => IdentifierData(
-    plantNumbers: {...plantNumbers, ...byVine},
+  IdentifierData withNumbers(Map<String, int> byPlant) => IdentifierData(
+    plantNumbers: {...plantNumbers, ...byPlant},
     values: values,
     placeholders: placeholders,
   );

@@ -24,7 +24,7 @@ const sampleAerialAsset = 'assets/aerial/five_sisters_aerial.jpg';
 /// the Kotlin Gradle Plugin, which AGP 9 with built-in Kotlin will not
 /// configure; app-module Kotlin has no such problem, so the picker lives in
 /// `MainActivity.kt` instead.
-const _channel = MethodChannel('vineviewer/files');
+const _channel = MethodChannel('plantviewer/files');
 
 /// Records the background image and its pixel dimensions.
 ///

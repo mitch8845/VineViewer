@@ -4,7 +4,7 @@ import 'package:uuid/uuid.dart';
 import '../../models/identifier_template.dart';
 import '../database.dart';
 
-/// CRUD for vineyards. Each project owns its image, schema, and vines (D10).
+/// CRUD for vineyards. Each project owns its image, schema, and plants (D10).
 class ProjectsDao {
   ProjectsDao(this._db, {Uuid? uuid}) : _uuid = uuid ?? const Uuid();
 
@@ -142,7 +142,7 @@ class ProjectsDao {
 
   /// Permanently removes a project and everything under it.
   ///
-  /// Irreversible. Foreign keys cascade, so this takes every block, row, vine,
+  /// Irreversible. Foreign keys cascade, so this takes every block, row, plant,
   /// field definition, and event with it. Callers must confirm explicitly --
   /// the plan requires typed confirmation for permanent deletion.
   Future<void> purge(String id) async {

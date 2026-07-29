@@ -3,8 +3,8 @@ import 'package:drift/drift.dart';
 import '../database.dart';
 
 /// Reads over plants, including selection resolution.
-class VinesDao {
-  VinesDao(this._db);
+class PlantsDao {
+  PlantsDao(this._db);
 
   final AppDatabase _db;
 
@@ -22,11 +22,11 @@ class VinesDao {
   /// [includeInactive] for operations that legitimately target them, such as
   /// correcting historical data.
   Future<Set<String>> resolveSelection({
-    Iterable<String> vineIds = const [],
+    Iterable<String> plantIds = const [],
     Iterable<String> objectIds = const [],
     bool includeInactive = false,
   }) async {
-    final plants = vineIds.toList();
+    final plants = plantIds.toList();
     final objects = objectIds.toList();
     if (plants.isEmpty && objects.isEmpty) return {};
 
@@ -53,7 +53,7 @@ class VinesDao {
       clauses.add(
         'v.carrier_id IN ($placeholders) '
         'OR EXISTS (SELECT 1 FROM plant_memberships m '
-        '           WHERE m.vine_id = v.id '
+        '           WHERE m.plant_id = v.id '
         '             AND m.object_id IN ($placeholders))',
       );
       // Bound twice: the same list appears in both halves of the clause.
@@ -65,12 +65,12 @@ class VinesDao {
 
     final result = await _db
         .customSelect(
-          'SELECT DISTINCT v.id AS id FROM vines v '
+          'SELECT DISTINCT v.id AS id FROM plants v '
           'WHERE v.deleted_at IS NULL '
           '$activeOnly'
           'AND (${clauses.join(' OR ')})',
           variables: variables,
-          readsFrom: {_db.vines, _db.plantMemberships},
+          readsFrom: {_db.plants, _db.plantMemberships},
         )
         .get();
 
@@ -78,11 +78,11 @@ class VinesDao {
   }
 
   /// Every plant on a carrier, in planting order.
-  Future<List<Vine>> plantsOnCarrier(
+  Future<List<Plant>> plantsOnCarrier(
     String carrierId, {
     bool includeInactive = false,
   }) {
-    final query = _db.select(_db.vines)
+    final query = _db.select(_db.plants)
       ..where((v) => v.carrierId.equals(carrierId) & v.deletedAt.isNull())
       ..orderBy([(v) => OrderingTerm.asc(v.positionIdx)]);
     return query.get().then(

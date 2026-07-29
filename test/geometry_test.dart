@@ -52,7 +52,7 @@ void main() {
     });
 
     test('clamps rather than throwing when past the end', () {
-      // A row that was shortened leaves vines holding offsets beyond its
+      // A row that was shortened leaves plants holding offsets beyond its
       // length. Parking them at the end keeps them visible and fixable;
       // throwing would take the whole canvas down.
       expect(straight.pointAt(500), const Offset(100, 0));
@@ -124,7 +124,7 @@ void main() {
       expect(elbow.reversed.reversed.points, elbow.points);
     });
 
-    test('vine one lands where the user said it should', () {
+    test('plant one lands where the user said it should', () {
       // The whole point of the toggle: plant 1 sits at the end they picked.
       final offsets = RowGeneration.byCount(elbow.reversed, 5);
       expect(elbow.reversed.pointAt(offsets.first), elbow.points.last);
@@ -159,7 +159,7 @@ void main() {
 
     test('rejects non-finite coordinates', () {
       // NaN would poison every distance computation downstream and show up as
-      // vines that silently fail to render.
+      // plants that silently fail to render.
       expect(Polyline.tryParse('[[0,0],[1e999,0]]'), isNull);
     });
   });
@@ -170,7 +170,7 @@ void main() {
       expect(offsets, [0, 25, 50, 75, 100]);
     });
 
-    test('a single vine goes at the start', () {
+    test('a single plant goes at the start', () {
       expect(RowGeneration.byCount(straight, 1), [0]);
     });
 
@@ -205,7 +205,7 @@ void main() {
 
     test('caps pathological spacing instead of hanging', () {
       // A fat-fingered 0.001 spacing would otherwise try to place millions of
-      // vines on the UI thread.
+      // plants on the UI thread.
       final offsets = RowGeneration.bySpacing(straight, 0.001);
       expect(offsets.length, lessThanOrEqualTo(5000));
     });
@@ -244,7 +244,7 @@ void main() {
 
     test('falls back to pixels on incomplete or nonsensical input', () {
       // Half-finished calibration must not produce infinite or zero scales
-      // that silently place every vine on top of each other.
+      // that silently place every plant on top of each other.
       for (final args in [
         (null, 100.0, 'ft'),
         (500.0, null, 'ft'),
@@ -267,7 +267,7 @@ void main() {
     });
 
     test('spacing in real units becomes the right pixel spacing', () {
-      // The whole point of calibration: "a vine every 6 ft" on a 500px row
+      // The whole point of calibration: "a plant every 6 ft" on a 500px row
       // calibrated at 5px/ft should place one every 30px.
       final cal = ScaleCalibration.fromProject(
         refPixels: 500,

@@ -18,7 +18,7 @@ import 'package:drift/drift.dart';
 import '../models/enums.dart';
 import 'converters.dart';
 
-/// A vineyard. Each has its own image, schema, and vines (decision D10).
+/// A vineyard. Each has its own image, schema, and plants (decision D10).
 class Projects extends Table {
   TextColumn get id => text()();
   TextColumn get name => text().withLength(min: 1, max: 200)();
@@ -33,7 +33,7 @@ class Projects extends Table {
   ///
   /// **The layout is authoritative; the image moves to fit it.** Replacing an
   /// aerial with a newer one framed slightly differently must not shift 3,000
-  /// vines -- so the new photo is dragged and scaled into alignment instead,
+  /// plants -- so the new photo is dragged and scaled into alignment instead,
   /// and every stored coordinate stays valid.
   RealColumn get imageOffsetX => real().withDefault(const Constant(0))();
   RealColumn get imageOffsetY => real().withDefault(const Constant(0))();
@@ -131,7 +131,7 @@ class MapObjects extends Table {
 ///  * Undo replays membership changes generically, with no inverse code.
 ///  * Reads stay a join. Point-in-polygon per plant per frame is not a budget.
 ///
-/// Distinct from `vines.carrierId`, which is the **one** polyline a plant is
+/// Distinct from `plants.carrierId`, which is the **one** polyline a plant is
 /// physically snapped to. Membership is many: a plant can be in Row 12 and
 /// Terrace 3 at once while sliding along only Row 12.
 class PlantMemberships extends Table {
@@ -139,8 +139,8 @@ class PlantMemberships extends Table {
   /// reference `NEW.id` on every journaled table.
   TextColumn get id => text()();
 
-  TextColumn get vineId =>
-      text().references(Vines, #id, onDelete: KeyAction.cascade)();
+  TextColumn get plantId =>
+      text().references(Plants, #id, onDelete: KeyAction.cascade)();
   TextColumn get objectId =>
       text().references(MapObjects, #id, onDelete: KeyAction.cascade)();
 
@@ -162,16 +162,20 @@ class PlantMemberships extends Table {
   Set<Column> get primaryKey => {id};
 }
 
-/// An individual vine.
+/// An individual plant.
 ///
-/// **Invariant: `id` never changes.** Only `positionIdx` and the derived
-/// `block.row.plant` label change. Every field event references this UUID, so
-/// renumbering a row can never orphan or misattribute data (plan section 6.3).
-class Vines extends Table {
+/// **Invariant: `id` never changes.** Only `positionIdx` and the identifier
+/// rendered from it change. Every field event references this UUID, so
+/// renumbering can never orphan or misattribute data (plan section 6.3).
+///
+/// Called a *plant* rather than a vine throughout: nothing in the engine is
+/// specific to grapes, and the name is the only thing that would have had to
+/// change to use this for an orchard.
+class Plants extends Table {
   TextColumn get id => text()();
 
-  /// Always set, because both parents below are nullable and a vine must still
-  /// belong somewhere. Without this an unassigned vine would be unreachable.
+  /// Always set, because both parents below are nullable and a plant must still
+  /// belong somewhere. Without this an unassigned plant would be unreachable.
   TextColumn get projectId =>
       text().references(Projects, #id, onDelete: KeyAction.cascade)();
 
@@ -207,24 +211,24 @@ class Vines extends Table {
 
   /// Distance along the row's path from its start, when snapped.
   ///
-  /// Reshaping or moving a row repositions its vines from this rather than by
+  /// Reshaping or moving a row repositions its plants from this rather than by
   /// re-projecting their x/y onto the new path. Re-projection loses a little
   /// accuracy every time and drifts visibly after a few edits; an offset is
-  /// exact and lets a vine keep its place when the far end of a row is
+  /// exact and lets a plant keep its place when the far end of a row is
   /// extended.
   RealColumn get pathOffset => real().nullable()();
 
   TextColumn get status =>
-      textEnum<VineStatus>().withDefault(const Constant('active'))();
+      textEnum<PlantStatus>().withDefault(const Constant('active'))();
 
   IntColumn get plantedAt =>
       integer().nullable().map(const DateTimeMsConverter())();
 
-  /// Set when the vine is retired. Its history is retained (decision D7).
+  /// Set when the plant is retired. Its history is retained (decision D7).
   IntColumn get endedAt =>
       integer().nullable().map(const DateTimeMsConverter())();
 
-  /// The vine this one replaced, if it is a replant. Self-referencing.
+  /// The plant this one replaced, if it is a replant. Self-referencing.
   TextColumn get predecessorId => text().nullable()();
 
   IntColumn get createdAt => integer().map(const DateTimeMsConverter())();
@@ -255,7 +259,7 @@ class Vines extends Table {
 
 /// One user gesture. The unit of undo.
 ///
-/// A gesture is not a DAO call: "Replace with New Vine" retires one vine,
+/// A gesture is not a DAO call: "Replace with New Plant" retires one plant,
 /// creates another, and copies its static fields -- three writes, one row here,
 /// one press of undo.
 class Operations extends Table {
@@ -269,10 +273,10 @@ class Operations extends Table {
   /// journal explicitly instead.
   TextColumn get projectId => text()();
 
-  /// Machine-readable operation type, e.g. `move_vine`, `delete_row`.
+  /// Machine-readable operation type, e.g. `move_plant`, `delete_row`.
   TextColumn get kind => text()();
 
-  /// The text on the undo button: "Delete row 12 (40 vines)".
+  /// The text on the undo button: "Delete row 12 (40 plants)".
   ///
   /// Composed when the operation is recorded, while the labels it names are
   /// still current. Deriving it at undo time would describe the vineyard as it
@@ -296,9 +300,9 @@ class OperationRows extends Table {
   IntColumn get operationId =>
       integer().references(Operations, #id, onDelete: KeyAction.cascade)();
 
-  /// Named `targetTable` rather than the obvious `tableName`: drift's own
-  /// [Table.tableName] getter is what `VineRows` overrides above, and a column
-  /// of that name would shadow it.
+  /// Named `targetTable` rather than the obvious `tableName`: drift declares a
+  /// [Table.tableName] getter on every table, and a column of that name would
+  /// shadow it.
   TextColumn get targetTable => text()();
 
   TextColumn get rowId => text()();
@@ -394,8 +398,8 @@ class FieldDefs extends Table {
 /// sync merges trivially -- two devices adding observations simply union.
 class FieldEvents extends Table {
   TextColumn get id => text()();
-  TextColumn get vineId =>
-      text().references(Vines, #id, onDelete: KeyAction.cascade)();
+  TextColumn get plantId =>
+      text().references(Plants, #id, onDelete: KeyAction.cascade)();
   TextColumn get fieldDefId =>
       text().references(FieldDefs, #id, onDelete: KeyAction.cascade)();
 

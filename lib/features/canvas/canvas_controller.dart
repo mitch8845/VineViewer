@@ -18,7 +18,7 @@ final activeToolProvider = StateProvider<CanvasTool>(
   (ref) => CanvasTool.select,
 );
 
-/// Currently selected vine ids.
+/// Currently selected plant ids.
 final selectionProvider = StateProvider<Set<String>>((ref) => const {});
 
 /// Whether to draw `block.row.plant` labels.
@@ -204,7 +204,7 @@ final backgroundImageProvider = FutureProvider<ui.Image?>((ref) async {
     return frame.image;
   } catch (_) {
     // A missing or corrupt image leaves the layout drawable rather than taking
-    // the project down. The vines are the data; the photo is backdrop, and an
+    // the project down. The plants are the data; the photo is backdrop, and an
     // aerial that moved on disk should not cost you access to 3,000 records.
     return null;
   }

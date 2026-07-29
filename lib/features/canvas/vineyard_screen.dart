@@ -7,7 +7,7 @@ import '../../core/geometry/polyline.dart';
 import '../../core/geometry/shapes.dart';
 import '../../core/models/enums.dart';
 import '../../core/providers.dart';
-import '../data_entry/vine_inspector.dart';
+import '../data_entry/plant_inspector.dart';
 import '../schema/field_editor_screen.dart';
 import '../schema/identifier_template_editor.dart';
 import 'canvas_controller.dart';
@@ -146,7 +146,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
 
   Future<void> _selectObject(DrawnObject object) async {
     final plants = await ref
-        .read(vinesDaoProvider)
+        .read(plantsDaoProvider)
         .resolveSelection(objectIds: [object.id]);
 
     if (!mounted) return;
@@ -222,7 +222,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
         position: layoutPoint,
       );
       await labels.insertAfter(
-        vineId: plantId,
+        plantId: plantId,
         carrierId: carrierId,
         afterPositionIdx: anchor.positionIdx,
         shift: shift,
@@ -230,7 +230,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
       // insertAfter owns the number; snapping owns the geometry. A plant with a
       // carrier has to physically be on it.
       await layout.snapPlantToCarrierKeepingNumber(
-        vineId: plantId,
+        plantId: plantId,
         carrierId: carrierId,
       );
       return plantId;
@@ -567,7 +567,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
           VineyardCanvas(
             key: _canvasKey,
             scene: VineyardScene(
-              vines: snapshot.positions,
+              plants: snapshot.positions,
               index: snapshot.index,
               objects: [
                 ...snapshot.objects,
@@ -598,7 +598,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             Positioned(
               left: 0,
               bottom: 90,
-              child: VineInspector(vineId: selection.first),
+              child: PlantInspector(plantId: selection.first),
             ),
           if (selection.length > 1)
             Positioned(

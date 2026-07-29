@@ -149,7 +149,7 @@ void main() {
   test('bulk writes are captured row by row', () async {
     // recordBulk and the seeding path both go through drift's batch(), which
     // still reaches SQLite as ordinary statements -- so the triggers fire and
-    // a 3,000-vine operation is undoable. Proving it here because "batched"
+    // a 3,000-plant operation is undoable. Proving it here because "batched"
     // sounds like it might bypass them.
     await insertProject('p1');
     await db

@@ -25,7 +25,7 @@ class ProjectListScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('VineViewer'),
+        title: const Text('PlantViewer'),
         actions: [
           IconButton(
             tooltip: 'Check for updates',
@@ -182,7 +182,7 @@ class _EmptyState extends ConsumerWidget {
           OutlinedButton.icon(
             onPressed: () => _seedDemo(ref),
             icon: const Icon(Icons.science_outlined),
-            label: const Text('Create 4,000-vine test vineyard'),
+            label: const Text('Create 4,000-plant test vineyard'),
           ),
         ],
       ),

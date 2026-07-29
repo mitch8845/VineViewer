@@ -28,7 +28,7 @@ class NumberingPlan {
     required this.order,
   });
 
-  /// vine id -> new `position_idx`.
+  /// plant id -> new `position_idx`.
   final Map<String, int> assignments;
 
   final int startAt;
@@ -69,11 +69,11 @@ class NumberingService {
   /// Works out the new numbers. Pure with respect to the database -- reads
   /// positions, writes nothing.
   Future<NumberingPlan> plan({
-    required Set<String> vineIds,
+    required Set<String> plantIds,
     required int startAt,
     required NumberingOrder order,
   }) async {
-    if (vineIds.isEmpty) {
+    if (plantIds.isEmpty) {
       return NumberingPlan(
         assignments: const {},
         startAt: startAt,
@@ -83,14 +83,14 @@ class NumberingService {
 
     final rows = await _db
         .customSelect(
-          'SELECT id, x, y FROM vines WHERE deleted_at IS NULL',
-          readsFrom: {_db.vines},
+          'SELECT id, x, y FROM plants WHERE deleted_at IS NULL',
+          readsFrom: {_db.plants},
         )
         .get();
 
     final plants = <({String id, Offset at})>[
       for (final r in rows)
-        if (vineIds.contains(r.read<String>('id')))
+        if (plantIds.contains(r.read<String>('id')))
           (
             id: r.read<String>('id'),
             at: Offset(
@@ -175,9 +175,9 @@ class NumberingService {
     await _db.transaction(() async {
       for (final entry in plan.assignments.entries) {
         await (_db.update(
-          _db.vines,
+          _db.plants,
         )..where((v) => v.id.equals(entry.key))).write(
-          VinesCompanion(
+          PlantsCompanion(
             positionIdx: Value(entry.value),
             updatedAt: Value(timestamp),
           ),

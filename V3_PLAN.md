@@ -15,6 +15,28 @@
        obstacle -- contiguous numbers, a gap in space.
     6. Boundary edits are all-or-nothing, as written here. This supersedes an
        earlier decision allowing each direction to be declined separately.
+    7. RENAME, decided after phase 5 landed: "vine" is "plant" everywhere in
+       the code. Nothing in the engine is specific to grapes, and the name was
+       the only thing standing between this and an orchard. **Read every `vine`
+       identifier below as `plant`**:
+
+         vines (table)     -> plants          field_events.vine_id -> plant_id
+         Vines / VinesDao  -> Plants / PlantsDao   vineId / vineIds -> plantId / plantIds
+         VineStatus        -> PlantStatus      VineInspector       -> PlantInspector
+         VineDataService   -> PlantDataService  vine_inspector.dart -> plant_inspector.dart
+
+       Three names deliberately did NOT change, and each would be a bug if it
+       had: the Dart package `vine_viewer` and the Android application id
+       `com.mitch8845.vine_viewer` (renaming the latter makes the next release a
+       new app rather than an update, orphaning the data on the tablet); the
+       drift file `vineviewer` (same reason -- a rename opens a different, empty
+       file); and the literal strings `vines`, `vine_rows` and `blocks` in the
+       migration's DROP lists, which name schemas that exist on disk and have no
+       Dart definitions left to follow.
+
+       This is schema **v4**, and it wipes. v3 had already shipped as 0.4.0, so
+       it could not fold into the v3 wipe. `_wipeToV3` became `_wipeToV4` and
+       serves every path from v1, v2 or v3.
 
   Verified against the code before acceptance: the FieldConfig round-trip bug
   it reports is real (fixed in 81e1267); VineyardCanvas exposes drag callbacks

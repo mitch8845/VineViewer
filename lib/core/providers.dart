@@ -5,12 +5,12 @@ import 'data/membership_service.dart';
 import 'data/numbering_service.dart';
 import 'data/operation_recorder.dart';
 import 'data/undo_service.dart';
-import 'data/vine_data_service.dart';
+import 'data/plant_data_service.dart';
 import 'db/daos/field_defs_dao.dart';
 import 'db/daos/field_events_dao.dart';
 import 'db/daos/layout_dao.dart';
 import 'db/daos/projects_dao.dart';
-import 'db/daos/vines_dao.dart';
+import 'db/daos/plants_dao.dart';
 import 'db/database.dart';
 
 /// The database, opened once for the process.
@@ -52,8 +52,8 @@ final layoutDaoProvider = Provider(
   ),
 );
 
-final vinesDaoProvider = Provider(
-  (ref) => VinesDao(ref.watch(databaseProvider)),
+final plantsDaoProvider = Provider(
+  (ref) => PlantsDao(ref.watch(databaseProvider)),
 );
 
 final fieldDefsDaoProvider = Provider(
@@ -64,8 +64,8 @@ final fieldEventsDaoProvider = Provider(
   (ref) => FieldEventsDao(ref.watch(databaseProvider)),
 );
 
-final vineDataServiceProvider = Provider(
-  (ref) => VineDataService(
+final plantDataServiceProvider = Provider(
+  (ref) => PlantDataService(
     fieldDefs: ref.watch(fieldDefsDaoProvider),
     events: ref.watch(fieldEventsDaoProvider),
   ),

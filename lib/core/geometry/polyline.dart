@@ -4,12 +4,12 @@ import 'dart:ui' show Offset, Rect;
 
 /// A row's shape: straight segments between points, in image pixel space.
 ///
-/// Not a spline. Vines are trained on stakes, so a row that changes direction
+/// Not a spline. Plants are trained on stakes, so a row that changes direction
 /// does so at a hard angle; curve fitting would add control points and
 /// arc-length integration to model something the vineyard does not contain.
 ///
 /// Arc-length prefix sums are computed once in the constructor. Placing 72
-/// vines along a row would otherwise walk the segment list 72 times, and the
+/// plants along a row would otherwise walk the segment list 72 times, and the
 /// canvas rebuilds these while dragging.
 class Polyline {
   Polyline(List<Offset> points)
@@ -49,7 +49,7 @@ class Polyline {
 
   /// The point at [offset] along the path, clamped to the ends.
   ///
-  /// Clamping rather than throwing: a vine can legitimately hold an offset
+  /// Clamping rather than throwing: a plant can legitimately hold an offset
   /// beyond the current length after a row is shortened, and dropping it off
   /// the map would be worse than parking it at the end where it is visible and
   /// can be dealt with.
@@ -83,7 +83,7 @@ class Polyline {
   /// Nearest point on the path to [target].
   ///
   /// Returns where it lies along the path, how far away it is, and the point
-  /// itself. Used to snap a vine to a row and to hit-test a row tap.
+  /// itself. Used to snap a plant to a row and to hit-test a row tap.
   ({double offset, double distance, Offset point}) closestTo(Offset target) {
     var bestOffset = 0.0;
     var bestDistanceSq = double.infinity;
@@ -123,7 +123,7 @@ class Polyline {
 
   /// The same shape walked from the other end.
   ///
-  /// This is how numbering direction is implemented. A vine's `position_idx`
+  /// This is how numbering direction is implemented. A plant's `position_idx`
   /// follows path order -- `renumberRow` sorts by `path_offset` to decide what
   /// is plant 1 -- so "number from the other end" means storing the row
   /// reversed, not carrying a flag that every read would have to consult and

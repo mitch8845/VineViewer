@@ -56,7 +56,7 @@ class UpdateCheckFailed extends UpdateCheck {
 }
 
 class UpdateService {
-  UpdateService({Dio? dio, this.repo = 'mitch8845/VineViewer'})
+  UpdateService({Dio? dio, this.repo = 'mitch8845/PlantViewer'})
     : _dio =
           dio ??
           Dio(
@@ -142,7 +142,7 @@ class UpdateService {
     CancelToken? cancelToken,
   }) async {
     final dir = await getApplicationSupportDirectory();
-    final file = File('${dir.path}/VineViewer-v${info.version}.apk');
+    final file = File('${dir.path}/PlantViewer-v${info.version}.apk');
 
     // A partial file from an interrupted download would fail to install with a
     // confusing parse error, so never resume onto an existing one.
@@ -173,7 +173,7 @@ class UpdateService {
     if (result.type == ResultType.done) return null;
 
     if (result.type == ResultType.permissionDenied) {
-      return 'Permission denied. Enable "Install unknown apps" for VineViewer '
+      return 'Permission denied. Enable "Install unknown apps" for PlantViewer '
           'in Settings, then try again.';
     }
     return 'Could not start the installer: ${result.message}';

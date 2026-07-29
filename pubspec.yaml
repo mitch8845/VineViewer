@@ -1,5 +1,9 @@
 name: vine_viewer
-description: "Vineyard layout drawing and per-vine data tracking."
+# The package name stays `vine_viewer` after the vine-to-plant rename. It is the
+# Dart import prefix in every file and, more to the point, it matches the Android
+# application id -- changing that makes the next release a new app rather than an
+# update, and orphans the database already on the tablet.
+description: "Layout drawing and per-plant data tracking."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -16,7 +20,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 0.4.0+7
+version: 0.5.0+8
 
 environment:
   sdk: ^3.12.2

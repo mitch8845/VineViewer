@@ -88,9 +88,9 @@ void main() {
 
   Future<void> plant(String id, Offset at, int number) async {
     await db
-        .into(db.vines)
+        .into(db.plants)
         .insert(
-          VinesCompanion.insert(
+          PlantsCompanion.insert(
             id: id,
             projectId: projectId,
             positionIdx: number,
@@ -152,7 +152,7 @@ void main() {
     await gesture(
       'Renumber',
       () =>
-          db.customStatement("UPDATE vines SET position_idx = 8 WHERE id='v'"),
+          db.customStatement("UPDATE plants SET position_idx = 8 WHERE id='v'"),
     );
     expect((await labels.historyOf('v')).map((c) => c.identifier.text), [
       '1.7',

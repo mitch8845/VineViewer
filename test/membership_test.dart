@@ -84,9 +84,9 @@ void main() {
 
   Future<String> plant(String id, Offset at) async {
     await db
-        .into(db.vines)
+        .into(db.plants)
         .insert(
-          VinesCompanion.insert(
+          PlantsCompanion.insert(
             id: id,
             projectId: projectId,
             positionIdx: 1,
@@ -99,11 +99,11 @@ void main() {
     return id;
   }
 
-  Future<Set<String>> objectsHolding(String vineId) async {
+  Future<Set<String>> objectsHolding(String plantId) async {
     final rows = await db
         .customSelect(
-          'SELECT object_id FROM plant_memberships WHERE vine_id = ?',
-          variables: [Variable<String>(vineId)],
+          'SELECT object_id FROM plant_memberships WHERE plant_id = ?',
+          variables: [Variable<String>(plantId)],
         )
         .get();
     return {for (final r in rows) r.read<String>('object_id')};
@@ -409,8 +409,8 @@ void main() {
       // Move a out, then reconcile only b. a's stale membership must survive:
       // a narrow reconcile that deleted rows it never recomputed would be worse
       // than one that is merely incomplete.
-      await db.customStatement("UPDATE vines SET x = 500 WHERE id = 'a'");
-      await memberships.reconcile(projectId: projectId, vineIds: {'b'});
+      await db.customStatement("UPDATE plants SET x = 500 WHERE id = 'a'");
+      await memberships.reconcile(projectId: projectId, plantIds: {'b'});
       expect(await objectsHolding('a'), {'b1'});
       expect(await objectsHolding('b'), {'b1'});
     });

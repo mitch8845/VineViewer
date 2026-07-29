@@ -24,7 +24,7 @@ void main() {
   late UndoService undo;
 
   late String projectId;
-  late String vineId;
+  late String plantId;
   late String fieldId;
 
   setUp(() async {
@@ -35,11 +35,11 @@ void main() {
 
     projectId = await ProjectsDao(db).create(name: 'Five Sisters');
     await db.customStatement(
-      'INSERT INTO vines (id, project_id, position_idx, status, '
+      'INSERT INTO plants (id, project_id, position_idx, status, '
       'created_at, updated_at) VALUES (?, ?, 1, ?, 0, 0)',
       ['v1', projectId, 'active'],
     );
-    vineId = 'v1';
+    plantId = 'v1';
 
     final field = await FieldDefsDao(
       db,
@@ -53,7 +53,7 @@ void main() {
   Future<List<String?>> watchValues(Future<void> Function() actions) async {
     final seen = <String?>[];
     final subscription = events
-        .watchCurrentValuesForVine(vineId)
+        .watchCurrentValuesForPlant(plantId)
         .listen((values) => seen.add(values[fieldId]?.value));
     addTearDown(subscription.cancel);
 
@@ -68,7 +68,7 @@ void main() {
     kind: 'set_value',
     description: 'Set Health',
     body: () =>
-        events.record(vineId: vineId, fieldDefId: fieldId, value: value),
+        events.record(plantId: plantId, fieldDefId: fieldId, value: value),
   );
 
   test('a write pushes the new value without being told', () async {

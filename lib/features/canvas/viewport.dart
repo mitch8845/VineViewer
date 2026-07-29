@@ -6,7 +6,7 @@ import 'dart:ui' show Offset, Rect;
 /// painter needs the visible rectangle in *layout* space every frame to cull,
 /// and hit-testing needs to convert a tap back the other way. Both go through
 /// here, so the two can never disagree about where things are -- a mismatch
-/// would show as taps landing on the wrong vine only when zoomed.
+/// would show as taps landing on the wrong plant only when zoomed.
 class CanvasViewport {
   const CanvasViewport({
     required this.scale,
@@ -54,7 +54,7 @@ class CanvasViewport {
   /// Used for tap tolerance: a finger is the same size on screen whatever the
   /// zoom, so the tolerance in layout units has to shrink as you zoom in. Using
   /// a fixed layout tolerance instead would make it impossible to select
-  /// individual vines when zoomed out, and absurdly precise when zoomed in.
+  /// individual plants when zoomed out, and absurdly precise when zoomed in.
   double screenToLayoutDistance(double screenDistance) =>
       screenDistance / scale;
 

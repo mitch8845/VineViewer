@@ -11,7 +11,7 @@ import 'package:vine_viewer/core/geometry/polyline.dart';
 import 'package:vine_viewer/core/geometry/shapes.dart';
 import 'package:vine_viewer/core/models/enums.dart';
 
-/// Inserting a vine mid-row, and the choice it puts to the user.
+/// Inserting a plant mid-row, and the choice it puts to the user.
 ///
 /// Plan section 6.3 recommended a suffix (`3.12.6a`) so nothing downstream
 /// moved. That is superseded: plant numbers are integers, so the two options
@@ -29,7 +29,7 @@ void main() {
 
   late String rowId;
 
-  late List<String> vineIds;
+  late List<String> plantIds;
 
   setUp(() async {
     db = AppDatabase(NativeDatabase.memory());
@@ -56,7 +56,7 @@ void main() {
         Polyline([const Offset(0, 0), const Offset(400, 0)]),
       ),
     );
-    vineIds = await layout.placePlantsAlongCarrier(
+    plantIds = await layout.placePlantsAlongCarrier(
       carrierId: rowId,
       offsets: [for (var i = 0; i < 8; i++) i * 50.0],
     );
@@ -64,12 +64,12 @@ void main() {
 
   tearDown(() async => db.close());
 
-  Future<String> freeVine() =>
+  Future<String> freePlant() =>
       layout.createPlant(projectId: projectId, position: const Offset(275, 0));
 
   Future<List<int>> numbersInRow() async {
     final rows =
-        await (db.select(db.vines)
+        await (db.select(db.plants)
               ..where((v) => v.carrierId.equals(rowId))
               ..orderBy([(v) => OrderingTerm.asc(v.positionIdx)]))
             .get();
@@ -77,62 +77,62 @@ void main() {
   }
 
   group('shift', () {
-    test('the new vine takes the next number and the rest move up', () async {
-      final vine = await freeVine();
+    test('the new plant takes the next number and the rest move up', () async {
+      final plant = await freePlant();
 
-      final plant = await labels.insertAfter(
-        vineId: vine,
+      final number = await labels.insertAfter(
+        plantId: plant,
         carrierId: rowId,
         afterPositionIdx: 6,
         shift: true,
       );
-      expect(plant, 7);
+      expect(number, 7);
       expect(await numbersInRow(), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
       // Bare numbers: this project has no identifier template, so the plant
       // part is the whole identifier. What matters here is the numbering, not
       // how it renders.
-      expect((await labels.identifierOf(vine))!.text, '7');
+      expect((await labels.identifierOf(plant))!.text, '7');
     });
 
-    test('vines before the insertion point are untouched', () async {
-      final before = await labels.identifierOf(vineIds[2]);
+    test('plants before the insertion point are untouched', () async {
+      final before = await labels.identifierOf(plantIds[2]);
       await labels.insertAfter(
-        vineId: await freeVine(),
+        plantId: await freePlant(),
         carrierId: rowId,
         afterPositionIdx: 6,
         shift: true,
       );
-      expect(await labels.identifierOf(vineIds[2]), before);
+      expect(await labels.identifierOf(plantIds[2]), before);
     });
 
-    test('every vine after it shifts by exactly one', () async {
+    test('every plant after it shifts by exactly one', () async {
       await labels.insertAfter(
-        vineId: await freeVine(),
+        plantId: await freePlant(),
         carrierId: rowId,
         afterPositionIdx: 6,
         shift: true,
       );
       // Plant 7 became 8, and 8 became 9.
-      expect((await labels.identifierOf(vineIds[6]))!.text, '8');
-      expect((await labels.identifierOf(vineIds[7]))!.text, '9');
+      expect((await labels.identifierOf(plantIds[6]))!.text, '8');
+      expect((await labels.identifierOf(plantIds[7]))!.text, '9');
     });
 
     test('inserting at the end shifts nothing', () async {
-      final vine = await freeVine();
+      final plant = await freePlant();
 
-      final plant = await labels.insertAfter(
-        vineId: vine,
+      final number = await labels.insertAfter(
+        plantId: plant,
         carrierId: rowId,
         afterPositionIdx: 8,
         shift: true,
       );
-      expect(plant, 9);
+      expect(number, 9);
       expect(await numbersInRow(), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
     });
 
     test('the row stays free of duplicates', () async {
       await labels.insertAfter(
-        vineId: await freeVine(),
+        plantId: await freePlant(),
         carrierId: rowId,
         afterPositionIdx: 3,
         shift: true,
@@ -140,56 +140,58 @@ void main() {
       expect(await labels.findDuplicateIdentifiers(projectId), isEmpty);
     });
 
-    test('the vine inherits the row block', () async {
-      final vine = await freeVine();
+    test('the inserted plant comes out with an identifier', () async {
+      final plant = await freePlant();
       await labels.insertAfter(
-        vineId: vine,
+        plantId: plant,
         carrierId: rowId,
         afterPositionIdx: 2,
         shift: true,
       );
-      expect((await labels.identifierOf(vine))!.text, isNotEmpty);
+      expect((await labels.identifierOf(plant))!.text, isNotEmpty);
     });
   });
 
   group('gap fill', () {
-    test('reuses the number a removed vine left behind', () async {
-      // Vine 3 was pulled years ago. Its slot is the obvious home for a
+    test('reuses the number a removed plant left behind', () async {
+      // Plant 3 was pulled years ago. Its slot is the obvious home for a
       // replant, and using it renames nothing.
-      await db.customStatement('DELETE FROM vines WHERE id = ?', [vineIds[2]]);
+      await db.customStatement('DELETE FROM plants WHERE id = ?', [
+        plantIds[2],
+      ]);
       expect(await numbersInRow(), [1, 2, 4, 5, 6, 7, 8]);
 
-      final vine = await freeVine();
+      final plant = await freePlant();
 
-      final plant = await labels.insertAfter(
-        vineId: vine,
+      final number = await labels.insertAfter(
+        plantId: plant,
         carrierId: rowId,
         afterPositionIdx: 6,
         shift: false,
       );
-      expect(plant, 3);
+      expect(number, 3);
       expect(await numbersInRow(), [1, 2, 3, 4, 5, 6, 7, 8]);
     });
 
     test('appends when the row is full', () async {
-      final vine = await freeVine();
+      final plant = await freePlant();
 
-      final plant = await labels.insertAfter(
-        vineId: vine,
+      final number = await labels.insertAfter(
+        plantId: plant,
         carrierId: rowId,
         afterPositionIdx: 4,
         shift: false,
       );
-      expect(plant, 9);
+      expect(number, 9);
       expect(await numbersInRow(), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
     });
 
     test('renames nothing', () async {
       final before = {
-        for (final id in vineIds) id: (await labels.identifierOf(id))!.text,
+        for (final id in plantIds) id: (await labels.identifierOf(id))!.text,
       };
       await labels.insertAfter(
-        vineId: await freeVine(),
+        plantId: await freePlant(),
         carrierId: rowId,
         afterPositionIdx: 4,
         shift: false,
@@ -201,7 +203,7 @@ void main() {
   });
 
   group('the prompt has a number to show', () {
-    test('counts the vines a shift would rename', () async {
+    test('counts the plants a shift would rename', () async {
       expect(
         await labels.countAffectedByShift(
           carrierId: rowId,
@@ -232,10 +234,10 @@ void main() {
       );
 
       final before = {
-        for (final id in vineIds) id: (await labels.identifierOf(id))!.text,
+        for (final id in plantIds) id: (await labels.identifierOf(id))!.text,
       };
       await labels.insertAfter(
-        vineId: await freeVine(),
+        plantId: await freePlant(),
         carrierId: rowId,
         afterPositionIdx: 3,
         shift: true,

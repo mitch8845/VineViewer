@@ -30,7 +30,7 @@ class UndoControls extends ConsumerWidget {
       children: [
         IconButton(
           // The description names the gesture rather than the table it touched:
-          // "Delete row 12 (40 vines)", not "revert 41 rows".
+          // "Delete row 12 (40 plants)", not "revert 41 rows".
           tooltip: available.canUndo
               ? 'Undo: ${available.undo!.description}'
               : 'Nothing to undo',
@@ -66,7 +66,7 @@ class UndoControls extends ConsumerWidget {
         : await service.redo(projectId);
     if (operation == null || !context.mounted) return;
 
-    // Undo is silent otherwise. On a 3,000-vine map an operation can easily
+    // Undo is silent otherwise. On a 3,000-plant map an operation can easily
     // change something off screen, and a button that appears to do nothing is
     // one the user stops trusting.
     ScaffoldMessenger.of(context)

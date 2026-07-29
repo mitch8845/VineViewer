@@ -17,8 +17,8 @@ final _sep = DateTime.utc(2026, 9, 15, 9);
 void main() {
   late AppDatabase db;
   late FieldEventsDao dao;
-  const vineId = 'vine-1';
-  const otherVineId = 'vine-2';
+  const plantId = 'plant-1';
+  const otherPlantId = 'plant-2';
   const healthId = 'field-health';
   const varietyId = 'field-variety';
 
@@ -62,15 +62,15 @@ void main() {
             updatedAt: now,
           ),
         );
-    for (final id in [vineId, otherVineId]) {
+    for (final id in [plantId, otherPlantId]) {
       await db
-          .into(db.vines)
+          .into(db.plants)
           .insert(
-            VinesCompanion.insert(
+            PlantsCompanion.insert(
               id: id,
               projectId: 'p1',
               carrierId: const Value('r1'),
-              positionIdx: id == vineId ? 6 : 7,
+              positionIdx: id == plantId ? 6 : 7,
               createdAt: now,
               updatedAt: now,
             ),
@@ -107,71 +107,71 @@ void main() {
   group('recording and current value', () {
     test('a recorded value becomes current', () async {
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: '4',
         observedAt: _jun,
       );
-      expect(await dao.currentValue(vineId, healthId), '4');
+      expect(await dao.currentValue(plantId, healthId), '4');
     });
 
     test('no events yields null', () async {
-      expect(await dao.currentValue(vineId, healthId), isNull);
+      expect(await dao.currentValue(plantId, healthId), isNull);
     });
 
     test('the latest observation wins regardless of insert order', () async {
       // Deliberately inserted newest-first: current value must follow
       // observed_at, not row order or insertion order.
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'september',
         observedAt: _sep,
       );
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'january',
         observedAt: _jan,
       );
-      expect(await dao.currentValue(vineId, healthId), 'september');
+      expect(await dao.currentValue(plantId, healthId), 'september');
     });
 
-    test('events are isolated per vine and per field', () async {
+    test('events are isolated per plant and per field', () async {
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'mine',
         observedAt: _jun,
       );
-      expect(await dao.currentValue(otherVineId, healthId), isNull);
-      expect(await dao.currentValue(vineId, varietyId), isNull);
+      expect(await dao.currentValue(otherPlantId, healthId), isNull);
+      expect(await dao.currentValue(plantId, varietyId), isNull);
     });
   });
 
   group('tie-breaking', () {
     test('same observed_at resolves to the most recently recorded', () async {
       // The real scenario: a bulk edit stamps one observed_at across many
-      // vines, then the user notices a mistake and corrects it. Both events
+      // plants, then the user notices a mistake and corrects it. Both events
       // share observed_at. Without the recorded_at tie-break the winner is
       // whatever SQLite returns first -- so the correction might not stick,
       // and the value could even differ between two reads.
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'typo',
         observedAt: _jun,
         now: DateTime.utc(2026, 6, 20, 10),
       );
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'corrected',
         observedAt: _jun,
         now: DateTime.utc(2026, 6, 20, 11),
       );
 
-      expect(await dao.currentValue(vineId, healthId), 'corrected');
+      expect(await dao.currentValue(plantId, healthId), 'corrected');
     });
 
     test('identical timestamps resolve to the later insert', () async {
@@ -191,28 +191,28 @@ void main() {
       final sameInstant = DateTime.utc(2026, 6, 15, 10, 30, 0, 0);
 
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'typo',
         observedAt: sameInstant,
         now: sameInstant,
       );
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'corrected',
         observedAt: sameInstant,
         now: sameInstant,
       );
 
-      expect(await dao.currentValue(vineId, healthId), 'corrected');
+      expect(await dao.currentValue(plantId, healthId), 'corrected');
     });
 
     test('identical timestamps order consistently in bulk reads too', () async {
       final sameInstant = DateTime.utc(2026, 6, 15, 10, 30);
       for (final value in ['first', 'second', 'third']) {
         await dao.record(
-          vineId: vineId,
+          plantId: plantId,
           fieldDefId: healthId,
           value: value,
           observedAt: sameInstant,
@@ -221,17 +221,17 @@ void main() {
       }
 
       // Every read path must agree on which event is current, or the map and
-      // the inspector would show different values for the same vine.
-      expect(await dao.currentValue(vineId, healthId), 'third');
+      // the inspector would show different values for the same plant.
+      expect(await dao.currentValue(plantId, healthId), 'third');
       expect(
-        (await dao.currentValuesForVine(vineId))[healthId]!.value,
+        (await dao.currentValuesForPlant(plantId))[healthId]!.value,
         'third',
       );
       expect(
-        (await dao.currentValuesForField(healthId))[vineId]!.value,
+        (await dao.currentValuesForField(healthId))[plantId]!.value,
         'third',
       );
-      expect((await dao.history(vineId, healthId)).first.value, 'third');
+      expect((await dao.history(plantId, healthId)).first.value, 'third');
     });
 
     test('resolution is finer than one second', () async {
@@ -239,47 +239,47 @@ void main() {
       // these two events tie. Hence the millisecond converter.
       final base = DateTime.utc(2026, 6, 20, 10, 0, 0);
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'first',
         observedAt: _jun,
         now: base,
       );
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'second',
         observedAt: _jun,
         now: base.add(const Duration(milliseconds: 40)),
       );
 
-      expect(await dao.currentValue(vineId, healthId), 'second');
+      expect(await dao.currentValue(plantId, healthId), 'second');
     });
   });
 
   group('cleared vs never recorded', () {
     test('a cleared value is a real event, not an absence', () async {
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: '4',
         observedAt: _jan,
       );
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: null,
         observedAt: _jun,
       );
 
       // Both read as null through currentValue...
-      expect(await dao.currentValue(vineId, healthId), isNull);
+      expect(await dao.currentValue(plantId, healthId), isNull);
       // ...but the event exists, which is how "we looked and found nothing"
       // stays distinguishable from "we never looked".
-      final event = await dao.currentEvent(vineId, healthId);
+      final event = await dao.currentEvent(plantId, healthId);
       expect(event, isNotNull);
       expect(event!.value, isNull);
-      expect(await dao.history(vineId, healthId), hasLength(2));
+      expect(await dao.history(plantId, healthId), hasLength(2));
     });
   });
 
@@ -287,7 +287,7 @@ void main() {
     setUp(() async {
       for (final (value, at) in [('1', _jan), ('3', _jun), ('5', _sep)]) {
         await dao.record(
-          vineId: vineId,
+          plantId: plantId,
           fieldDefId: healthId,
           value: value,
           observedAt: at,
@@ -297,75 +297,75 @@ void main() {
 
     test('asOf returns the value in force at that moment', () async {
       expect(
-        await dao.currentValue(vineId, healthId, asOf: DateTime.utc(2026, 3)),
+        await dao.currentValue(plantId, healthId, asOf: DateTime.utc(2026, 3)),
         '1',
       );
       expect(
-        await dao.currentValue(vineId, healthId, asOf: DateTime.utc(2026, 7)),
+        await dao.currentValue(plantId, healthId, asOf: DateTime.utc(2026, 7)),
         '3',
       );
-      expect(await dao.currentValue(vineId, healthId), '5');
+      expect(await dao.currentValue(plantId, healthId), '5');
     });
 
     test('asOf before any observation yields null', () async {
       expect(
-        await dao.currentValue(vineId, healthId, asOf: DateTime.utc(2025)),
+        await dao.currentValue(plantId, healthId, asOf: DateTime.utc(2025)),
         isNull,
       );
     });
 
     test('asOf is inclusive of an exact timestamp match', () async {
-      expect(await dao.currentValue(vineId, healthId, asOf: _jun), '3');
+      expect(await dao.currentValue(plantId, healthId, asOf: _jun), '3');
     });
 
     test('history returns every event newest first', () async {
-      final history = await dao.history(vineId, healthId);
+      final history = await dao.history(plantId, healthId);
       expect(history.map((e) => e.value), ['5', '3', '1']);
     });
   });
 
   group('bulk reads', () {
-    test('currentValuesForVine returns one entry per field', () async {
+    test('currentValuesForPlant returns one entry per field', () async {
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'old',
         observedAt: _jan,
       );
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'new',
         observedAt: _sep,
       );
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: varietyId,
         value: 'Cabernet Franc',
         observedAt: _jan,
       );
 
-      final values = await dao.currentValuesForVine(vineId);
+      final values = await dao.currentValuesForPlant(plantId);
       expect(values, hasLength(2));
       expect(values[healthId]!.value, 'new');
       expect(values[varietyId]!.value, 'Cabernet Franc');
     });
 
-    test('currentValuesForField returns one entry per vine', () async {
+    test('currentValuesForField returns one entry per plant', () async {
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: '2',
         observedAt: _jan,
       );
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: '4',
         observedAt: _sep,
       );
       await dao.record(
-        vineId: otherVineId,
+        plantId: otherPlantId,
         fieldDefId: healthId,
         value: '5',
         observedAt: _jun,
@@ -373,26 +373,26 @@ void main() {
 
       final values = await dao.currentValuesForField(healthId);
       expect(values, hasLength(2));
-      expect(values[vineId]!.value, '4');
-      expect(values[otherVineId]!.value, '5');
+      expect(values[plantId]!.value, '4');
+      expect(values[otherPlantId]!.value, '5');
     });
 
     test('bulk reads honour asOf', () async {
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'early',
         observedAt: _jan,
       );
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'late',
         observedAt: _sep,
       );
 
-      final values = await dao.currentValuesForVine(
-        vineId,
+      final values = await dao.currentValuesForPlant(
+        plantId,
         asOf: DateTime.utc(2026, 3),
       );
       expect(values[healthId]!.value, 'early');
@@ -402,52 +402,52 @@ void main() {
   group('soft delete', () {
     test('deleting the latest event restores the previous value', () async {
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'keep',
         observedAt: _jan,
       );
       final mistakeId = await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'mistake',
         observedAt: _sep,
       );
 
-      expect(await dao.currentValue(vineId, healthId), 'mistake');
+      expect(await dao.currentValue(plantId, healthId), 'mistake');
       await dao.softDelete(mistakeId);
-      expect(await dao.currentValue(vineId, healthId), 'keep');
+      expect(await dao.currentValue(plantId, healthId), 'keep');
     });
 
     test('soft-deleted events are excluded from history', () async {
       final id = await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'gone',
         observedAt: _jan,
       );
       await dao.softDelete(id);
-      expect(await dao.history(vineId, healthId), isEmpty);
+      expect(await dao.history(plantId, healthId), isEmpty);
     });
 
     test('soft-deleted events are excluded from bulk reads', () async {
       final id = await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'gone',
         observedAt: _jan,
       );
       await dao.softDelete(id);
-      expect(await dao.currentValuesForVine(vineId), isEmpty);
+      expect(await dao.currentValuesForPlant(plantId), isEmpty);
       expect(await dao.currentValuesForField(healthId), isEmpty);
     });
   });
 
   group('import batches', () {
     Future<void> importThree(String batchId) async {
-      for (final vine in [vineId, otherVineId]) {
+      for (final plant in [plantId, otherPlantId]) {
         await dao.record(
-          vineId: vine,
+          plantId: plant,
           fieldDefId: healthId,
           value: 'imported',
           observedAt: _jun,
@@ -459,27 +459,27 @@ void main() {
 
     test('an import batch can be reverted as a unit', () async {
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: 'manual',
         observedAt: _jan,
       );
       await importThree('batch-1');
 
-      expect(await dao.currentValue(vineId, healthId), 'imported');
+      expect(await dao.currentValue(plantId, healthId), 'imported');
 
       final reverted = await dao.undoBatch('batch-1');
       expect(reverted, 2);
 
       // The pre-import value is intact -- the point of undoable imports.
-      expect(await dao.currentValue(vineId, healthId), 'manual');
-      expect(await dao.currentValue(otherVineId, healthId), isNull);
+      expect(await dao.currentValue(plantId, healthId), 'manual');
+      expect(await dao.currentValue(otherPlantId, healthId), isNull);
     });
 
     test('undo does not touch other batches or manual events', () async {
       await importThree('batch-1');
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: varietyId,
         value: 'keep me',
         observedAt: _jun,
@@ -488,7 +488,7 @@ void main() {
       );
 
       await dao.undoBatch('batch-1');
-      expect(await dao.currentValue(vineId, varietyId), 'keep me');
+      expect(await dao.currentValue(plantId, varietyId), 'keep me');
     });
 
     test('undoing twice reverts nothing the second time', () async {
@@ -499,7 +499,7 @@ void main() {
 
     test('events carry their source', () async {
       await importThree('batch-1');
-      final event = await dao.currentEvent(vineId, healthId);
+      final event = await dao.currentEvent(plantId, healthId);
       expect(event!.source, EventSource.import);
       expect(event.batchId, 'batch-1');
     });
@@ -508,10 +508,10 @@ void main() {
   group('transfer', () {});
 
   group('referential integrity', () {
-    test('an event cannot reference a nonexistent vine', () async {
+    test('an event cannot reference a nonexistent plant', () async {
       expect(
         () => dao.record(
-          vineId: 'no-such-vine',
+          plantId: 'no-such-plant',
           fieldDefId: healthId,
           value: '1',
           observedAt: _jun,
@@ -523,7 +523,7 @@ void main() {
     test('an event cannot reference a nonexistent field', () async {
       expect(
         () => dao.record(
-          vineId: vineId,
+          plantId: plantId,
           fieldDefId: 'no-such-field',
           value: '1',
           observedAt: _jun,
@@ -537,13 +537,13 @@ void main() {
     test('timestamps survive a round trip at millisecond precision', () async {
       final precise = DateTime.utc(2026, 6, 15, 9, 30, 45, 123);
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: '1',
         observedAt: precise,
       );
 
-      final event = await dao.currentEvent(vineId, healthId);
+      final event = await dao.currentEvent(plantId, healthId);
       expect(event!.observedAt, precise);
       expect(event.observedAt.millisecond, 123);
     });
@@ -553,13 +553,13 @@ void main() {
       // the device crosses a DST boundary.
       final local = DateTime(2026, 6, 15, 9, 30);
       await dao.record(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         value: '1',
         observedAt: local,
       );
 
-      final event = await dao.currentEvent(vineId, healthId);
+      final event = await dao.currentEvent(plantId, healthId);
       expect(event!.observedAt.isUtc, isTrue);
       expect(
         event.observedAt.millisecondsSinceEpoch,

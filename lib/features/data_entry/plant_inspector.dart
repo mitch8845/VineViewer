@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/data/label_service.dart';
-import '../../core/data/vine_data_service.dart';
+import '../../core/data/plant_data_service.dart';
 import '../../core/db/database.dart';
 import '../../core/models/enums.dart';
 import '../../core/models/field_config.dart';
@@ -12,23 +12,23 @@ import '../../core/providers.dart';
 import '../canvas/canvas_controller.dart';
 import '../schema/field_editor_screen.dart';
 
-/// Panel for the selected vine: its address and every field, editable.
+/// Panel for the selected plant: its address and every field, editable.
 ///
-/// Sits over the canvas rather than replacing it, so the vine stays visible
+/// Sits over the canvas rather than replacing it, so the plant stays visible
 /// while its values are being read or changed -- in the field you are looking
 /// at the plant and the screen at the same time.
-class VineInspector extends ConsumerWidget {
-  const VineInspector({super.key, required this.vineId});
+class PlantInspector extends ConsumerWidget {
+  const PlantInspector({super.key, required this.plantId});
 
-  final String vineId;
+  final String plantId;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final fields = ref.watch(fieldDefsProvider).valueOrNull ?? const [];
-    final identifier = ref.watch(_identifierProvider(vineId)).valueOrNull;
+    final identifier = ref.watch(_identifierProvider(plantId)).valueOrNull;
     final containers =
-        ref.watch(_containersProvider(vineId)).valueOrNull ?? const {};
-    final values = ref.watch(_valuesProvider(vineId)).valueOrNull ?? const {};
+        ref.watch(_containersProvider(plantId)).valueOrNull ?? const {};
+    final values = ref.watch(_valuesProvider(plantId)).valueOrNull ?? const {};
 
     return Card(
       margin: const EdgeInsets.all(8),
@@ -65,7 +65,8 @@ class VineInspector extends ConsumerWidget {
                     icon: const Icon(Icons.history),
                     onPressed: () => showModalBottomSheet<void>(
                       context: context,
-                      builder: (context) => _LabelHistorySheet(vineId: vineId),
+                      builder: (context) =>
+                          _LabelHistorySheet(plantId: plantId),
                     ),
                   ),
                   IconButton(
@@ -83,7 +84,7 @@ class VineInspector extends ConsumerWidget {
                       padding: EdgeInsets.all(24),
                       child: Text(
                         'No fields defined yet. Add one to start recording '
-                        'observations about this vine.',
+                        'observations about this plant.',
                       ),
                     )
                   : ListView.builder(
@@ -92,7 +93,7 @@ class VineInspector extends ConsumerWidget {
                       itemBuilder: (context, i) {
                         final field = fields[i];
                         return _FieldRow(
-                          vineId: vineId,
+                          plantId: plantId,
                           field: field,
                           event: values[field.id],
                         );
@@ -108,12 +109,12 @@ class VineInspector extends ConsumerWidget {
 
 final _identifierProvider = FutureProvider.family<PlantIdentifier?, String>((
   ref,
-  vineId,
+  plantId,
 ) async {
   // Depends on the layout so a snap, a renumber, or a boundary edit that
   // changes containment all refresh what is shown.
   ref.watch(layoutSnapshotProvider);
-  return ref.watch(labelServiceProvider).identifierOf(vineId);
+  return ref.watch(labelServiceProvider).identifierOf(plantId);
 });
 
 /// Which containers hold this plant, as field name to object name.
@@ -122,13 +123,13 @@ final _identifierProvider = FutureProvider.family<PlantIdentifier?, String>((
 /// one is to move the plant or move the boundary.
 final _containersProvider = FutureProvider.family<Map<String, String>, String>((
   ref,
-  vineId,
+  plantId,
 ) async {
   ref.watch(layoutSnapshotProvider);
-  return ref.watch(labelServiceProvider).containersOf(vineId);
+  return ref.watch(labelServiceProvider).containersOf(plantId);
 });
 
-/// The vine's current values, live.
+/// The plant's current values, live.
 ///
 /// A watched query rather than a one-shot read plus a refresh counter. Undo
 /// writes to the event log directly, so anything that refreshed on the
@@ -136,33 +137,33 @@ final _containersProvider = FutureProvider.family<Map<String, String>, String>((
 /// been reverted.
 final _valuesProvider = StreamProvider.family<Map<String, FieldEvent>, String>((
   ref,
-  vineId,
+  plantId,
 ) {
-  return ref.watch(fieldEventsDaoProvider).watchCurrentValuesForVine(vineId);
+  return ref.watch(fieldEventsDaoProvider).watchCurrentValuesForPlant(plantId);
 });
 
 final _historyProvider =
     FutureProvider.family<List<IdentifierChangeRecord>, String>((
       ref,
-      vineId,
+      plantId,
     ) async {
       ref.watch(layoutSnapshotProvider);
-      return ref.watch(labelServiceProvider).historyOf(vineId);
+      return ref.watch(labelServiceProvider).historyOf(plantId);
     });
 
-/// Every label this vine has carried.
+/// Every label this plant has carried.
 ///
 /// The point is reconciling paper: a 2025 notebook saying "3.12.7 looks weak"
 /// is guesswork once numbers have been reused or shifted, and this is what
 /// turns it back into a fact.
 class _LabelHistorySheet extends ConsumerWidget {
-  const _LabelHistorySheet({required this.vineId});
+  const _LabelHistorySheet({required this.plantId});
 
-  final String vineId;
+  final String plantId;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final history = ref.watch(_historyProvider(vineId));
+    final history = ref.watch(_historyProvider(plantId));
 
     return SafeArea(
       child: Padding(
@@ -226,12 +227,12 @@ class _LabelHistorySheet extends ConsumerWidget {
 
 class _FieldRow extends ConsumerWidget {
   const _FieldRow({
-    required this.vineId,
+    required this.plantId,
     required this.field,
     required this.event,
   });
 
-  final String vineId;
+  final String plantId;
   final FieldDef field;
   final FieldEvent? event;
 
@@ -305,7 +306,7 @@ class _FieldRow extends ConsumerWidget {
 
     // One press of undo puts the old value back, and because undo replays the
     // journal rather than appending a correction, the mistaken entry does not
-    // linger in this vine's history.
+    // linger in this plant's history.
     final result = await ref
         .read(operationRecorderProvider)
         .run(
@@ -313,9 +314,9 @@ class _FieldRow extends ConsumerWidget {
           kind: 'set_value',
           description: 'Set ${field.name}',
           body: () => ref
-              .read(vineDataServiceProvider)
+              .read(plantDataServiceProvider)
               .setValue(
-                vineId: vineId,
+                plantId: plantId,
                 fieldDefId: field.id,
                 input: value,
                 force: force,
@@ -345,7 +346,7 @@ class _FieldRow extends ConsumerWidget {
             title: const Text('Write-once field'),
             content: Text(
               '$message\n\nOverwrite it? The previous value stays in this '
-              "vine's history.",
+              "plant's history.",
             ),
             actions: [
               TextButton(

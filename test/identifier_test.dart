@@ -110,9 +110,9 @@ void main() {
 
   Future<String> plant(String id, Offset at, {int number = 1}) async {
     await db
-        .into(db.vines)
+        .into(db.plants)
         .insert(
-          VinesCompanion.insert(
+          PlantsCompanion.insert(
             id: id,
             projectId: projectId,
             positionIdx: number,
@@ -139,7 +139,7 @@ void main() {
 
   /// Block 3 containing row 12, with one plant numbered 7 -- the running
   /// example throughout the design.
-  Future<({String block, String row, String vine})> vineyard() async {
+  Future<({String block, String row, String plant})> vineyard() async {
     final blockField = await objectField(
       id: 'f_block',
       name: 'Block',
@@ -167,7 +167,7 @@ void main() {
     );
     await plant('v7', const Offset(50, 50), number: 7);
     await memberships.reconcile(projectId: projectId);
-    return (block: blockField, row: rowField, vine: 'v7');
+    return (block: blockField, row: rowField, plant: 'v7');
   }
 
   group('templates', () {
@@ -217,7 +217,7 @@ void main() {
           .insert(
             FieldEventsCompanion.insert(
               id: 'e1',
-              vineId: 'v7',
+              plantId: 'v7',
               fieldDefId: variety,
               value: const Value('PinotNoir'),
               observedAt: DateTime.utc(2026),
@@ -377,7 +377,7 @@ void main() {
       await threeInARow();
 
       final plan = await numbering.plan(
-        vineIds: {'a', 'b', 'c'},
+        plantIds: {'a', 'b', 'c'},
         startAt: 1,
         order: NumberingOrder.leftToRight,
       );
@@ -388,7 +388,7 @@ void main() {
       await threeInARow();
 
       final plan = await numbering.plan(
-        vineIds: {'a', 'b', 'c'},
+        plantIds: {'a', 'b', 'c'},
         startAt: 1,
         order: NumberingOrder.rightToLeft,
       );
@@ -400,7 +400,7 @@ void main() {
       await plant('bottom', const Offset(0, 100), number: 2);
 
       final plan = await numbering.plan(
-        vineIds: {'top', 'bottom'},
+        plantIds: {'top', 'bottom'},
         startAt: 10,
         order: NumberingOrder.topToBottom,
       );
@@ -415,7 +415,7 @@ void main() {
       await plant('a', const Offset(5, 5), number: 2);
       for (var i = 0; i < 3; i++) {
         final plan = await numbering.plan(
-          vineIds: {'a', 'z'},
+          plantIds: {'a', 'z'},
           startAt: 1,
           order: NumberingOrder.leftToRight,
         );
@@ -427,7 +427,7 @@ void main() {
       await threeInARow();
 
       final plan = await numbering.plan(
-        vineIds: {'a', 'b', 'c'},
+        plantIds: {'a', 'b', 'c'},
         startAt: 1,
         order: NumberingOrder.leftToRight,
       );
@@ -448,7 +448,7 @@ void main() {
       await plant('move', const Offset(50, 0), number: 2);
 
       final plan = await numbering.plan(
-        vineIds: {'move'},
+        plantIds: {'move'},
         startAt: 1,
         order: NumberingOrder.leftToRight,
       );
@@ -457,7 +457,7 @@ void main() {
       expect(result, isA<NumberingRefused>());
       expect((result as NumberingRefused).collisions, ['1']);
       // Nothing changed -- asserting the database, not just the return value.
-      final rows = await db.select(db.vines).get();
+      final rows = await db.select(db.plants).get();
       expect(rows.firstWhere((v) => v.id == 'move').positionIdx, 2);
     });
 
@@ -483,7 +483,7 @@ void main() {
       );
 
       final plan = await numbering.plan(
-        vineIds: {'other'},
+        plantIds: {'other'},
         startAt: 7,
         order: NumberingOrder.leftToRight,
       );

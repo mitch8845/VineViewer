@@ -20,12 +20,12 @@ typedef DrawnObject = ({
 ///
 /// Immutable and compared by identity in [VineyardPainter.shouldRepaint]: the
 /// providers rebuild this only when something actually changed, so identity is
-/// both correct and free. A deep comparison of 3,000 vines every frame would
+/// both correct and free. A deep comparison of 3,000 plants every frame would
 /// cost more than the painting.
 @immutable
 class VineyardScene {
   const VineyardScene({
-    required this.vines,
+    required this.plants,
     required this.index,
     required this.objects,
     this.image,
@@ -39,7 +39,7 @@ class VineyardScene {
   });
 
   /// Positions by id. The index holds the same points for spatial queries.
-  final Map<String, Offset> vines;
+  final Map<String, Offset> plants;
   final SpatialIndex index;
 
   /// Everything drawn: rows, blocks, roads, posts. Painted per object because
@@ -60,7 +60,7 @@ class VineyardScene {
 
   final Set<String> selection;
 
-  /// Per-vine colour from colour-by-field. Absent means use the default.
+  /// Per-plant colour from colour-by-field. Absent means use the default.
   final Map<String, Color> colors;
 
   final Map<String, String> labels;
@@ -69,7 +69,7 @@ class VineyardScene {
 
 /// Draws the vineyard.
 ///
-/// One painter for the whole layout. A widget per vine would mean 3,000
+/// One painter for the whole layout. A widget per plant would mean 3,000
 /// RenderObjects laid out and composited every frame, which the plan rules out
 /// explicitly and which the Fire Max 11 would not survive.
 class VineyardPainter extends CustomPainter {
@@ -79,7 +79,7 @@ class VineyardPainter extends CustomPainter {
   final CanvasViewport viewport;
 
   /// Below this scale, individual markers stop being distinguishable and rows
-  /// carry the information instead. Also where per-vine painting would start
+  /// carry the information instead. Also where per-plant painting would start
   /// costing more than it conveys.
   static const _markerVisibleScale = 0.25;
 
@@ -92,7 +92,7 @@ class VineyardPainter extends CustomPainter {
     ..strokeWidth = 2
     ..style = PaintingStyle.stroke;
 
-  static const _defaultVineColor = Color(0xFF4CAF50);
+  static const _defaultPlantColor = Color(0xFF4CAF50);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -102,7 +102,7 @@ class VineyardPainter extends CustomPainter {
 
     _paintImage(canvas);
     _paintObjects(canvas);
-    _paintVines(canvas);
+    _paintPlants(canvas);
     _paintSelectionGesture(canvas);
 
     canvas.restore();
@@ -181,7 +181,7 @@ class VineyardPainter extends CustomPainter {
 
         case final PointShape point:
           // A diamond, deliberately unlike a plant's round dot: a post and a
-          // vine must not be confusable at a glance.
+          // plant must not be confusable at a glance.
           final r = (6 / viewport.scale).clamp(0.5, 40.0);
           canvas.drawPath(
             Path()
@@ -230,12 +230,12 @@ class VineyardPainter extends CustomPainter {
     }
   }
 
-  void _paintVines(Canvas canvas) {
-    if (scene.vines.isEmpty) return;
+  void _paintPlants(Canvas canvas) {
+    if (scene.plants.isEmpty) return;
     if (viewport.scale < _markerVisibleScale) return;
 
     // The culling that makes the whole thing viable: query the index for what
-    // is on screen instead of walking 3,000 vines and rejecting most of them.
+    // is on screen instead of walking 3,000 plants and rejecting most of them.
     final visible = viewport.visibleLayoutRect(padding: 20);
     final onScreen = scene.index.inRect(visible);
 
@@ -254,7 +254,7 @@ class VineyardPainter extends CustomPainter {
     // diameter strokeWidth.
     final byColour = <Color, List<Offset>>{};
     for (final point in onScreen) {
-      (byColour[scene.colors[point.id] ?? _defaultVineColor] ??= <Offset>[])
+      (byColour[scene.colors[point.id] ?? _defaultPlantColor] ??= <Offset>[])
           .add(point.position);
     }
 
@@ -269,7 +269,7 @@ class VineyardPainter extends CustomPainter {
       );
     }
 
-    // Selection and labels stay per-vine: both are bounded by what a person
+    // Selection and labels stay per-plant: both are bounded by what a person
     // can select or read, not by the size of the vineyard.
     if (scene.selection.isNotEmpty || drawLabels) {
       for (final point in onScreen) {
@@ -290,7 +290,7 @@ class VineyardPainter extends CustomPainter {
     if (text == null) return;
 
     // Laid out per label per frame. Only runs when zoomed past the label
-    // threshold, where few vines are on screen -- at 3,000 visible this would
+    // threshold, where few plants are on screen -- at 3,000 visible this would
     // dominate the frame.
     final painter = TextPainter(
       text: TextSpan(

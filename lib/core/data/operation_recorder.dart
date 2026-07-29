@@ -4,8 +4,8 @@ import '../db/database.dart';
 
 /// Wraps a user gesture so it can be undone as one thing.
 ///
-/// **The unit of undo is a gesture, not a DAO call.** "Replace with New Vine"
-/// retires one vine, creates another, and copies its static fields: three
+/// **The unit of undo is a gesture, not a DAO call.** "Replace with New Plant"
+/// retires one plant, creates another, and copies its static fields: three
 /// writes, one entry in the undo stack, one press of undo. So [run] is called
 /// from the feature layer -- the inspector, the canvas tool handlers, the field
 /// editor -- and never from inside a DAO, which cannot know where a gesture

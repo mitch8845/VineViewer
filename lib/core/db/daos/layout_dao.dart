@@ -177,9 +177,9 @@ class LayoutDao {
       // Explicit rather than relying on the foreign key, because a soft delete
       // fires no cascade at all: the row is still there.
       await (_db.update(
-        _db.vines,
+        _db.plants,
       )..where((v) => v.carrierId.equals(objectId))).write(
-        VinesCompanion(
+        PlantsCompanion(
           carrierId: const Value(null),
           pathOffset: const Value(null),
           updatedAt: Value(timestamp),
@@ -260,7 +260,7 @@ class LayoutDao {
     DateTime timestamp,
   ) async {
     final plants = await (_db.select(
-      _db.vines,
+      _db.plants,
     )..where((v) => v.carrierId.equals(objectId) & v.deletedAt.isNull())).get();
 
     for (final plant in plants) {
@@ -273,8 +273,8 @@ class LayoutDao {
               : 0.0);
 
       final point = path.pointAt(offset);
-      await (_db.update(_db.vines)..where((v) => v.id.equals(plant.id))).write(
-        VinesCompanion(
+      await (_db.update(_db.plants)..where((v) => v.id.equals(plant.id))).write(
+        PlantsCompanion(
           pathOffset: Value(offset),
           x: Value(point.dx),
           y: Value(point.dy),
@@ -298,9 +298,9 @@ class LayoutDao {
     await _db.transaction(() async {
       final number = await _labels.nextPlantNumber(projectId: projectId);
       await _db
-          .into(_db.vines)
+          .into(_db.plants)
           .insert(
-            VinesCompanion.insert(
+            PlantsCompanion.insert(
               id: id,
               projectId: projectId,
               positionIdx: number,
@@ -312,7 +312,7 @@ class LayoutDao {
           );
       await _memberships.reconcile(
         projectId: projectId,
-        vineIds: {id},
+        plantIds: {id},
         now: timestamp,
       );
     });
@@ -347,7 +347,7 @@ class LayoutDao {
     await _db.transaction(() async {
       final used = <int>{
         for (final v
-            in await (_db.select(_db.vines)..where(
+            in await (_db.select(_db.plants)..where(
                   (v) => v.carrierId.equals(carrierId) & v.deletedAt.isNull(),
                 ))
                 .get())
@@ -368,9 +368,9 @@ class LayoutDao {
         ids.add(id);
 
         await _db
-            .into(_db.vines)
+            .into(_db.plants)
             .insert(
-              VinesCompanion.insert(
+              PlantsCompanion.insert(
                 id: id,
                 projectId: projectId,
                 carrierId: Value(carrierId),
@@ -386,7 +386,7 @@ class LayoutDao {
 
       await _memberships.reconcile(
         projectId: projectId,
-        vineIds: ids.toSet(),
+        plantIds: ids.toSet(),
         now: timestamp,
       );
     });
@@ -400,16 +400,16 @@ class LayoutDao {
   /// Returns the distance it moved, so a tool can decline to snap something the
   /// user was not aiming at.
   Future<double> snapPlantToCarrier({
-    required String vineId,
+    required String plantId,
     required String carrierId,
     DateTime? now,
   }) async {
-    final plant = await _requirePlant(vineId);
+    final plant = await _requirePlant(plantId);
     final number = await _labels.nextPlantNumber(
       projectId: plant.projectId,
       carrierId: carrierId,
     );
-    return _snap(vineId, carrierId, number, now);
+    return _snap(plantId, carrierId, number, now);
   }
 
   /// Slides a plant onto a carrier it has **already been numbered into**.
@@ -418,16 +418,16 @@ class LayoutDao {
   /// Insert has to number the plant first -- the whole point is that the user
   /// chose where it goes -- and renumbering afterwards would silently undo that.
   Future<double> snapPlantToCarrierKeepingNumber({
-    required String vineId,
+    required String plantId,
     required String carrierId,
     DateTime? now,
   }) async {
-    final plant = await _requirePlant(vineId);
-    return _snap(vineId, carrierId, plant.positionIdx, now);
+    final plant = await _requirePlant(plantId);
+    return _snap(plantId, carrierId, plant.positionIdx, now);
   }
 
   Future<double> _snap(
-    String vineId,
+    String plantId,
     String carrierId,
     int number,
     DateTime? now,
@@ -437,13 +437,13 @@ class LayoutDao {
       throw StateError('Object $carrierId has no line to snap to.');
     }
 
-    final plant = await _requirePlant(vineId);
+    final plant = await _requirePlant(plantId);
     final nearest = path.closestTo(Offset(plant.x ?? 0, plant.y ?? 0));
     final timestamp = now ?? DateTime.now();
 
     await _db.transaction(() async {
-      await (_db.update(_db.vines)..where((v) => v.id.equals(vineId))).write(
-        VinesCompanion(
+      await (_db.update(_db.plants)..where((v) => v.id.equals(plantId))).write(
+        PlantsCompanion(
           carrierId: Value(carrierId),
           positionIdx: Value(number),
           pathOffset: Value(nearest.offset),
@@ -454,7 +454,7 @@ class LayoutDao {
       );
       await _memberships.reconcile(
         projectId: plant.projectId,
-        vineIds: {vineId},
+        plantIds: {plantId},
         now: timestamp,
       );
     });
@@ -463,14 +463,14 @@ class LayoutDao {
   }
 
   /// Detaches a plant from its carrier, leaving it where it is on screen.
-  Future<void> unsnapPlant(String vineId, {DateTime? now}) async {
-    final plant = await _requirePlant(vineId);
+  Future<void> unsnapPlant(String plantId, {DateTime? now}) async {
+    final plant = await _requirePlant(plantId);
     final timestamp = now ?? DateTime.now();
 
     await _db.transaction(() async {
       final number = await _labels.nextPlantNumber(projectId: plant.projectId);
-      await (_db.update(_db.vines)..where((v) => v.id.equals(vineId))).write(
-        VinesCompanion(
+      await (_db.update(_db.plants)..where((v) => v.id.equals(plantId))).write(
+        PlantsCompanion(
           carrierId: const Value(null),
           pathOffset: const Value(null),
           positionIdx: Value(number),
@@ -489,11 +489,11 @@ class LayoutDao {
   ///
   /// A **free** plant goes exactly where it is put.
   Future<void> movePlant(
-    String vineId,
+    String plantId,
     Offset position, {
     DateTime? now,
   }) async {
-    final plant = await _requirePlant(vineId);
+    final plant = await _requirePlant(plantId);
     final timestamp = now ?? DateTime.now();
 
     final path = plant.carrierId == null
@@ -504,8 +504,10 @@ class LayoutDao {
       if (path == null) {
         // Free, or carried by something never drawn: nothing to slide along,
         // so put it where it was dropped rather than refusing to move it.
-        await (_db.update(_db.vines)..where((v) => v.id.equals(vineId))).write(
-          VinesCompanion(
+        await (_db.update(
+          _db.plants,
+        )..where((v) => v.id.equals(plantId))).write(
+          PlantsCompanion(
             x: Value(position.dx),
             y: Value(position.dy),
             updatedAt: Value(timestamp),
@@ -513,8 +515,10 @@ class LayoutDao {
         );
       } else {
         final nearest = path.closestTo(position);
-        await (_db.update(_db.vines)..where((v) => v.id.equals(vineId))).write(
-          VinesCompanion(
+        await (_db.update(
+          _db.plants,
+        )..where((v) => v.id.equals(plantId))).write(
+          PlantsCompanion(
             pathOffset: Value(nearest.offset),
             x: Value(nearest.point.dx),
             y: Value(nearest.point.dy),
@@ -526,7 +530,7 @@ class LayoutDao {
       // Moving a plant can carry it across a boundary.
       await _memberships.reconcile(
         projectId: plant.projectId,
-        vineIds: {vineId},
+        plantIds: {plantId},
         now: timestamp,
       );
     });
@@ -534,13 +538,13 @@ class LayoutDao {
 
   /// Retires a plant, keeping its history (decision D7).
   Future<void> retirePlant(
-    String vineId, {
+    String plantId, {
     required PlantStatusChange change,
     DateTime? now,
   }) async {
     final timestamp = now ?? DateTime.now();
-    await (_db.update(_db.vines)..where((v) => v.id.equals(vineId))).write(
-      VinesCompanion(
+    await (_db.update(_db.plants)..where((v) => v.id.equals(plantId))).write(
+      PlantsCompanion(
         status: Value(change.status),
         endedAt: Value(timestamp),
         updatedAt: Value(timestamp),
@@ -558,25 +562,25 @@ class LayoutDao {
   /// [inheritFieldIds] names the static fields copied forward: variety yes,
   /// plant date no, rootstock ask.
   Future<String> replacePlant({
-    required String vineId,
+    required String plantId,
     Set<String> inheritFieldIds = const {},
     DateTime? now,
   }) async {
-    final old = await _requirePlant(vineId);
+    final old = await _requirePlant(plantId);
     final timestamp = now ?? DateTime.now();
     final id = _uuid.v4();
 
     await _db.transaction(() async {
       await retirePlant(
-        vineId,
+        plantId,
         change: PlantStatusChange.removed,
         now: timestamp,
       );
 
       await _db
-          .into(_db.vines)
+          .into(_db.plants)
           .insert(
-            VinesCompanion.insert(
+            PlantsCompanion.insert(
               id: id,
               projectId: old.projectId,
               carrierId: Value(old.carrierId),
@@ -585,7 +589,7 @@ class LayoutDao {
               y: Value(old.y),
               pathOffset: Value(old.pathOffset),
               plantedAt: Value(timestamp),
-              predecessorId: Value(vineId),
+              predecessorId: Value(plantId),
               createdAt: timestamp,
               updatedAt: timestamp,
             ),
@@ -595,10 +599,10 @@ class LayoutDao {
         final current = await _db
             .customSelect(
               'SELECT value FROM field_events '
-              'WHERE vine_id = ?1 AND field_def_id = ?2 AND deleted_at IS NULL '
+              'WHERE plant_id = ?1 AND field_def_id = ?2 AND deleted_at IS NULL '
               'ORDER BY observed_at DESC, recorded_at DESC, rowid DESC LIMIT 1',
               variables: [
-                Variable<String>(vineId),
+                Variable<String>(plantId),
                 Variable<String>(fieldDefId),
               ],
               readsFrom: {_db.fieldEvents},
@@ -612,7 +616,7 @@ class LayoutDao {
             .insert(
               FieldEventsCompanion.insert(
                 id: _uuid.v4(),
-                vineId: id,
+                plantId: id,
                 fieldDefId: fieldDefId,
                 value: Value(value),
                 observedAt: timestamp,
@@ -623,7 +627,7 @@ class LayoutDao {
 
       await _memberships.reconcile(
         projectId: old.projectId,
-        vineIds: {id},
+        plantIds: {id},
         now: timestamp,
       );
     });
@@ -632,29 +636,29 @@ class LayoutDao {
   }
 
   /// Every plant in a project, for the canvas to index and paint.
-  Future<List<Vine>> plantsInProject(String projectId) {
-    return (_db.select(_db.vines)
+  Future<List<Plant>> plantsInProject(String projectId) {
+    return (_db.select(_db.plants)
           ..where((v) => v.projectId.equals(projectId) & v.deletedAt.isNull()))
         .get();
   }
 
   /// Live-updating plants, so the canvas follows edits without manual refresh.
-  Stream<List<Vine>> watchPlantsInProject(String projectId) {
-    return (_db.select(_db.vines)
+  Stream<List<Plant>> watchPlantsInProject(String projectId) {
+    return (_db.select(_db.plants)
           ..where((v) => v.projectId.equals(projectId) & v.deletedAt.isNull()))
         .watch();
   }
 
   /// One plant by id, or null.
-  Future<Vine?> plantById(String vineId) {
-    return (_db.select(_db.vines)
-          ..where((v) => v.id.equals(vineId) & v.deletedAt.isNull()))
+  Future<Plant?> plantById(String plantId) {
+    return (_db.select(_db.plants)
+          ..where((v) => v.id.equals(plantId) & v.deletedAt.isNull()))
         .getSingleOrNull();
   }
 
-  Future<Vine> _requirePlant(String vineId) async {
-    final plant = await plantById(vineId);
-    if (plant == null) throw StateError('Plant $vineId does not exist.');
+  Future<Plant> _requirePlant(String plantId) async {
+    final plant = await plantById(plantId);
+    if (plant == null) throw StateError('Plant $plantId does not exist.');
     return plant;
   }
 }
@@ -663,11 +667,11 @@ class LayoutDao {
 enum PlantStatusChange {
   /// Died or was pulled. The position stays as an empty slot, available for a
   /// replant.
-  removed(VineStatus.removed),
+  removed(PlantStatus.removed),
 
   /// The position exists in the layout but has never held a plant.
-  missing(VineStatus.missing);
+  missing(PlantStatus.missing);
 
   const PlantStatusChange(this.status);
-  final VineStatus status;
+  final PlantStatus status;
 }

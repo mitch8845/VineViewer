@@ -23,7 +23,7 @@ VineyardScene sceneWith(
   List<Offset> lasso = const [],
 }) {
   return VineyardScene(
-    vines: {for (final p in points) p.id: p.position},
+    plants: {for (final p in points) p.id: p.position},
     index: SpatialIndex.build(points),
     objects: objects,
     marquee: marquee,
@@ -48,7 +48,7 @@ void main() {
 
     test('round-trips at any scale', () {
       // Painting and hit-testing both go through here. If they disagreed,
-      // taps would land on the wrong vine only when zoomed -- the kind of bug
+      // taps would land on the wrong plant only when zoomed -- the kind of bug
       // that gets blamed on "the touchscreen".
       for (final scale in [0.05, 0.5, 1.0, 3.7, 20.0]) {
         final v = CanvasViewport(
@@ -79,7 +79,7 @@ void main() {
 
     test('tap tolerance shrinks as you zoom in', () {
       // A finger is the same size on screen whatever the zoom. A fixed layout
-      // tolerance would make individual vines unselectable when zoomed out.
+      // tolerance would make individual plants unselectable when zoomed out.
       expect(viewport.screenToLayoutDistance(20), 10);
 
       const zoomedOut = CanvasViewport(
@@ -252,7 +252,7 @@ void main() {
     });
 
     testWidgets('renders a large layout without throwing', (tester) async {
-      // 3,000 vines through the real painter, as a smoke test that culling and
+      // 3,000 plants through the real painter, as a smoke test that culling and
       // the paint path hold together at scale.
       final points = [
         for (var i = 0; i < 3000; i++)

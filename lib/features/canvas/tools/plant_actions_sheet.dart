@@ -223,7 +223,7 @@ class PlantActionsSheet extends ConsumerWidget {
           kind: 'replace_plant',
           description: 'Replace plant',
           body: () => layout.replacePlant(
-            vineId: selection.first,
+            plantId: selection.first,
             inheritFieldIds: inherit,
           ),
         );
@@ -264,7 +264,7 @@ class _NumberingSheetState extends ConsumerState<_NumberingSheet> {
     setState(() => _working = true);
     final numbering = ref.read(numberingServiceProvider);
     final plan = await numbering.plan(
-      vineIds: widget.selection,
+      plantIds: widget.selection,
       startAt: int.tryParse(_startAt.text) ?? 1,
       order: _order,
     );

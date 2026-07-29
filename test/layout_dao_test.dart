@@ -6,7 +6,7 @@ import 'package:vine_viewer/core/data/membership_service.dart';
 import 'package:vine_viewer/core/db/daos/field_defs_dao.dart';
 import 'package:vine_viewer/core/db/daos/layout_dao.dart';
 import 'package:vine_viewer/core/db/daos/projects_dao.dart';
-import 'package:vine_viewer/core/db/daos/vines_dao.dart';
+import 'package:vine_viewer/core/db/daos/plants_dao.dart';
 import 'package:vine_viewer/core/db/database.dart';
 import 'package:vine_viewer/core/geometry/polyline.dart';
 import 'package:vine_viewer/core/geometry/shapes.dart';
@@ -78,7 +78,8 @@ void main() {
     geometry: shape ?? lineFrom(const Offset(0, 0), const Offset(400, 0)),
   );
 
-  Future<Vine> reload(String vineId) async => (await layout.plantById(vineId))!;
+  Future<Plant> reload(String plantId) async =>
+      (await layout.plantById(plantId))!;
 
   group('objects', () {
     test('a drawn object round-trips its shape', () async {
@@ -146,7 +147,7 @@ void main() {
       );
 
       final numbers = [
-        for (final v in await VinesDao(db).plantsOnCarrier(id)) v.positionIdx,
+        for (final v in await PlantsDao(db).plantsOnCarrier(id)) v.positionIdx,
       ];
       expect(numbers, [1, 2, 3, 4, 5]);
       expect((await reload(second.first)).x, 300);
@@ -242,7 +243,7 @@ void main() {
       );
 
       final distance = await layout.snapPlantToCarrier(
-        vineId: free,
+        plantId: free,
         carrierId: id,
       );
       expect(distance, 40);
@@ -263,10 +264,13 @@ void main() {
         position: const Offset(50, 40),
       );
       await db.customStatement(
-        'UPDATE vines SET position_idx = 99 WHERE id = ?',
+        'UPDATE plants SET position_idx = 99 WHERE id = ?',
         [free],
       );
-      await layout.snapPlantToCarrierKeepingNumber(vineId: free, carrierId: id);
+      await layout.snapPlantToCarrierKeepingNumber(
+        plantId: free,
+        carrierId: id,
+      );
       expect((await reload(free)).positionIdx, 99);
     });
 
@@ -295,8 +299,8 @@ void main() {
         offsets: [0, 100],
       );
       await layout.deleteObject(id);
-      for (final vineId in ids) {
-        final plant = await reload(vineId);
+      for (final plantId in ids) {
+        final plant = await reload(plantId);
         expect(plant.carrierId, isNull);
         expect(plant.deletedAt, isNull, reason: 'the plant must survive');
       }
@@ -397,14 +401,14 @@ void main() {
 
       final old = ids.first;
 
-      final replacement = await layout.replacePlant(vineId: old);
+      final replacement = await layout.replacePlant(plantId: old);
 
       final dead = await (db.select(
-        db.vines,
+        db.plants,
       )..where((v) => v.id.equals(old))).getSingle();
 
       final fresh = await reload(replacement);
-      expect(dead.status, VineStatus.removed);
+      expect(dead.status, PlantStatus.removed);
       expect(dead.endedAt, isNotNull);
       expect(fresh.positionIdx, dead.positionIdx);
       expect(fresh.carrierId, dead.carrierId);
@@ -446,7 +450,7 @@ void main() {
             .insert(
               FieldEventsCompanion.insert(
                 id: 'e_${pair.$1}',
-                vineId: old,
+                plantId: old,
                 fieldDefId: pair.$1,
                 value: Value(pair.$2),
                 observedAt: DateTime.utc(2026),
@@ -457,13 +461,13 @@ void main() {
       // Variety carries forward; the old plant's planting date does not belong
       // to the new one.
       final replacement = await layout.replacePlant(
-        vineId: old,
+        plantId: old,
         inheritFieldIds: {variety},
       );
 
       final events = await (db.select(
         db.fieldEvents,
-      )..where((e) => e.vineId.equals(replacement))).get();
+      )..where((e) => e.plantId.equals(replacement))).get();
       expect(events, hasLength(1));
       expect(events.single.fieldDefId, variety);
       expect(events.single.value, 'Pinot Noir');
@@ -488,7 +492,7 @@ void main() {
 
       final held = await db.select(db.plantMemberships).get();
       expect(
-        held.where((m) => m.vineId == ids.first && m.objectId == block),
+        held.where((m) => m.plantId == ids.first && m.objectId == block),
         hasLength(1),
       );
     });

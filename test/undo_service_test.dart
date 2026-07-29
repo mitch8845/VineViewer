@@ -30,7 +30,7 @@ void main() {
   late String projectId;
   late String rowField;
   late String rowId;
-  late List<String> vineIds;
+  late List<String> plantIds;
 
   setUp(() async {
     db = AppDatabase(NativeDatabase.memory());
@@ -64,7 +64,7 @@ void main() {
         Polyline([const Offset(0, 0), const Offset(400, 0)]),
       ),
     );
-    vineIds = await layout.placePlantsAlongCarrier(
+    plantIds = await layout.placePlantsAlongCarrier(
       carrierId: rowId,
       offsets: [for (var i = 0; i < 8; i++) i * 50.0],
     );
@@ -116,9 +116,9 @@ void main() {
   }
 
   group('layout operations undo cleanly', () {
-    test('createVine', () async {
+    test('createPlant', () async {
       await expectUndoable(
-        'create_vine',
+        'create_plant',
         () => layout.createPlant(
           projectId: projectId,
           position: const Offset(500, 500),
@@ -126,14 +126,14 @@ void main() {
       );
     });
 
-    test('moveVine along its row', () async {
+    test('movePlant along its row', () async {
       await expectUndoable(
-        'move_vine',
-        () => layout.movePlant(vineIds.first, const Offset(220, 5)),
+        'move_plant',
+        () => layout.movePlant(plantIds.first, const Offset(220, 5)),
       );
     });
 
-    test('updateRowPath, which repositions every vine on it', () async {
+    test('updateRowPath, which repositions every plant on it', () async {
       await expectUndoable(
         'reshape_row',
         () => layout.updateObjectGeometry(
@@ -156,9 +156,9 @@ void main() {
       );
     });
 
-    test('placeVinesAlongRow', () async {
+    test('placePlantsAlongRow', () async {
       await expectUndoable(
-        'place_vines',
+        'place_plants',
         () => layout.placePlantsAlongCarrier(
           carrierId: rowId,
           offsets: [410, 460],
@@ -166,28 +166,29 @@ void main() {
       );
     });
 
-    test('snapVineToRow', () async {
+    test('snapPlantToRow', () async {
       final free = await layout.createPlant(
         projectId: projectId,
         position: const Offset(180, 60),
       );
       await expectUndoable(
-        'snap_vine',
-        () => layout.snapPlantToCarrier(vineId: free, carrierId: rowId),
+        'snap_plant',
+        () => layout.snapPlantToCarrier(plantId: free, carrierId: rowId),
       );
     });
 
-    test('unsnapVine', () async {
+    test('unsnapPlant', () async {
       await expectUndoable(
-        'unsnap_vine',
-        () => layout.unsnapPlant(vineIds.last),
+        'unsnap_plant',
+        () => layout.unsnapPlant(plantIds.last),
       );
     });
 
-    test('retireVine', () async {
+    test('retirePlant', () async {
       await expectUndoable(
-        'retire_vine',
-        () => layout.retirePlant(vineIds[2], change: PlantStatusChange.removed),
+        'retire_plant',
+        () =>
+            layout.retirePlant(plantIds[2], change: PlantStatusChange.removed),
       );
     });
 
@@ -202,10 +203,10 @@ void main() {
       );
     });
 
-    test('deleting a row, which foreign-key-detaches its vines', () async {
+    test('deleting a row, which foreign-key-detaches its plants', () async {
       // The interesting one. Deleting the row fires ON DELETE SET NULL against
-      // eight vines, and those updates are captured too -- so undo has to put
-      // the row back *and* re-attach every vine. Restoring in reverse order is
+      // eight plants, and those updates are captured too -- so undo has to put
+      // the row back *and* re-attach every plant. Restoring in reverse order is
       // what makes the foreign key hold at each step.
       await expectUndoable(
         'delete_row',
@@ -223,12 +224,12 @@ void main() {
       );
       await expectUndoable(
         'snap',
-        () => layout.snapPlantToCarrier(vineId: free, carrierId: rowId),
+        () => layout.snapPlantToCarrier(plantId: free, carrierId: rowId),
       );
     });
 
     test('detaching a plant from its carrier', () async {
-      await expectUndoable('detach', () => layout.unsnapPlant(vineIds[3]));
+      await expectUndoable('detach', () => layout.unsnapPlant(plantIds[3]));
     });
 
     test('inserting with a shift', () async {
@@ -239,7 +240,7 @@ void main() {
       await expectUndoable(
         'insert',
         () => labels.insertAfter(
-          vineId: free,
+          plantId: free,
           carrierId: rowId,
           afterPositionIdx: 4,
           shift: true,
@@ -250,7 +251,7 @@ void main() {
     test('numbering a selection', () async {
       await expectUndoable('renumber', () async {
         final plan = await NumberingService(db, labels).plan(
-          vineIds: vineIds.toSet(),
+          plantIds: plantIds.toSet(),
           startAt: 20,
           order: NumberingOrder.rightToLeft,
         );
@@ -282,14 +283,14 @@ void main() {
       await expectUndoable(
         'record_value',
         () => events.record(
-          vineId: vineIds.first,
+          plantId: plantIds.first,
           fieldDefId: fieldId,
           value: '3',
         ),
       );
     });
 
-    test('a bulk field write across every vine', () async {
+    test('a bulk field write across every plant', () async {
       final field = await fieldDefs.create(
         projectId: projectId,
         name: 'Sprayed',
@@ -300,7 +301,7 @@ void main() {
       await expectUndoable(
         'bulk_write',
         () => events.recordBulk(
-          vineIds: vineIds,
+          plantIds: plantIds,
           fieldDefId: fieldId,
           value: 'true',
         ),
@@ -316,7 +317,7 @@ void main() {
   });
 
   group('undoing a data write erases it', () {
-    test('the undone event does not appear in the vine history', () async {
+    test('the undone event does not appear in the plant history', () async {
       final field = await fieldDefs.create(
         projectId: projectId,
         name: 'Health',
@@ -325,7 +326,7 @@ void main() {
       final fieldId = (field as FieldDefSaved).id;
 
       await events.record(
-        vineId: vineIds.first,
+        plantId: plantIds.first,
         fieldDefId: fieldId,
         value: '4',
         observedAt: DateTime.utc(2025, 8, 1),
@@ -336,21 +337,21 @@ void main() {
         kind: 'record_value',
         description: 'Set Health',
         body: () => events.record(
-          vineId: vineIds.first,
+          plantId: plantIds.first,
           fieldDefId: fieldId,
           value: '1',
           observedAt: DateTime.utc(2026, 7, 1),
         ),
       );
-      expect(await events.currentValue(vineIds.first, fieldId), '1');
+      expect(await events.currentValue(plantIds.first, fieldId), '1');
 
       await undo.undo(projectId);
 
       // Erased, not tombstoned. This is the one deliberate exception to the
       // append-only rule, and the decision was that a fumbled entry should not
-      // clutter a vine's record forever.
-      expect(await events.currentValue(vineIds.first, fieldId), '4');
-      final history = await events.history(vineIds.first, fieldId);
+      // clutter a plant's record forever.
+      expect(await events.currentValue(plantIds.first, fieldId), '4');
+      final history = await events.history(plantIds.first, fieldId);
       expect(history, hasLength(1));
       expect(history.single.value, '4');
     });
@@ -359,32 +360,32 @@ void main() {
   group('the undo stack behaves', () {
     Future<void> move(double x) => recorder.run(
       projectId: projectId,
-      kind: 'move_vine',
-      description: 'Move vine to $x',
-      body: () => layout.movePlant(vineIds.first, Offset(x, 0)),
+      kind: 'move_plant',
+      description: 'Move plant to $x',
+      body: () => layout.movePlant(plantIds.first, Offset(x, 0)),
     );
 
-    Future<double?> vineX() async {
-      final vine = await (db.select(
-        db.vines,
-      )..where((v) => v.id.equals(vineIds.first))).getSingle();
-      return vine.x;
+    Future<double?> plantX() async {
+      final plant = await (db.select(
+        db.plants,
+      )..where((v) => v.id.equals(plantIds.first))).getSingle();
+      return plant.x;
     }
 
     test('undo walks back and redo walks forward', () async {
       await move(100);
       await move(200);
-      expect(await vineX(), 200);
+      expect(await plantX(), 200);
 
       await undo.undo(projectId);
-      expect(await vineX(), 100);
+      expect(await plantX(), 100);
       await undo.undo(projectId);
-      expect(await vineX(), 0);
+      expect(await plantX(), 0);
 
       await undo.redo(projectId);
-      expect(await vineX(), 100);
+      expect(await plantX(), 100);
       await undo.redo(projectId);
-      expect(await vineX(), 200);
+      expect(await plantX(), 200);
     });
 
     test('undo stops when there is nothing left', () async {
@@ -401,13 +402,13 @@ void main() {
 
       await move(300);
       expect((await undo.availability(projectId)).canRedo, isFalse);
-      expect(await vineX(), 300);
+      expect(await plantX(), 300);
     });
 
     test('the description recorded is what the button will say', () async {
       await move(100);
       final available = await undo.availability(projectId);
-      expect(available.undo!.description, 'Move vine to 100.0');
+      expect(available.undo!.description, 'Move plant to 100.0');
     });
 
     test('a gesture that writes nothing leaves no undo step', () async {
@@ -427,33 +428,33 @@ void main() {
           kind: 'boom',
           description: 'Explodes halfway',
           body: () async {
-            await layout.movePlant(vineIds.first, const Offset(77, 0));
+            await layout.movePlant(plantIds.first, const Offset(77, 0));
             throw StateError('boom');
           },
         ),
         throwsStateError,
       );
 
-      expect(await vineX(), 0);
+      expect(await plantX(), 0);
       expect((await undo.availability(projectId)).canUndo, isFalse);
     });
 
     test('nested runs collapse into one undo step', () async {
       await recorder.run(
         projectId: projectId,
-        kind: 'replace_vine',
-        description: 'Replace vine 3.12.1',
+        kind: 'replace_plant',
+        description: 'Replace plant 3.12.1',
         body: () async {
           await layout.retirePlant(
-            vineIds.first,
+            plantIds.first,
             change: PlantStatusChange.removed,
           );
           // An inner recorder call, as a service might make. It must not become
           // a second entry -- the user made one gesture.
           await recorder.run(
             projectId: projectId,
-            kind: 'create_vine',
-            description: 'Place vine',
+            kind: 'create_plant',
+            description: 'Place plant',
             body: () => layout.createPlant(
               projectId: projectId,
               position: const Offset(0, 0),
@@ -464,21 +465,21 @@ void main() {
 
       final window = await db.select(db.operations).get();
       expect(window, hasLength(1));
-      expect(window.single.description, 'Replace vine 3.12.1');
+      expect(window.single.description, 'Replace plant 3.12.1');
     });
 
     test('undo notifies watchers, so the canvas repaints', () async {
       // Replay writes go through customStatement, which drift cannot attribute
       // to a table by itself. Without an explicit notifyUpdates the database is
-      // correct and the map is stale -- vines sit where undo just moved them
+      // correct and the map is stale -- plants sit where undo just moved them
       // from. That failure is invisible to every other test here, because they
       // all read the database directly rather than through a stream.
       final seen = <double?>[];
       final subscription = layout
           .watchPlantsInProject(projectId)
           .listen(
-            (vines) =>
-                seen.add(vines.firstWhere((v) => v.id == vineIds.first).x),
+            (plants) =>
+                seen.add(plants.firstWhere((v) => v.id == plantIds.first).x),
           );
       addTearDown(subscription.cancel);
       await pumpEventQueue();
@@ -505,7 +506,7 @@ void main() {
 
       expect((await undo.availability(other)).canUndo, isFalse);
       expect(await undo.undo(other), isNull);
-      expect(await vineX(), 100);
+      expect(await plantX(), 100);
     });
   });
 
@@ -521,7 +522,7 @@ void main() {
         () => driftRuntimeOptions.dontWarnAboutMultipleDatabases = false,
       );
 
-      final directory = await Directory.systemTemp.createTemp('vineviewer');
+      final directory = await Directory.systemTemp.createTemp('plantviewer');
       final file = File('${directory.path}/durability.sqlite');
 
       var reopened = AppDatabase(NativeDatabase(file));
@@ -533,15 +534,15 @@ void main() {
       );
 
       final id = await localProjects.create(name: 'Five Sisters');
-      final vine = await localLayout.createPlant(
+      final plant = await localLayout.createPlant(
         projectId: id,
         position: const Offset(10, 10),
       );
       await OperationRecorder(reopened).run(
         projectId: id,
-        kind: 'move_vine',
-        description: 'Move vine',
-        body: () => localLayout.movePlant(vine, const Offset(900, 900)),
+        kind: 'move_plant',
+        description: 'Move plant',
+        body: () => localLayout.movePlant(plant, const Offset(900, 900)),
       );
       await reopened.close();
 
@@ -554,12 +555,12 @@ void main() {
       final service = UndoService(reopened);
       final available = await service.availability(id);
       expect(available.canUndo, isTrue);
-      expect(available.undo!.description, 'Move vine');
+      expect(available.undo!.description, 'Move plant');
 
       await service.undo(id);
       final restored = await (reopened.select(
-        reopened.vines,
-      )..where((v) => v.id.equals(vine))).getSingle();
+        reopened.plants,
+      )..where((v) => v.id.equals(plant))).getSingle();
       expect(restored.x, 10);
       expect(restored.y, 10);
     });

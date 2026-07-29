@@ -34,7 +34,7 @@ class FieldEventsDao {
   ///   at no storage cost.
   ///
   /// The result is a total order. Without the third term, the "current" value
-  /// of a vine could differ between two identical reads with no write between
+  /// of a plant could differ between two identical reads with no write between
   /// them -- the worst kind of data bug, because it is intermittent and looks
   /// like the user misremembering.
   static const _latestFirst = 'observed_at DESC, recorded_at DESC, rowid DESC';
@@ -48,7 +48,7 @@ class FieldEventsDao {
   /// [observedAt] is when the observation was true and defaults to now;
   /// `recordedAt` is always now and is never caller-supplied.
   Future<String> record({
-    required String vineId,
+    required String plantId,
     required String fieldDefId,
     required String? value,
     DateTime? observedAt,
@@ -65,7 +65,7 @@ class FieldEventsDao {
         .insert(
           FieldEventsCompanion.insert(
             id: id,
-            vineId: vineId,
+            plantId: plantId,
             fieldDefId: fieldDefId,
             value: Value(value),
             observedAt: observedAt ?? timestamp,
@@ -79,22 +79,22 @@ class FieldEventsDao {
     return id;
   }
 
-  /// Records the same value against many vines as one undoable batch.
+  /// Records the same value against many plants as one undoable batch.
   ///
-  /// This is the write path for every multi-selection: individual vines, whole
-  /// rows, whole blocks, or any mix. The caller resolves the selection to vine
-  /// ids first (see `VinesDao.resolveSelection`), so this does not care what
+  /// This is the write path for every multi-selection: individual plants, whole
+  /// rows, whole blocks, or any mix. The caller resolves the selection to plant
+  /// ids first (see `PlantsDao.resolveSelection`), so this does not care what
   /// shape the selection had.
   ///
   /// All events share one `observedAt` **and** one `recordedAt` -- exactly the
   /// tie that makes the `recorded_at` tie-break in [_latestFirst] necessary.
-  /// A later correction to one vine has a greater `recordedAt` and wins.
+  /// A later correction to one plant has a greater `recordedAt` and wins.
   ///
   /// Returns the batch id, so the whole edit can be reverted with [undoBatch].
-  /// Bulk edits touch many vines at once and are the easiest way to do large
+  /// Bulk edits touch many plants at once and are the easiest way to do large
   /// accidental damage; making them undoable is not optional.
   Future<String> recordBulk({
-    required Iterable<String> vineIds,
+    required Iterable<String> plantIds,
     required String fieldDefId,
     required String? value,
     DateTime? observedAt,
@@ -107,14 +107,14 @@ class FieldEventsDao {
     final observed = observedAt ?? timestamp;
     final batch = batchId ?? _uuid.v4();
 
-    // Single batched statement rather than a loop: a row-spray is ~40 vines
+    // Single batched statement rather than a loop: a row-spray is ~40 plants
     // and a block operation can be thousands.
     await _db.batch((b) {
       b.insertAll(_db.fieldEvents, [
-        for (final vineId in vineIds)
+        for (final plantId in plantIds)
           FieldEventsCompanion.insert(
             id: _uuid.v4(),
-            vineId: vineId,
+            plantId: plantId,
             fieldDefId: fieldDefId,
             value: Value(value),
             observedAt: observed,
@@ -129,24 +129,24 @@ class FieldEventsDao {
     return batch;
   }
 
-  /// The event holding a vine's current value for one field, or null if the
+  /// The event holding a plant's current value for one field, or null if the
   /// field was never recorded.
   ///
   /// Pass [asOf] to ask what the value was at a past moment -- the query that
   /// makes year-over-year comparison possible.
   Future<FieldEvent?> currentEvent(
-    String vineId,
+    String plantId,
     String fieldDefId, {
     DateTime? asOf,
   }) async {
     final rows = await _db
         .customSelect(
           'SELECT * FROM field_events '
-          'WHERE vine_id = ?1 AND field_def_id = ?2 AND deleted_at IS NULL '
+          'WHERE plant_id = ?1 AND field_def_id = ?2 AND deleted_at IS NULL '
           '${asOf != null ? 'AND observed_at <= ?3 ' : ''}'
           'ORDER BY $_latestFirst LIMIT 1',
           variables: [
-            Variable<String>(vineId),
+            Variable<String>(plantId),
             Variable<String>(fieldDefId),
             if (asOf != null)
               Variable<int>(asOf.toUtc().millisecondsSinceEpoch),
@@ -165,19 +165,19 @@ class FieldEventsDao {
   /// "explicitly cleared" both yield null. Use [currentEvent] where the
   /// difference matters.
   Future<String?> currentValue(
-    String vineId,
+    String plantId,
     String fieldDefId, {
     DateTime? asOf,
-  }) async => (await currentEvent(vineId, fieldDefId, asOf: asOf))?.value;
+  }) async => (await currentEvent(plantId, fieldDefId, asOf: asOf))?.value;
 
-  /// Every event for one vine and field, newest first.
-  Future<List<FieldEvent>> history(String vineId, String fieldDefId) async {
+  /// Every event for one plant and field, newest first.
+  Future<List<FieldEvent>> history(String plantId, String fieldDefId) async {
     final rows = await _db
         .customSelect(
           'SELECT * FROM field_events '
-          'WHERE vine_id = ?1 AND field_def_id = ?2 AND deleted_at IS NULL '
+          'WHERE plant_id = ?1 AND field_def_id = ?2 AND deleted_at IS NULL '
           'ORDER BY $_latestFirst',
-          variables: [Variable<String>(vineId), Variable<String>(fieldDefId)],
+          variables: [Variable<String>(plantId), Variable<String>(fieldDefId)],
           readsFrom: {_db.fieldEvents},
         )
         .get();
@@ -185,16 +185,16 @@ class FieldEventsDao {
     return rows.map((r) => _db.fieldEvents.map(r.data)).toList();
   }
 
-  /// Current value of every field for one vine, keyed by field definition id.
+  /// Current value of every field for one plant, keyed by field definition id.
   ///
-  /// One query with a window function rather than N queries. At 4,000 vines a
+  /// One query with a window function rather than N queries. At 4,000 plants a
   /// per-field round trip is what makes a map repaint feel slow.
-  Future<Map<String, FieldEvent>> currentValuesForVine(
-    String vineId, {
+  Future<Map<String, FieldEvent>> currentValuesForPlant(
+    String plantId, {
     DateTime? asOf,
-  }) async => _byFieldDef(await _valuesForVine(vineId, asOf: asOf).get());
+  }) async => _byFieldDef(await _valuesForPlant(plantId, asOf: asOf).get());
 
-  /// Live version of [currentValuesForVine].
+  /// Live version of [currentValuesForPlant].
   ///
   /// The inspector needs this rather than a one-shot read. Undo writes straight
   /// to the event log and notifies drift; a panel that refreshed on its own
@@ -202,21 +202,21 @@ class FieldEventsDao {
   /// already removed, until some unrelated edit dislodged it. Watching the
   /// table means there is one refresh mechanism rather than two that can
   /// disagree.
-  Stream<Map<String, FieldEvent>> watchCurrentValuesForVine(String vineId) =>
-      _valuesForVine(vineId).watch().map(_byFieldDef);
+  Stream<Map<String, FieldEvent>> watchCurrentValuesForPlant(String plantId) =>
+      _valuesForPlant(plantId).watch().map(_byFieldDef);
 
-  Selectable<QueryRow> _valuesForVine(String vineId, {DateTime? asOf}) {
+  Selectable<QueryRow> _valuesForPlant(String plantId, {DateTime? asOf}) {
     return _db.customSelect(
       'SELECT * FROM ('
       '  SELECT *, ROW_NUMBER() OVER ('
       '    PARTITION BY field_def_id ORDER BY $_latestFirst'
       '  ) AS rn'
       '  FROM field_events'
-      '  WHERE vine_id = ?1 AND deleted_at IS NULL'
+      '  WHERE plant_id = ?1 AND deleted_at IS NULL'
       '${asOf != null ? '    AND observed_at <= ?2' : ''}'
       ') WHERE rn = 1',
       variables: [
-        Variable<String>(vineId),
+        Variable<String>(plantId),
         if (asOf != null) Variable<int>(asOf.toUtc().millisecondsSinceEpoch),
       ],
       readsFrom: {_db.fieldEvents},
@@ -228,7 +228,7 @@ class FieldEventsDao {
       r.read<String>('field_def_id'): _db.fieldEvents.map(r.data),
   };
 
-  /// Current value of one field across every vine, keyed by vine id.
+  /// Current value of one field across every plant, keyed by plant id.
   ///
   /// This is what colour-by-field rendering needs: one query for the whole
   /// map instead of 4,000.
@@ -240,7 +240,7 @@ class FieldEventsDao {
         .customSelect(
           'SELECT * FROM ('
           '  SELECT *, ROW_NUMBER() OVER ('
-          '    PARTITION BY vine_id ORDER BY $_latestFirst'
+          '    PARTITION BY plant_id ORDER BY $_latestFirst'
           '  ) AS rn'
           '  FROM field_events'
           '  WHERE field_def_id = ?1 AND deleted_at IS NULL'
@@ -257,7 +257,7 @@ class FieldEventsDao {
 
     return {
       for (final r in rows)
-        r.read<String>('vine_id'): _db.fieldEvents.map(r.data),
+        r.read<String>('plant_id'): _db.fieldEvents.map(r.data),
     };
   }
 
@@ -266,15 +266,15 @@ class FieldEventsDao {
   /// Section 6.4 wants the deletion prompt to name this first: retiring a plant
   /// with three seasons of readings deserves a different pause than one planted
   /// yesterday.
-  Future<int> countEventsFor(Iterable<String> vineIds) async {
-    final ids = vineIds.toList();
+  Future<int> countEventsFor(Iterable<String> plantIds) async {
+    final ids = plantIds.toList();
     if (ids.isEmpty) return 0;
 
     final placeholders = List.filled(ids.length, '?').join(', ');
     final row = await _db
         .customSelect(
           'SELECT COUNT(*) AS n FROM field_events '
-          'WHERE deleted_at IS NULL AND vine_id IN ($placeholders)',
+          'WHERE deleted_at IS NULL AND plant_id IN ($placeholders)',
           variables: [for (final id in ids) Variable<String>(id)],
           readsFrom: {_db.fieldEvents},
         )

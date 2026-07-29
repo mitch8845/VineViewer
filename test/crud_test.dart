@@ -1,7 +1,7 @@
 import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:vine_viewer/core/data/vine_data_service.dart';
+import 'package:vine_viewer/core/data/plant_data_service.dart';
 import 'package:vine_viewer/core/db/daos/field_defs_dao.dart';
 import 'package:vine_viewer/core/db/daos/field_events_dao.dart';
 import 'package:vine_viewer/core/db/daos/projects_dao.dart';
@@ -14,24 +14,24 @@ void main() {
   late ProjectsDao projects;
   late FieldDefsDao fieldDefs;
   late FieldEventsDao events;
-  late VineDataService service;
+  late PlantDataService service;
 
   setUp(() {
     db = AppDatabase(NativeDatabase.memory());
     projects = ProjectsDao(db);
     fieldDefs = FieldDefsDao(db);
     events = FieldEventsDao(db);
-    service = VineDataService(fieldDefs: fieldDefs, events: events);
+    service = PlantDataService(fieldDefs: fieldDefs, events: events);
   });
 
   tearDown(() async => db.close());
 
-  /// A project with one plant, returning (projectId, vineId).
+  /// A project with one plant, returning (projectId, plantId).
   ///
   /// v3 has no blocks or rows table: a row is an instance of a user-defined
   /// object field. This fixture keeps the shape of the old one -- one plant on
   /// one line -- without needing containment, which these tests do not exercise.
-  Future<(String, String)> seedVine() async {
+  Future<(String, String)> seedPlant() async {
     final projectId = await projects.create(name: 'Home Block');
     final now = DateTime.utc(2026, 1, 1);
     await db
@@ -62,9 +62,9 @@ void main() {
           ),
         );
     await db
-        .into(db.vines)
+        .into(db.plants)
         .insert(
-          VinesCompanion.insert(
+          PlantsCompanion.insert(
             id: 'v1',
             projectId: projectId,
             carrierId: const Value('r1'),
@@ -122,7 +122,7 @@ void main() {
     });
 
     test('purge cascades to everything beneath', () async {
-      final (projectId, vineId) = await seedVine();
+      final (projectId, plantId) = await seedPlant();
       final fieldId = idOf(
         await fieldDefs.create(
           projectId: projectId,
@@ -130,12 +130,12 @@ void main() {
           type: FieldType.rating,
         ),
       );
-      await events.record(vineId: vineId, fieldDefId: fieldId, value: '4');
+      await events.record(plantId: plantId, fieldDefId: fieldId, value: '4');
 
       await projects.purge(projectId);
 
       // Foreign keys cascade, so no orphans remain.
-      expect(await db.select(db.vines).get(), isEmpty);
+      expect(await db.select(db.plants).get(), isEmpty);
       expect(await db.select(db.fieldDefs).get(), isEmpty);
       expect(await db.select(db.fieldEvents).get(), isEmpty);
     });
@@ -300,7 +300,7 @@ void main() {
 
     test('soft delete keeps its events for restore', () async {
       // Deleting a field by accident must not destroy a season of readings.
-      final (pid, vineId) = await seedVine();
+      final (pid, plantId) = await seedPlant();
       final fieldId = idOf(
         await fieldDefs.create(
           projectId: pid,
@@ -308,11 +308,11 @@ void main() {
           type: FieldType.rating,
         ),
       );
-      await events.record(vineId: vineId, fieldDefId: fieldId, value: '4');
+      await events.record(plantId: plantId, fieldDefId: fieldId, value: '4');
 
       await fieldDefs.softDelete(fieldId);
       expect(await fieldDefs.byId(fieldId), isNull);
-      expect(await events.currentValue(vineId, fieldId), '4');
+      expect(await events.currentValue(plantId, fieldId), '4');
 
       await fieldDefs.restore(fieldId);
       expect(await fieldDefs.byId(fieldId), isNotNull);
@@ -364,13 +364,13 @@ void main() {
 
   group('D6 - static fields are write-once', () {
     late String projectId;
-    late String vineId;
+    late String plantId;
     late String varietyId;
 
     setUp(() async {
-      final (p, v) = await seedVine();
+      final (p, v) = await seedPlant();
       projectId = p;
-      vineId = v;
+      plantId = v;
       varietyId = idOf(
         await fieldDefs.create(
           projectId: projectId,
@@ -383,7 +383,7 @@ void main() {
 
     test('the first write succeeds', () async {
       final result = await service.setValue(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: varietyId,
         input: 'Cabernet Franc',
       );
@@ -392,33 +392,33 @@ void main() {
 
     test('a second write is locked and reports the existing value', () async {
       await service.setValue(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: varietyId,
         input: 'Cabernet Franc',
       );
 
       final result = await service.setValue(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: varietyId,
         input: 'Merlot',
       );
 
       expect(result, isA<WriteLocked>());
       expect((result as WriteLocked).existing.value, 'Cabernet Franc');
-      expect(await events.currentValue(vineId, varietyId), 'Cabernet Franc');
+      expect(await events.currentValue(plantId, varietyId), 'Cabernet Franc');
     });
 
     test('force overwrites deliberately', () async {
       // The lock stops a stray tap clobbering a plant date. It is not meant to
       // make a typo permanent, so there is an explicit escape hatch.
       await service.setValue(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: varietyId,
         input: 'Cabernet Franc',
       );
 
       final result = await service.setValue(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: varietyId,
         input: 'Cabernet Sauvignon',
         force: true,
@@ -426,20 +426,20 @@ void main() {
 
       expect(result, isA<WriteSucceeded>());
       expect(
-        await events.currentValue(vineId, varietyId),
+        await events.currentValue(plantId, varietyId),
         'Cabernet Sauvignon',
       );
     });
 
     test('clearing unlocks the field', () async {
       await service.setValue(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: varietyId,
         input: 'Wrong',
         force: true,
       );
       await service.setValue(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: varietyId,
         input: null,
         force: true,
@@ -449,7 +449,7 @@ void main() {
       // without needing force.
       expect(
         await service.setValue(
-          vineId: vineId,
+          plantId: plantId,
           fieldDefId: varietyId,
           input: 'Right',
         ),
@@ -468,20 +468,20 @@ void main() {
       for (final v in [1, 2, 3]) {
         expect(
           await service.setValue(
-            vineId: vineId,
+            plantId: plantId,
             fieldDefId: healthId,
             input: v,
           ),
           isA<WriteSucceeded>(),
         );
       }
-      expect(await events.history(vineId, healthId), hasLength(3));
+      expect(await events.history(plantId, healthId), hasLength(3));
     });
   });
 
   group('validated writes', () {
     test('an invalid value is rejected and names the field', () async {
-      final (projectId, vineId) = await seedVine();
+      final (projectId, plantId) = await seedPlant();
       final healthId = idOf(
         await fieldDefs.create(
           projectId: projectId,
@@ -491,7 +491,7 @@ void main() {
       );
 
       final result = await service.setValue(
-        vineId: vineId,
+        plantId: plantId,
         fieldDefId: healthId,
         input: 9,
       );
@@ -499,19 +499,23 @@ void main() {
       expect(result, isA<WriteRejected>());
       expect((result as WriteRejected).message, startsWith('health:'));
       // Nothing was written.
-      expect(await events.currentValue(vineId, healthId), isNull);
+      expect(await events.currentValue(plantId, healthId), isNull);
     });
 
     test('an unknown field is reported, not written', () async {
-      final (_, vineId) = await seedVine();
+      final (_, plantId) = await seedPlant();
       expect(
-        await service.setValue(vineId: vineId, fieldDefId: 'nope', input: '1'),
+        await service.setValue(
+          plantId: plantId,
+          fieldDefId: 'nope',
+          input: '1',
+        ),
         isA<WriteUnknownField>(),
       );
     });
 
     test('bulk write validates once and returns an undoable batch', () async {
-      final (projectId, vineId) = await seedVine();
+      final (projectId, plantId) = await seedPlant();
       final healthId = idOf(
         await fieldDefs.create(
           projectId: projectId,
@@ -521,22 +525,22 @@ void main() {
       );
 
       final result = await service.setValueForSelection(
-        vineIds: [vineId],
+        plantIds: [plantId],
         fieldDefId: healthId,
         input: 4,
       );
 
       expect(result, isA<WriteBulkSucceeded>());
       final batch = (result as WriteBulkSucceeded).batchId;
-      expect(await events.currentValue(vineId, healthId), '4');
+      expect(await events.currentValue(plantId, healthId), '4');
       await events.undoBatch(batch);
-      expect(await events.currentValue(vineId, healthId), isNull);
+      expect(await events.currentValue(plantId, healthId), isNull);
     });
 
     test(
       'bulk write rejects an invalid value before touching anything',
       () async {
-        final (projectId, vineId) = await seedVine();
+        final (projectId, plantId) = await seedPlant();
         final healthId = idOf(
           await fieldDefs.create(
             projectId: projectId,
@@ -547,18 +551,18 @@ void main() {
 
         expect(
           await service.setValueForSelection(
-            vineIds: [vineId],
+            plantIds: [plantId],
             fieldDefId: healthId,
             input: 'not a rating',
           ),
           isA<WriteRejected>(),
         );
-        expect(await events.currentValue(vineId, healthId), isNull);
+        expect(await events.currentValue(plantId, healthId), isNull);
       },
     );
 
     test('displayValues renders labels for every field', () async {
-      final (projectId, vineId) = await seedVine();
+      final (projectId, plantId) = await seedPlant();
       final healthId = idOf(
         await fieldDefs.create(
           projectId: projectId,
@@ -575,9 +579,9 @@ void main() {
         ),
       );
 
-      await service.setValue(vineId: vineId, fieldDefId: healthId, input: 5);
+      await service.setValue(plantId: plantId, fieldDefId: healthId, input: 5);
 
-      final values = await service.displayValues(projectId, vineId);
+      final values = await service.displayValues(projectId, plantId);
       expect(values[healthId], 'Excellent');
       // Fields with no value still appear, as null.
       expect(values.containsKey(notesId), isTrue);

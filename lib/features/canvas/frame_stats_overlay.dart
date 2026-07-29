@@ -5,7 +5,7 @@ import 'package:flutter/scheduler.dart';
 ///
 /// Android's `dumpsys gfxinfo` reports nothing for a Flutter app -- Flutter
 /// renders to its own surface and never goes through HWUI -- so the only
-/// honest way to measure the 4,000-vine gate on the Fire Max 11 is to have the
+/// honest way to measure the 4,000-plant gate on the Fire Max 11 is to have the
 /// app time itself while a real hand pans it.
 ///
 /// Reports **build** and **raster** separately because they fail differently:

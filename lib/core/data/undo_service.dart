@@ -99,7 +99,7 @@ class UndoService {
           await (_db.select(_db.operationRows)
                 ..where((r) => r.operationId.equals(target.id))
                 // Undo unwinds in reverse, which is also the order foreign keys
-                // need: a gesture that created a row and then vines on it
+                // need: a gesture that created a row and then plants on it
                 // captured them in that order, so removing them backwards drops
                 // the children first. Redo re-applies in the original order for
                 // the same reason.
@@ -128,7 +128,7 @@ class UndoService {
 
     // Replay writes go through customStatement, which drift cannot attribute to
     // a table on its own. Without this the database is correct and every
-    // watching widget is stale -- the canvas keeps painting vines that undo
+    // watching widget is stale -- the canvas keeps painting plants that undo
     // just moved back. The operations table is included so the toolbar's own
     // watch re-evaluates.
     _db.notifyUpdates({

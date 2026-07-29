@@ -1,15 +1,15 @@
 import 'polyline.dart';
 
-/// Where to place vines along a row.
+/// Where to place plants along a row.
 ///
-/// Returns arc-length offsets rather than points: `vines.path_offset` is what
+/// Returns arc-length offsets rather than points: `plants.path_offset` is what
 /// gets stored, and x/y is derived from it. Handing back offsets keeps the one
 /// authoritative value in one place.
 abstract final class RowGeneration {
-  /// [count] vines spread evenly, first at the start and last at the end.
+  /// [count] plants spread evenly, first at the start and last at the end.
   ///
-  /// Endpoints inclusive because the user drew the row from the first vine to
-  /// the last. Placing the first vine slightly inside the line they drew would
+  /// Endpoints inclusive because the user drew the row from the first plant to
+  /// the last. Placing the first plant slightly inside the line they drew would
   /// look like the tool ignoring them.
   static List<double> byCount(Polyline row, int count) {
     if (count <= 0) return const [];
@@ -19,9 +19,9 @@ abstract final class RowGeneration {
     return [for (var i = 0; i < count; i++) i * step];
   }
 
-  /// A vine every [spacing] units, starting at the row's start.
+  /// A plant every [spacing] units, starting at the row's start.
   ///
-  /// The final vine lands at or before the end; the tool never places one past
+  /// The final plant lands at or before the end; the tool never places one past
   /// the line the user drew. If the row does not divide evenly the remainder is
   /// simply left empty, which matches how a row is actually planted.
   ///
@@ -33,12 +33,12 @@ abstract final class RowGeneration {
     final offsets = <double>[];
     // Guard against pathological input generating millions of entries: a
     // spacing of 0.001px on a 5,000px row would otherwise try to place five
-    // million vines and hang the UI thread.
-    const maxVinesPerRow = 5000;
+    // million plants and hang the UI thread.
+    const maxPlantsPerRow = 5000;
 
     for (
       var offset = 0.0;
-      offset <= row.length && offsets.length < maxVinesPerRow;
+      offset <= row.length && offsets.length < maxPlantsPerRow;
       offset += spacing
     ) {
       offsets.add(offset);
@@ -46,9 +46,9 @@ abstract final class RowGeneration {
     return offsets;
   }
 
-  /// How many vines [bySpacing] would place, without building the list.
+  /// How many plants [bySpacing] would place, without building the list.
   ///
-  /// Lets the tool preview "≈ 47 vines" while the user drags, without
+  /// Lets the tool preview "≈ 47 plants" while the user drags, without
   /// allocating on every pointer move.
   static int countForSpacing(Polyline row, double spacing) {
     if (spacing <= 0 || !spacing.isFinite) return 0;

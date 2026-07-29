@@ -42,7 +42,7 @@ UpdateService _serviceReturning(String body, {required String contentType}) {
 const _validJson = '''
 {
   "version": "0.1.1",
-  "apk_url": "https://example.com/VineViewer-v0.1.1.apk",
+  "apk_url": "https://example.com/PlantViewer-v0.1.1.apk",
   "notes": "test",
   "min_supported_db": 1
 }
@@ -52,7 +52,7 @@ void main() {
   setUp(() {
     TestWidgetsFlutterBinding.ensureInitialized();
     PackageInfo.setMockInitialValues(
-      appName: 'VineViewer',
+      appName: 'PlantViewer',
       packageName: 'com.mitch8845.vine_viewer',
       version: '0.1.0',
       buildNumber: '1',

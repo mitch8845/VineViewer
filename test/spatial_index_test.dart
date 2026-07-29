@@ -4,15 +4,15 @@ import 'dart:ui' show Rect;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vine_viewer/core/geometry/spatial_index.dart';
 
-/// A grid of vines resembling the real vineyard: 75 rows, variable length,
+/// A grid of plants resembling the real vineyard: 75 rows, variable length,
 /// 3,025 total.
 List<IndexedPoint> realisticVineyard() {
   final points = <IndexedPoint>[];
   final random = math.Random(42); // fixed seed: failures must be reproducible
   var id = 0;
   for (var row = 0; row < 75; row++) {
-    final vinesInRow = 9 + random.nextInt(64); // 9..72, as in the real data
-    for (var i = 0; i < vinesInRow; i++) {
+    final plantsInRow = 9 + random.nextInt(64); // 9..72, as in the real data
+    for (var i = 0; i < plantsInRow; i++) {
       points.add((
         id: 'v${id++}',
         position: Offset(100.0 + i * 12, 100.0 + row * 40),
@@ -40,7 +40,7 @@ void main() {
     });
 
     test('coincident points do not collapse', () {
-      // Two vines can share a position while one is being dragged onto
+      // Two plants can share a position while one is being dragged onto
       // another; the index must not lose one.
       final index = SpatialIndex.build([
         (id: 'a', position: const Offset(10, 10)),
@@ -65,7 +65,7 @@ void main() {
     });
 
     test('culling actually culls', () {
-      // The whole point of the index: painting 40 vines instead of 3,000 is
+      // The whole point of the index: painting 40 plants instead of 3,000 is
       // the difference between 60fps and a stutter while panning.
       final visible = index.inRect(const Rect.fromLTWH(100, 100, 300, 200));
       expect(visible.length, lessThan(index.count ~/ 10));
@@ -86,7 +86,7 @@ void main() {
     test('agrees with a brute-force scan', () {
       // The index is an optimisation; if it ever disagrees with the naive
       // answer it is worse than useless, because taps would select the wrong
-      // vine and nobody would suspect the index.
+      // plant and nobody would suspect the index.
       final points = realisticVineyard();
       final built = SpatialIndex.build(points);
       const rect = Rect.fromLTWH(250, 300, 400, 350);
@@ -109,13 +109,13 @@ void main() {
       index = SpatialIndex.build(points);
     });
 
-    test('finds the vine under a tap', () {
+    test('finds the plant under a tap', () {
       final target = points[500].position;
       expect(index.nearest(target, maxDistance: 20)?.id, points[500].id);
     });
 
     test('respects the distance limit', () {
-      // Tapping empty ground must deselect, not grab the nearest vine three
+      // Tapping empty ground must deselect, not grab the nearest plant three
       // rows away.
       expect(index.nearest(const Offset(-500, -500), maxDistance: 20), isNull);
     });

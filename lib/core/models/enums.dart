@@ -60,17 +60,17 @@ enum DrawType {
   point,
 }
 
-/// Lifecycle state of a vine at a position.
+/// Lifecycle state of a plant at a position.
 ///
-/// A retired vine keeps its full history (decision D7); it is never deleted.
-enum VineStatus {
+/// A retired plant keeps its full history (decision D7); it is never deleted.
+enum PlantStatus {
   /// Planted and alive.
   active,
 
   /// Retired -- died or was pulled. Position stays, shown as an empty slot.
   removed,
 
-  /// Position exists in the layout but has never held a vine.
+  /// Position exists in the layout but has never held a plant.
   missing,
 }
 
