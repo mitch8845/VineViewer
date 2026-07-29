@@ -207,10 +207,8 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
     super.dispose();
   }
 
-  FieldConfig get _config => FieldConfig(
-    options: _options,
-    optionColors: _optionColors,
-  );
+  FieldConfig get _config =>
+      FieldConfig(options: _options, optionColors: _optionColors);
 
   Future<void> _save() async {
     final dao = ref.read(fieldDefsDaoProvider);
@@ -314,10 +312,7 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
             ),
             if (_type.hasOptions) ...[
               const Divider(height: 32),
-              Text(
-                'Options',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
+              Text('Options', style: Theme.of(context).textTheme.titleMedium),
               const Text(
                 'Each option gets a colour, which is what colours the map.',
                 style: TextStyle(fontSize: 12),
@@ -358,9 +353,7 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
               for (final problem in _problems)
                 Text(
                   problem,
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.error,
-                  ),
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
             ],
             const SizedBox(height: 20),
@@ -423,10 +416,7 @@ class _OptionRow extends StatelessWidget {
                 ),
               ),
             ),
-          IconButton(
-            icon: const Icon(Icons.close),
-            onPressed: onDelete,
-          ),
+          IconButton(icon: const Icon(Icons.close), onPressed: onDelete),
         ],
       ),
     );

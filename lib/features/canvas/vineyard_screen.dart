@@ -155,9 +155,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             tooltip: 'Fields',
             icon: const Icon(Icons.list_alt),
             onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => const FieldListScreen(),
-              ),
+              MaterialPageRoute<void>(builder: (_) => const FieldListScreen()),
             ),
           ),
           IconButton(

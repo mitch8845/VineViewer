@@ -96,11 +96,13 @@ final _labelProvider = FutureProvider.family<VineLabel?, String>((
   return ref.watch(labelServiceProvider).labelOf(vineId);
 });
 
-final _valuesProvider =
-    FutureProvider.family<Map<String, FieldEvent>, String>((ref, vineId) async {
-      ref.watch(_valuesRevisionProvider);
-      return ref.watch(fieldEventsDaoProvider).currentValuesForVine(vineId);
-    });
+final _valuesProvider = FutureProvider.family<Map<String, FieldEvent>, String>((
+  ref,
+  vineId,
+) async {
+  ref.watch(_valuesRevisionProvider);
+  return ref.watch(fieldEventsDaoProvider).currentValuesForVine(vineId);
+});
 
 /// Bumped after a write so the inspector re-reads.
 ///
