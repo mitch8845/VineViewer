@@ -33,7 +33,7 @@ Future<void> pumpShell(WidgetTester tester, List<Project> projects) async {
       overrides: [
         projectListProvider.overrideWith((ref) => Stream.value(projects)),
       ],
-      child: const PlantViewerApp(),
+      child: const VineViewerApp(),
     ),
   );
   // Not pumpAndSettle: the loading state spins a CircularProgressIndicator
@@ -46,7 +46,7 @@ void main() {
   testWidgets('launches to the project list', (tester) async {
     await pumpShell(tester, const []);
 
-    expect(find.text('PlantViewer'), findsOneWidget);
+    expect(find.text('VineViewer'), findsOneWidget);
     expect(find.text('New vineyard'), findsOneWidget);
   });
 

@@ -56,7 +56,18 @@ class UpdateCheckFailed extends UpdateCheck {
 }
 
 class UpdateService {
-  UpdateService({Dio? dio, this.repo = 'mitch8845/PlantViewer'})
+  /// **This is the GitHub repository, not the app's name**, and the two are not
+  /// required to match. It must track the repository if that is ever renamed, and
+  /// must *not* follow a rename of the app.
+  ///
+  /// It has already been got wrong once. The vine-to-plant sweep changed it to
+  /// `mitch8845/PlantViewer`, which does not exist, so every check 404'd -- and
+  /// because a 404 used to be reported as "up to date", the app cheerfully told
+  /// the user there was nothing to install. Shipped in 0.6.0 and 0.6.1, which
+  /// means neither build can ever find its own successor.
+  static const defaultRepo = 'mitch8845/VineViewer';
+
+  UpdateService({Dio? dio, this.repo = defaultRepo})
     : _dio =
           dio ??
           Dio(
@@ -123,10 +134,24 @@ class UpdateService {
           ? UpdateAvailable(current, info)
           : UpToDate(current);
     } on DioException catch (e) {
-      // 404 before the first release exists is expected, not an error worth
-      // alarming the user about.
+      // **A 404 is a failure, not "up to date".**
+      //
+      // This used to return UpToDate, on the reasoning that there would be no
+      // release to find before the first one was published. That stopped being
+      // true at v0.1.1, and the branch then did real harm: when the repository
+      // slug was renamed to one that does not exist, every check 404'd and the
+      // app reported no updates available. A silent wrong answer, for two
+      // releases, about the mechanism whose whole job is to deliver fixes.
+      //
+      // The rest of this class is careful to keep "nothing new" apart from
+      // "could not ask" -- that is why UpdateCheck has three states rather than
+      // being a nullable result -- and this one branch was quietly collapsing
+      // them.
       if (e.response?.statusCode == 404) {
-        return UpToDate(current);
+        return UpdateCheckFailed(
+          'No release metadata at $versionJsonUrl. Either no release has been '
+          'published yet, or this build is looking at the wrong repository.',
+        );
       }
       return UpdateCheckFailed(_describe(e));
     } catch (e) {
@@ -142,7 +167,7 @@ class UpdateService {
     CancelToken? cancelToken,
   }) async {
     final dir = await getApplicationSupportDirectory();
-    final file = File('${dir.path}/PlantViewer-v${info.version}.apk');
+    final file = File('${dir.path}/VineViewer-v${info.version}.apk');
 
     // A partial file from an interrupted download would fail to install with a
     // confusing parse error, so never resume onto an existing one.
@@ -173,7 +198,7 @@ class UpdateService {
     if (result.type == ResultType.done) return null;
 
     if (result.type == ResultType.permissionDenied) {
-      return 'Permission denied. Enable "Install unknown apps" for PlantViewer '
+      return 'Permission denied. Enable "Install unknown apps" for VineViewer '
           'in Settings, then try again.';
     }
     return 'Could not start the installer: ${result.message}';

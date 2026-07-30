@@ -39,10 +39,33 @@ UpdateService _serviceReturning(String body, {required String contentType}) {
   return UpdateService(dio: dio);
 }
 
+/// Always answers with [status], for the paths that are about HTTP rather than
+/// about the body.
+class _StatusAdapter implements HttpClientAdapter {
+  _StatusAdapter(this.status);
+
+  final int status;
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async => ResponseBody.fromString('Not Found', status);
+
+  @override
+  void close({bool force = false}) {}
+}
+
+UpdateService _serviceReturningStatus(int status) {
+  final dio = Dio()..httpClientAdapter = _StatusAdapter(status);
+  return UpdateService(dio: dio);
+}
+
 const _validJson = '''
 {
   "version": "0.1.1",
-  "apk_url": "https://example.com/PlantViewer-v0.1.1.apk",
+  "apk_url": "https://example.com/VineViewer-v0.1.1.apk",
   "notes": "test",
   "min_supported_db": 1
 }
@@ -52,7 +75,7 @@ void main() {
   setUp(() {
     TestWidgetsFlutterBinding.ensureInitialized();
     PackageInfo.setMockInitialValues(
-      appName: 'PlantViewer',
+      appName: 'VineViewer',
       packageName: 'com.mitch8845.vine_viewer',
       version: '0.1.0',
       buildNumber: '1',
@@ -120,5 +143,51 @@ void main() {
       contentType: 'application/octet-stream',
     );
     expect(await service.check(), isA<UpdateCheckFailed>());
+  });
+
+  group('the repository slug', () {
+    // The slug is the *repository*, not the app. It has already been broken
+    // once by a rename sweep, and because a 404 was reported as "up to date"
+    // the app went two whole releases telling the user there was nothing to
+    // install. Both halves of that are pinned below.
+    test('points at the repository that actually exists', () {
+      expect(UpdateService.defaultRepo, 'mitch8845/VineViewer');
+      expect(
+        UpdateService().versionJsonUrl,
+        'https://github.com/mitch8845/VineViewer/releases/latest/download/'
+        'version.json',
+      );
+    });
+
+    test('does not follow a rename of the app', () {
+      // `android:label` and the application id both say VineViewer, and the
+      // published release assets are named for it. If the app is ever renamed
+      // deliberately, this slug stays put unless the *repository* moves too.
+      expect(UpdateService.defaultRepo, isNot(contains('Plant')));
+    });
+  });
+
+  group('a 404', () {
+    test('is reported as a failure, never as up to date', () async {
+      // The exact bug: a slug pointing at a repository that does not exist
+      // answers 404, and answering "up to date" to that is a silent lie about
+      // the one mechanism whose job is shipping fixes.
+      final result = await _serviceReturningStatus(404).check();
+
+      expect(result, isA<UpdateCheckFailed>());
+      expect(
+        (result as UpdateCheckFailed).message,
+        contains('wrong repository'),
+        reason: 'the message has to name the likely cause to be useful',
+      );
+    });
+
+    test('names the URL it could not reach', () async {
+      final result = await _serviceReturningStatus(404).check();
+      expect(
+        (result as UpdateCheckFailed).message,
+        contains('mitch8845/VineViewer'),
+      );
+    });
   });
 }

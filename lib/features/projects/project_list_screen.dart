@@ -25,7 +25,7 @@ class ProjectListScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('PlantViewer'),
+        title: const Text('VineViewer'),
         actions: [
           IconButton(
             tooltip: 'Check for updates',
