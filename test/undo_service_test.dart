@@ -522,7 +522,7 @@ void main() {
         () => driftRuntimeOptions.dontWarnAboutMultipleDatabases = false,
       );
 
-      final directory = await Directory.systemTemp.createTemp('plantviewer');
+      final directory = await Directory.systemTemp.createTemp('vineviewer');
       final file = File('${directory.path}/durability.sqlite');
 
       var reopened = AppDatabase(NativeDatabase(file));

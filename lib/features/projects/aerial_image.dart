@@ -18,13 +18,23 @@ import '../../core/providers.dart';
 /// The Five Sisters aerial that ships with the app.
 const sampleAerialAsset = 'assets/aerial/five_sisters_aerial.jpg';
 
-/// Talks to [MainActivity]'s picker.
+/// Talks to `MainActivity`'s picker.
 ///
 /// Not a plugin. `file_picker` was removed because its Gradle script applies
 /// the Kotlin Gradle Plugin, which AGP 9 with built-in Kotlin will not
 /// configure; app-module Kotlin has no such problem, so the picker lives in
 /// `MainActivity.kt` instead.
-const _channel = MethodChannel('plantviewer/files');
+///
+/// **This string must match `MainActivity.CHANNEL` exactly**, and it is not
+/// checked by the compiler -- a mismatch is a `MissingPluginException` at the
+/// moment the user taps, with everything up to that point looking fine. It has
+/// already happened once: the vine-to-plant rename swept this to
+/// `plantviewer/files` while the Kotlin constant stayed put, and it shipped in
+/// 0.6.0 with the device picker dead. `aerial_channel_test.dart` now reads the
+/// Kotlin source and fails if the two ever disagree again.
+const aerialChannelName = 'vineviewer/files';
+
+const _channel = MethodChannel(aerialChannelName);
 
 /// Records the background image and its pixel dimensions.
 ///
