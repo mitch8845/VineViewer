@@ -10,7 +10,8 @@ import io.flutter.plugin.common.MethodChannel
 import java.io.File
 
 /**
- * Hosts Flutter, plus a small image picker.
+ * Hosts Flutter, plus a small file picker -- images for the aerial, anything
+ * for a spreadsheet import.
  *
  * The picker lives here rather than in a plugin on purpose. `file_picker` had to
  * be removed because its Gradle script applies the Kotlin Gradle Plugin, which
@@ -30,24 +31,29 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "pickImage" -> pickImage(result)
+                    "pickImage" -> pick(result, MIME_IMAGE)
+                    // Any file: a spreadsheet copied over USB often arrives
+                    // typed as a generic binary, and filtering by the
+                    // spreadsheet types would grey it out. Dart checks what
+                    // it actually is.
+                    "pickFile" -> pick(result, MIME_ANY)
                     else -> result.notImplemented()
                 }
             }
     }
 
-    private fun pickImage(result: MethodChannel.Result) {
+    private fun pick(result: MethodChannel.Result, mime: String) {
         // Two taps arriving before the chooser opens would strand the first
         // Result forever, and an unanswered MethodChannel call never times out.
         if (pending != null) {
-            result.error("busy", "An image picker is already open.", null)
+            result.error("busy", "A file picker is already open.", null)
             return
         }
         pending = result
 
         val open = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            type = MIME_IMAGE
+            type = mime
         }
 
         try {
@@ -58,13 +64,13 @@ class MainActivity : FlutterActivity() {
             // widely handled intent, and the gallery answers it.
             val fallback = Intent(Intent.ACTION_GET_CONTENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE)
-                type = MIME_IMAGE
+                type = mime
             }
             try {
                 startActivityForResult(fallback, REQUEST_PICK_IMAGE)
             } catch (_: ActivityNotFoundException) {
                 pending = null
-                result.error("no_picker", "This device has no image picker.", null)
+                result.error("no_picker", "This device has no file picker.", null)
             }
         }
     }
@@ -99,7 +105,7 @@ class MainActivity : FlutterActivity() {
             target.parentFile?.mkdirs()
             contentResolver.openInputStream(uri).use { input ->
                 if (input == null) {
-                    result.error("unreadable", "Could not open that image.", null)
+                    result.error("unreadable", "Could not open that file.", null)
                     return
                 }
                 target.outputStream().use { input.copyTo(it) }
@@ -113,6 +119,7 @@ class MainActivity : FlutterActivity() {
     private companion object {
         const val CHANNEL = "vineviewer/files"
         const val MIME_IMAGE = "image/*"
+        const val MIME_ANY = "*/*"
         const val REQUEST_PICK_IMAGE = 4201
     }
 }

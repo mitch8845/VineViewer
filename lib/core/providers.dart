@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'data/import_service.dart';
 import 'data/label_service.dart';
 import 'data/membership_service.dart';
 import 'data/numbering_service.dart';
@@ -68,6 +69,15 @@ final plantDataServiceProvider = Provider(
   (ref) => PlantDataService(
     fieldDefs: ref.watch(fieldDefsDaoProvider),
     events: ref.watch(fieldEventsDaoProvider),
+  ),
+);
+
+/// Spreadsheet import: match rows by plant ID, columns by field name.
+final importServiceProvider = Provider(
+  (ref) => ImportService(
+    fieldDefs: ref.watch(fieldDefsDaoProvider),
+    events: ref.watch(fieldEventsDaoProvider),
+    labels: ref.watch(labelServiceProvider),
   ),
 );
 

@@ -9,6 +9,7 @@ import '../../core/models/enums.dart';
 import '../../core/providers.dart';
 import '../data_entry/bulk_edit.dart';
 import '../data_entry/plant_inspector.dart';
+import '../projects/import_screen.dart';
 import '../schema/field_editor_screen.dart';
 import '../schema/identifier_template_editor.dart';
 import 'canvas_controller.dart';
@@ -1232,13 +1233,20 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     return PopupMenuButton<String>(
       tooltip: 'More',
       icon: const Icon(Icons.more_vert),
-      onSelected: (choice) => Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => choice == 'fields'
-              ? const FieldListScreen()
-              : const IdentifierTemplateEditor(),
-        ),
-      ),
+      onSelected: (choice) {
+        final projectId = _projectId;
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => switch (choice) {
+              'fields' => const FieldListScreen(),
+              'import' when projectId != null => ImportScreen(
+                projectId: projectId,
+              ),
+              _ => const IdentifierTemplateEditor(),
+            },
+          ),
+        );
+      },
       itemBuilder: (context) => const [
         PopupMenuItem(
           value: 'fields',
@@ -1254,6 +1262,15 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             leading: Icon(Icons.tag),
             title: Text('Plant ID format'),
             subtitle: Text('How plants are named'),
+          ),
+        ),
+        PopupMenuDivider(),
+        PopupMenuItem(
+          value: 'import',
+          child: ListTile(
+            leading: Icon(Icons.upload_file),
+            title: Text('Import from spreadsheet'),
+            subtitle: Text('Values matched by plant ID'),
           ),
         ),
       ],

@@ -1,6 +1,6 @@
 # VineViewer — feature and test checklist
 
-Everything the app does as of **0.8.0**, written to be walked through with a
+Everything the app does as of **0.8.1**, written to be walked through with a
 tablet in hand. Tick, strike out, and write in the margins.
 
 Notation: `[ ]` to do · `[x]` works · `[!]` broken · `[?]` unclear what should
@@ -15,7 +15,7 @@ hunting for a feature that isn't there.
 
 ## 1. Install and first run
 
-- [ ] Install 0.8.0 through **Check for updates** (0.7.0 onwards updates itself)
+- [ ] Install 0.8.1 through **Check for updates** (0.7.0 onwards updates itself)
 - [ ] Home-screen icon label reads **VineViewer**
 - [ ] Title bar reads **VineViewer** (0.6.0/0.6.1 wrongly said "PlantViewer")
 - [ ] App opens to the project list without a crash on a fresh install
@@ -716,6 +716,38 @@ Notes:
 
 ---
 
+## 17c. Import from a spreadsheet
+
+Map → ⋮ (top bar) → **Import from spreadsheet**. Copy the file to the tablet
+first (USB, Drive, email attachment).
+
+- [ ] The system file picker opens; backing out returns to the map
+- [ ] An **.xlsx** and a **.csv** both open; an old **.xls** is refused with
+      "save it as .xlsx or .csv"
+- [ ] The first sheet is read, by its order in the workbook
+- [ ] Preview, before anything is written:
+  - rows matched by the **ID** column, and IDs that are not plants here
+  - columns not imported (Block, Row, Plant — positions come from the map)
+  - per field: what will be written ("Pinot Noir ×3,023 · Teroldego ×2"),
+    how many already hold that value, and values refused, with reasons
+- [ ] ⚠ A value not on a choice field's option list is **refused**, not
+      added — tap the line to see which plants and why
+- [ ] ⚠ A **blank cell** never clears a value on the tablet
+- [ ] ⚠ **Write-once** fields that already hold a different value are kept
+      unless "Overwrite write-once values" is switched on
+- [ ] ⚠ A column that is **part of the plant ID** is refused outright
+- [ ] Import → snackbar with the count; the map's colour-by and the plant panel
+      show the new values
+- [ ] ⚠ **One press of undo reverts the whole import**
+- [ ] ⚠ Importing the same file again writes **nothing** ("already hold exactly
+      this value")
+- [ ] **Five Sisters:** `VineViewer_Data.xlsx` — expect 3,025 of 3,025 rows
+      matched, Variety / Clone / Health all imported with nothing refused
+
+Notes:
+
+---
+
 ## 18. ID-change prompts — all four triggers
 
 Four different things rename a plant. Only one is about naming. Each must count
@@ -889,7 +921,7 @@ Not built at all:
 - **Aerial image repositioning** (offset / scale / rotation). Schema and painter
   support it; there is no UI. Only matters when swapping in a differently-framed
   photo later.
-- **`.xlsx` import / export.**
+- **Export** (to `.xlsx` or `.csv`). Import exists (§17c); export does not.
 - **Filter** (show only plants matching criteria).
 - **Photo attachment per plant.**
 - **Fill** (deliberately dropped — you draw and assign, the app does not guess).

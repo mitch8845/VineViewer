@@ -32,6 +32,8 @@ import 'package:vine_viewer/features/canvas/vineyard_canvas.dart';
 import 'package:vine_viewer/features/canvas/vineyard_screen.dart';
 import 'package:vine_viewer/features/canvas/tools/object_actions_sheet.dart';
 import 'package:vine_viewer/features/data_entry/value_editor_sheet.dart';
+import 'package:vine_viewer/core/import/table_reader.dart';
+import 'package:vine_viewer/features/projects/import_screen.dart';
 import 'package:vine_viewer/features/projects/project_list_screen.dart';
 import 'package:vine_viewer/features/schema/field_editor_screen.dart';
 import 'package:vine_viewer/features/schema/project_setup_wizard.dart';
@@ -386,6 +388,18 @@ void main() {
     await _capture(tester, '12_value_editor');
     Navigator.of(ctx).pop();
     await _settle(tester);
+
+    // Import preview, from the real spreadsheet when it is present locally.
+    final sheet = File('VineViewer_Data.xlsx');
+    if (sheet.existsSync()) {
+      await show(
+        ImportScreen(
+          projectId: seed.projectId,
+          table: TableReader.read(sheet.readAsBytesSync()),
+        ),
+      );
+      await _capture(tester, '13_import');
+    }
 
     // Unmount and drain drift's stream-cancel timers before the test ends.
     await tester.pumpWidget(const SizedBox());

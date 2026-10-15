@@ -100,6 +100,28 @@ Future<bool> pickAerialImage(WidgetRef ref, String projectId) async {
   return true;
 }
 
+/// Opens the system picker for any file and returns its bytes, or null if
+/// the user backed out.
+///
+/// Same channel as the image picker, so the same Kotlin handles both; the
+/// copy it makes in the cache directory is read and deleted straight away.
+Future<Uint8List?> pickAnyFile() async {
+  final picked = await _channel.invokeMethod<String>('pickFile');
+  if (picked == null) return null;
+  final file = File(picked);
+  try {
+    return await file.readAsBytes();
+  } finally {
+    if (file.existsSync()) {
+      try {
+        await file.delete();
+      } catch (_) {
+        // A leftover cache file is not worth failing the pick over.
+      }
+    }
+  }
+}
+
 /// Copies the bundled aerial out to disk and attaches it to a project.
 ///
 /// The asset is copied rather than referenced in place because everything
