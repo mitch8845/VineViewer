@@ -261,6 +261,101 @@ class FieldEventsDao {
     };
   }
 
+  // ----------------------------------------------------------- calendar
+
+  /// Observations per local day and field, between two instants.
+  ///
+  /// Grouped by the device's local calendar day, not UTC: a reading taken at
+  /// 9pm belongs to the day the person standing in the vineyard lived it.
+  Future<List<({DateTime day, String fieldDefId, int count})>> activityBetween(
+    String projectId,
+    DateTime from,
+    DateTime to,
+  ) async {
+    final rows = await _db
+        .customSelect(
+          "SELECT date(e.observed_at / 1000, 'unixepoch', 'localtime') AS day, "
+          '       e.field_def_id AS field, COUNT(*) AS n '
+          'FROM field_events e JOIN plants p ON p.id = e.plant_id '
+          'WHERE p.project_id = ?1 AND e.deleted_at IS NULL '
+          '  AND e.observed_at >= ?2 AND e.observed_at < ?3 '
+          'GROUP BY day, field',
+          variables: [
+            Variable<String>(projectId),
+            Variable<int>(from.toUtc().millisecondsSinceEpoch),
+            Variable<int>(to.toUtc().millisecondsSinceEpoch),
+          ],
+          readsFrom: {_db.fieldEvents, _db.plants},
+        )
+        .get();
+    return [
+      for (final r in rows)
+        (
+          day: DateTime.parse(r.read<String>('day')),
+          fieldDefId: r.read<String>('field'),
+          count: r.read<int>('n'),
+        ),
+    ];
+  }
+
+  /// Every observation in a project between two instants, oldest first.
+  Future<List<FieldEvent>> eventsBetween(
+    String projectId,
+    DateTime from,
+    DateTime to,
+  ) async {
+    final rows = await _db
+        .customSelect(
+          'SELECT e.* FROM field_events e JOIN plants p ON p.id = e.plant_id '
+          'WHERE p.project_id = ?1 AND e.deleted_at IS NULL '
+          '  AND e.observed_at >= ?2 AND e.observed_at < ?3 '
+          'ORDER BY e.observed_at, e.recorded_at, e.rowid',
+          variables: [
+            Variable<String>(projectId),
+            Variable<int>(from.toUtc().millisecondsSinceEpoch),
+            Variable<int>(to.toUtc().millisecondsSinceEpoch),
+          ],
+          readsFrom: {_db.fieldEvents, _db.plants},
+        )
+        .get();
+    return rows.map((r) => _db.fieldEvents.map(r.data)).toList();
+  }
+
+  /// When each field was last recorded in a project, by field id.
+  Future<Map<String, DateTime>> lastObserved(String projectId) async {
+    final rows = await _db
+        .customSelect(
+          'SELECT e.field_def_id AS field, MAX(e.observed_at) AS at '
+          'FROM field_events e JOIN plants p ON p.id = e.plant_id '
+          'WHERE p.project_id = ?1 AND e.deleted_at IS NULL '
+          'GROUP BY e.field_def_id',
+          variables: [Variable<String>(projectId)],
+          readsFrom: {_db.fieldEvents, _db.plants},
+        )
+        .get();
+    return {
+      for (final r in rows)
+        r.read<String>('field'): DateTime.fromMillisecondsSinceEpoch(
+          r.read<int>('at'),
+          isUtc: true,
+        ).toLocal(),
+    };
+  }
+
+  /// Every observation of one plant, all fields, newest first.
+  Future<List<FieldEvent>> historyForPlant(String plantId) async {
+    final rows = await _db
+        .customSelect(
+          'SELECT * FROM field_events '
+          'WHERE plant_id = ?1 AND deleted_at IS NULL '
+          'ORDER BY $_latestFirst',
+          variables: [Variable<String>(plantId)],
+          readsFrom: {_db.fieldEvents},
+        )
+        .get();
+    return rows.map((r) => _db.fieldEvents.map(r.data)).toList();
+  }
+
   /// How many observations exist across a set of plants.
   ///
   /// Section 6.4 wants the deletion prompt to name this first: retiring a plant

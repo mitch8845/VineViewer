@@ -720,6 +720,48 @@ class LabelService {
     };
   }
 
+  /// The objects holding this plant -- its containers, then the line it is
+  /// carried by if that is not already one of them -- with their ids.
+  ///
+  /// [containersOf] gives names for display; this is for acting on them, such
+  /// as selecting every plant in the row a tapped plant belongs to.
+  Future<List<({String objectId, String field, String label})>> holdersOf(
+    String plantId,
+  ) async {
+    final rows = await _db
+        .customSelect(
+          'SELECT o.id AS id, f.name AS field, o.label AS label, '
+          '       f.sort_order AS ord '
+          'FROM plant_memberships m '
+          'JOIN map_objects o ON o.id = m.object_id AND o.deleted_at IS NULL '
+          'JOIN field_defs f ON f.id = m.field_def_id AND f.deleted_at IS NULL '
+          'WHERE m.plant_id = ?1 '
+          'UNION '
+          'SELECT o.id, f.name, o.label, f.sort_order '
+          'FROM plants p '
+          'JOIN map_objects o ON o.id = p.carrier_id AND o.deleted_at IS NULL '
+          'JOIN field_defs f ON f.id = o.field_def_id AND f.deleted_at IS NULL '
+          'WHERE p.id = ?1 '
+          'ORDER BY ord',
+          variables: [Variable<String>(plantId)],
+          readsFrom: {
+            _db.plantMemberships,
+            _db.mapObjects,
+            _db.fieldDefs,
+            _db.plants,
+          },
+        )
+        .get();
+    return [
+      for (final r in rows)
+        (
+          objectId: r.read<String>('id'),
+          field: r.read<String>('field'),
+          label: r.read<String>('label'),
+        ),
+    ];
+  }
+
   /// Which object currently holds each container field for this plant.
   Future<Map<String, String>> _currentHolders(String plantId) async {
     final rows = await _db

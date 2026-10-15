@@ -33,6 +33,7 @@ import 'package:vine_viewer/features/canvas/vineyard_screen.dart';
 import 'package:vine_viewer/features/canvas/tools/object_actions_sheet.dart';
 import 'package:vine_viewer/features/data_entry/value_editor_sheet.dart';
 import 'package:vine_viewer/core/import/table_reader.dart';
+import 'package:vine_viewer/features/history/calendar_screen.dart';
 import 'package:vine_viewer/features/projects/import_screen.dart';
 import 'package:vine_viewer/features/projects/project_list_screen.dart';
 import 'package:vine_viewer/features/schema/field_editor_screen.dart';
@@ -68,6 +69,7 @@ class _Seed {
   late String varietyField;
   late List<String> plants;
   late String firstRowId;
+  late String weakPlant;
 }
 
 Future<_Seed> _seed(AppDatabase db, ProviderContainer c) async {
@@ -216,16 +218,49 @@ Future<_Seed> _seed(AppDatabase db, ProviderContainer c) async {
   }
   seed.plants = allPlants;
 
-  // A believable survey: mostly healthy, a weak patch, some unrecorded.
+  // A believable season: a full survey three weeks ago, a re-check of the
+  // weak ones last week, some planting dates, and a spray scheduled ahead.
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day, 10);
+  final weakOnes = <String>[];
   for (final id in allPlants) {
     if (random.nextDouble() < 0.12) continue;
     final weak = random.nextDouble() < 0.15;
+    if (weak) weakOnes.add(id);
     await events.record(
       plantId: id,
       fieldDefId: seed.healthField,
       value: '${weak ? 1 + random.nextInt(2) : 3 + random.nextInt(3)}',
+      observedAt: today.subtract(const Duration(days: 9)),
     );
   }
+  for (final id in weakOnes) {
+    await events.record(
+      plantId: id,
+      fieldDefId: seed.healthField,
+      value: '${1 + random.nextInt(3)}',
+      observedAt: today.subtract(const Duration(days: 3)),
+    );
+  }
+  final planted = (await fields.byName(seed.projectId, 'Planted'))!.id;
+  await events.recordBulk(
+    plantIds: allPlants.sublist(0, 400),
+    fieldDefId: planted,
+    value: '${now.year}-${now.month.toString().padLeft(2, '0')}-02',
+    observedAt: today.subtract(const Duration(days: 9)),
+  );
+  final spray = await make('Next spray', FieldType.date);
+  final ahead = today.add(const Duration(days: 6));
+  await events.recordBulk(
+    plantIds: allPlants,
+    fieldDefId: spray,
+    value:
+        '${ahead.year}-${ahead.month.toString().padLeft(2, '0')}-'
+        '${ahead.day.toString().padLeft(2, '0')}',
+    source: EventSource.bulk,
+    observedAt: today,
+  );
+  seed.weakPlant = weakOnes.first;
   await events.record(
     plantId: allPlants[5],
     fieldDefId: seed.varietyField,
@@ -400,6 +435,25 @@ void main() {
       );
       await _capture(tester, '13_import');
     }
+
+    // Calendar: the day of the first survey selected.
+    await show(CalendarScreen(projectId: seed.projectId));
+    final surveyed = DateTime.now().subtract(const Duration(days: 9));
+    if (surveyed.month == DateTime.now().month) {
+      await tester.tap(find.text('${surveyed.day}').first);
+      await _settle(tester);
+    }
+    await _capture(tester, '14_calendar');
+
+    // A plant's value history.
+    container.read(selectionProvider.notifier).state = {seed.weakPlant};
+    await show(const VineyardScreen());
+    await tester.tap(find.byTooltip('History'));
+    await _settle(tester);
+    await _capture(tester, '15_plant_history');
+    Navigator.of(tester.element(find.byType(VineyardScreen))).pop();
+    await _settle(tester);
+    container.read(selectionProvider.notifier).state = const {};
 
     // Unmount and drain drift's stream-cancel timers before the test ends.
     await tester.pumpWidget(const SizedBox());

@@ -70,6 +70,7 @@ class MapTopBar extends StatelessWidget {
     required this.onLayers,
     required this.layersActive,
     required this.menu,
+    this.actions = const [],
   });
 
   final String title;
@@ -80,6 +81,9 @@ class MapTopBar extends StatelessWidget {
   /// Whether a layer is changed from its default, so the button can say so.
   final bool layersActive;
   final Widget menu;
+
+  /// Buttons between undo/redo and Layers.
+  final List<Widget> actions;
 
   @override
   Widget build(BuildContext context) {
@@ -125,6 +129,7 @@ class MapTopBar extends StatelessWidget {
           _VerticalRule(color: scheme.outlineVariant),
           undo,
           _VerticalRule(color: scheme.outlineVariant),
+          ...actions,
           IconButton(
             tooltip: 'Map layers',
             isSelected: layersActive,

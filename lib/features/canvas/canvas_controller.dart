@@ -353,6 +353,68 @@ final plantColouringProvider = StreamProvider<PlantColouring?>((ref) {
   );
 });
 
+/// The drawn object a tap means, by specificity rather than drawing order.
+///
+/// Points first, then the **nearest** line within reach, then the
+/// **smallest** area containing the tap. It used to return whichever object
+/// came first in the list -- and since a block contains every row inside
+/// it, a tap right on a row inside a block could select the block. A line
+/// is a narrower target than the area around it; if a finger is on one, it
+/// means that one.
+DrawnObject? objectAtPoint(
+  ui.Offset point,
+  double tolerance,
+  List<DrawnObject> objects,
+) {
+  DrawnObject? best;
+  var bestScore = double.infinity;
+
+  for (final object in objects) {
+    if (object.shape case final PointShape p) {
+      final d = (p.at - point).distance;
+      if (d <= tolerance && d < bestScore) (best, bestScore) = (object, d);
+    }
+  }
+  if (best != null) return best;
+
+  for (final object in objects) {
+    if (object.shape case final PolylineShape line) {
+      final d = line.path.closestTo(point).distance;
+      if (d <= tolerance && d < bestScore) (best, bestScore) = (object, d);
+    }
+  }
+  if (best != null) return best;
+
+  for (final object in objects) {
+    if (object.shape case final PolygonShape polygon) {
+      if (!pointInPolygon(point, polygon.vertices)) continue;
+      final b = polygon.bounds;
+      final area = b.width * b.height;
+      if (area < bestScore) (best, bestScore) = (object, area);
+    }
+  }
+  return best;
+}
+
+/// Selects every living plant in or on an object -- a row's plants, a
+/// block's plants -- and returns how many.
+///
+/// Adds to the selection when sticky select is on, so two rows tapped one
+/// after the other give both. Everything it touches is read before the query
+/// runs, because the widget that asked (a chip in the plant panel) is usually
+/// gone by the time it returns: the selection it just changed replaced it.
+Future<int> selectPlantsOf(WidgetRef ref, String objectId) async {
+  final dao = ref.read(plantsDaoProvider);
+  final selection = ref.read(selectionProvider.notifier);
+  final selectedObject = ref.read(selectedObjectProvider.notifier);
+  final sticky = ref.read(stickySelectProvider);
+
+  final plants = await dao.resolveSelection(objectIds: [objectId]);
+  selectedObject.state = null;
+  selection.update((current) => sticky ? {...current, ...plants} : plants);
+  return plants.length;
+}
+
 /// Clears everything that belongs to the project being left.
 ///
 /// The selection, the tool, the half-drawn shape and the chosen draw field are

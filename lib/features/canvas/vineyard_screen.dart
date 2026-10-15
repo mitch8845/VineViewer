@@ -9,6 +9,7 @@ import '../../core/models/enums.dart';
 import '../../core/providers.dart';
 import '../data_entry/bulk_edit.dart';
 import '../data_entry/plant_inspector.dart';
+import '../history/calendar_screen.dart';
 import '../projects/import_screen.dart';
 import '../schema/field_editor_screen.dart';
 import '../schema/identifier_template_editor.dart';
@@ -234,19 +235,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     ui.Offset point,
     double tolerance,
     LayoutSnapshot snapshot,
-  ) {
-    for (final object in snapshot.objects) {
-      switch (object.shape) {
-        case final PolylineShape line:
-          if (line.path.closestTo(point).distance <= tolerance) return object;
-        case final PolygonShape polygon:
-          if (pointInPolygon(point, polygon.vertices)) return object;
-        case final PointShape p:
-          if ((p.at - point).distance <= tolerance) return object;
-      }
-    }
-    return null;
-  }
+  ) => objectAtPoint(point, tolerance, snapshot.objects);
 
   /// The vertex of a drawn object nearest a point, or null if none is close.
   ///
@@ -1111,6 +1100,22 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                         builder: (_) => LayersSheet(hasImage: image != null),
                       ),
                       menu: _menu(),
+                      actions: [
+                        IconButton(
+                          tooltip: 'Calendar and history',
+                          icon: const Icon(Icons.calendar_month_outlined),
+                          onPressed: () {
+                            final projectId = _projectId;
+                            if (projectId == null) return;
+                            Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) =>
+                                    CalendarScreen(projectId: projectId),
+                              ),
+                            );
+                          },
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -1438,6 +1443,24 @@ class _ObjectBar extends ConsumerWidget {
       title: name,
       subtitle: object.isContainer ? 'Plants belong to it' : 'Drawn on the map',
       actions: [
+        // The usual reason to tap a row is to do something to its plants, so
+        // that is the main button rather than one sheet down.
+        FilledButton.icon(
+          onPressed: () async {
+            final messenger = ScaffoldMessenger.of(context);
+            final count = await selectPlantsOf(ref, object.id);
+            if (count == 0) {
+              messenger
+                ..removeCurrentSnackBar()
+                ..showSnackBar(
+                  SnackBar(content: Text('$name has no plants on it yet.')),
+                );
+            }
+          },
+          icon: const Icon(Icons.select_all),
+          label: const Text('Select plants'),
+        ),
+        const SizedBox(width: 8),
         FilledButton.tonalIcon(
           onPressed: () async {
             final field = await ref

@@ -37,8 +37,8 @@ class PlantInspector extends ConsumerWidget {
         if (f.role == FieldRole.attribute) f,
     ];
     final identifier = ref.watch(_identifierProvider(plantId)).valueOrNull;
-    final containers =
-        ref.watch(_containersProvider(plantId)).valueOrNull ?? const {};
+    final holders =
+        ref.watch(_holdersProvider(plantId)).valueOrNull ?? const [];
     final values = ref.watch(_valuesProvider(plantId)).valueOrNull ?? const {};
     final plant = ref.watch(_plantProvider(plantId)).valueOrNull;
     final retired = plant != null && plant.status != PlantStatus.active;
@@ -76,11 +76,12 @@ class PlantInspector extends ConsumerWidget {
                   ),
                 ),
                 IconButton(
-                  tooltip: 'ID history',
+                  tooltip: 'History',
                   icon: const Icon(Icons.history),
                   onPressed: () => showModalBottomSheet<void>(
                     context: context,
-                    builder: (context) => _LabelHistorySheet(plantId: plantId),
+                    isScrollControlled: true,
+                    builder: (context) => _HistorySheet(plantId: plantId),
                   ),
                 ),
                 // Retire and replace live in the plant actions sheet, which
@@ -115,8 +116,10 @@ class PlantInspector extends ConsumerWidget {
             ),
           ),
           // Container values are worked out from where the plant sits, so
-          // they are shown rather than offered: the way to change one is to
-          // move the plant or the boundary.
+          // they are not edited here: the way to change one is to move the
+          // plant or the boundary. Tapping one selects everything in it --
+          // the quickest way to a whole row, since a row's own line is
+          // mostly hidden under its plants.
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 14),
             child: Wrap(
@@ -134,18 +137,21 @@ class PlantInspector extends ConsumerWidget {
                     background: scheme.errorContainer,
                     foreground: scheme.onErrorContainer,
                   ),
-                if (containers.isEmpty)
+                if (holders.isEmpty)
                   _Tag(
                     text: 'Not inside anything',
                     background: scheme.surfaceContainerHighest,
                     foreground: scheme.onSurfaceVariant,
                   )
                 else
-                  for (final e in containers.entries)
+                  for (final h in holders)
                     _Tag(
-                      text: '${e.key} ${e.value}',
+                      icon: Icons.select_all,
+                      text: '${h.field} ${h.label}',
+                      tooltip: 'Select every plant in ${h.field} ${h.label}',
                       background: scheme.secondaryContainer,
                       foreground: scheme.onSecondaryContainer,
+                      onTap: () => selectPlantsOf(ref, h.objectId),
                     ),
               ],
             ),
@@ -185,16 +191,20 @@ class _Tag extends StatelessWidget {
     required this.background,
     required this.foreground,
     this.icon,
+    this.onTap,
+    this.tooltip,
   });
 
   final String text;
   final Color background;
   final Color foreground;
   final IconData? icon;
+  final VoidCallback? onTap;
+  final String? tooltip;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    final tag = Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
         color: background,
@@ -214,6 +224,18 @@ class _Tag extends StatelessWidget {
             ).textTheme.labelLarge?.copyWith(color: foreground),
           ),
         ],
+      ),
+    );
+    if (onTap == null) return tag;
+    return Tooltip(
+      message: tooltip ?? '',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          child: tag,
+        ),
       ),
     );
   }
@@ -271,14 +293,14 @@ final _identifierProvider = FutureProvider.autoDispose
       return ref.watch(labelServiceProvider).identifierOf(plantId);
     });
 
-/// Which containers hold this plant, as field name to object name.
-///
-/// Read-only by nature: these are derived from geometry, so the way to change
-/// one is to move the plant or move the boundary.
-final _containersProvider = FutureProvider.autoDispose
-    .family<Map<String, String>, String>((ref, plantId) async {
+/// The objects holding this plant, with ids, so a chip can select them.
+final _holdersProvider = FutureProvider.autoDispose
+    .family<List<({String objectId, String field, String label})>, String>((
+      ref,
+      plantId,
+    ) async {
       ref.watch(identityRevisionProvider);
-      return ref.watch(labelServiceProvider).containersOf(plantId);
+      return ref.watch(labelServiceProvider).holdersOf(plantId);
     });
 
 /// The plant's current values, live.
@@ -308,6 +330,184 @@ final _historyProvider = FutureProvider.autoDispose
 /// The point is reconciling paper: a 2025 notebook saying "3.12.7 looks weak"
 /// is guesswork once numbers have been reused or shifted, and this is what
 /// turns it back into a fact.
+/// Every value this plant has had, newest first.
+final _valueHistoryProvider = FutureProvider.autoDispose
+    .family<List<FieldEvent>, String>((ref, plantId) async {
+      ref.watch(identityRevisionProvider);
+      return ref.watch(fieldEventsDaoProvider).historyForPlant(plantId);
+    });
+
+/// A plant's history: its readings, and the IDs it has carried.
+///
+/// The readings are the point of keeping an event log at all -- "was this
+/// vine weaker last year?" -- and until now the only way to see one was the
+/// current value. Every reading is here, with the day it was true and how it
+/// got in.
+class _HistorySheet extends StatefulWidget {
+  const _HistorySheet({required this.plantId});
+  final String plantId;
+
+  @override
+  State<_HistorySheet> createState() => _HistorySheetState();
+}
+
+class _HistorySheetState extends State<_HistorySheet> {
+  bool _values = true;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.8,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+              child: SegmentedButton<bool>(
+                segments: const [
+                  ButtonSegment(
+                    value: true,
+                    icon: Icon(Icons.edit_note),
+                    label: Text('Values'),
+                  ),
+                  ButtonSegment(
+                    value: false,
+                    icon: Icon(Icons.tag),
+                    label: Text('IDs'),
+                  ),
+                ],
+                selected: {_values},
+                onSelectionChanged: (s) => setState(() => _values = s.first),
+              ),
+            ),
+            Flexible(
+              child: _values
+                  ? _ValueHistory(plantId: widget.plantId)
+                  : SingleChildScrollView(
+                      child: _LabelHistorySheet(plantId: widget.plantId),
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ValueHistory extends ConsumerWidget {
+  const _ValueHistory({required this.plantId});
+  final String plantId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final l10n = MaterialLocalizations.of(context);
+    final dao = ref.read(fieldDefsDaoProvider);
+    final fields = {
+      for (final f in ref.watch(fieldDefsProvider).valueOrNull ?? <FieldDef>[])
+        f.id: f,
+    };
+    final events = ref.watch(_valueHistoryProvider(plantId));
+
+    return events.when(
+      loading: () => const Padding(
+        padding: EdgeInsets.all(24),
+        child: Center(child: CircularProgressIndicator()),
+      ),
+      error: (e, _) =>
+          Padding(padding: const EdgeInsets.all(20), child: Text('$e')),
+      data: (list) {
+        if (list.isEmpty) {
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+            child: Text(
+              'Nothing has been recorded for this plant yet.',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          );
+        }
+        // Grouped by day, newest first: a season reads as a timeline.
+        final days = <DateTime, List<FieldEvent>>{};
+        for (final e in list) {
+          final t = e.observedAt.toLocal();
+          (days[DateTime(t.year, t.month, t.day)] ??= []).add(e);
+        }
+        return ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+          children: [
+            for (final day in days.entries) ...[
+              Padding(
+                padding: const EdgeInsets.only(top: 12, bottom: 4),
+                child: Text(
+                  l10n.formatMediumDate(day.key),
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              for (final e in day.value)
+                if (fields[e.fieldDefId] case final field?)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 3),
+                    child: Row(
+                      children: [
+                        Icon(
+                          switch (e.source) {
+                            EventSource.import => Icons.upload_file,
+                            EventSource.bulk => Icons.select_all,
+                            EventSource.manual => Icons.touch_app_outlined,
+                          },
+                          size: 16,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 10),
+                        SizedBox(
+                          width: 110,
+                          child: Text(
+                            field.name,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: scheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: Text(
+                            FieldValueCodec.display(
+                                  type: field.type,
+                                  stored: e.value,
+                                  config: dao.configOf(field),
+                                ) ??
+                                'cleared',
+                            style: theme.textTheme.bodyLarge?.copyWith(
+                              fontWeight: e.value == null
+                                  ? FontWeight.normal
+                                  : FontWeight.w600,
+                              fontStyle: e.value == null
+                                  ? FontStyle.italic
+                                  : FontStyle.normal,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+}
+
 class _LabelHistorySheet extends ConsumerWidget {
   const _LabelHistorySheet({required this.plantId});
 

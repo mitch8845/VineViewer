@@ -1,6 +1,6 @@
 # VineViewer — feature and test checklist
 
-Everything the app does as of **0.8.1**, written to be walked through with a
+Everything the app does as of **0.9.0**, written to be walked through with a
 tablet in hand. Tick, strike out, and write in the margins.
 
 Notation: `[ ]` to do · `[x]` works · `[!]` broken · `[?]` unclear what should
@@ -15,7 +15,7 @@ hunting for a feature that isn't there.
 
 ## 1. Install and first run
 
-- [ ] Install 0.8.1 through **Check for updates** (0.7.0 onwards updates itself)
+- [ ] Install 0.9.0 through **Check for updates** (0.7.0 onwards updates itself)
 - [ ] Home-screen icon label reads **VineViewer**
 - [ ] Title bar reads **VineViewer** (0.6.0/0.6.1 wrongly said "PlantViewer")
 - [ ] App opens to the project list without a crash on a fresh install
@@ -315,6 +315,20 @@ Notes:
       plant, never the dead one under it.
 - [ ] Selecting an object with no plants says so rather than selecting nothing
       silently
+
+### Selecting whole rows and blocks (0.9.0)
+
+- [ ] Tap a plant → in the panel, tap its **Row** chip → every plant in that
+      row is selected. Same for the **Block** chip.
+- [ ] With **Add** on, tap a plant in another row and its Row chip: both rows
+      end up selected
+- [ ] Tap a row's line → the bar shows **Select plants** directly (no sheet)
+- [ ] ⚠ Tap right on a row line **inside a block**: the **row** is selected, not
+      the block. (Used to depend on which was drawn first.)
+- [ ] ⚠ Of two rows close together, a tap between them picks the **nearer**
+- [ ] ⚠ A tap inside a block but away from any line selects the block; with
+      nested areas, the **smallest** one around the tap
+- [ ] A post (point) on a row line beats the line
 
 Notes:
 
@@ -743,6 +757,43 @@ first (USB, Drive, email attachment).
       this value")
 - [ ] **Five Sisters:** `VineViewer_Data.xlsx` — expect 3,025 of 3,025 rows
       matched, Variety / Clone / Health all imported with nothing refused
+
+Notes:
+
+---
+
+## 17d. Calendar and history
+
+Map → calendar icon (top bar).
+
+- [ ] Month grid; ‹ › change month; **Today** jumps back
+- [ ] Week starts on the day the tablet's language says it does
+- [ ] Green pill on a day = observations **recorded** that day, with the count
+- [ ] Wine pill = plants whose **date field** holds that day (Planted dates,
+      or a future date in a field like "Next spray")
+- [ ] Today's number is in a filled circle
+- [ ] Field chips across the top filter both kinds of mark to one field
+- [ ] Tap a day → panel lists what was recorded, per field, as value chips
+      ("Fair ×442 · 4 ×414 …") and how it got in (By hand / Set on many /
+      Imported)
+- [ ] ⚠ Tap a value chip → back on the map with **exactly those plants**
+      selected. "Show on map" selects all of that field's plants for the day.
+- [ ] Removed plants are left out of the selection, and the snackbar says how
+      many
+- [ ] **Coming up** lists future date-field values; tapping one jumps there
+- [ ] **Last recorded**: each value field's latest day and how many plants
+      hold a value; tapping jumps to that day
+- [ ] ⚠ A reading taken at 11pm shows on **that** day, not the next
+- [ ] ⚠ Undo an edit: it disappears from the calendar
+- [ ] The **Five Sisters import** shows as one day with ~9,000 readings,
+      marked Imported
+
+### Plant history
+
+- [ ] Plant panel → history icon → **Values** tab: every reading the plant has
+      had, newest first, grouped by day, with how it got in. Clears show as
+      *cleared*.
+- [ ] **IDs** tab: the old ID history, unchanged
 
 Notes:
 
