@@ -1,6 +1,6 @@
 # VineViewer — feature and test checklist
 
-Everything the app does as of **0.6.2**, written to be walked through with a
+Everything the app does as of **0.7.0**, written to be walked through with a
 tablet in hand. Tick, strike out, and write in the margins.
 
 Notation: `[ ]` to do · `[x]` works · `[!]` broken · `[?]` unclear what should
@@ -15,7 +15,7 @@ hunting for a feature that isn't there.
 
 ## 1. Install and first run
 
-- [ ] Sideload `VineViewer-v0.6.2.apk` from the releases page
+- [ ] Sideload `VineViewer-v0.7.0.apk` from the releases page
 - [ ] Home-screen icon label reads **VineViewer**
 - [ ] Title bar reads **VineViewer** (0.6.0/0.6.1 wrongly said "PlantViewer")
 - [ ] App opens to the project list without a crash on a fresh install
@@ -40,6 +40,19 @@ Notes:
 - [ ] "Create 4,000-plant test vineyard" builds a project with 4,000 plants
 - [ ] ⚠ **NON-OBVIOUS** — that button used to build ~3,030. Count them (or check
       the highest plant number) rather than trusting the label.
+- [ ] The seed button shows progress and **cannot be tapped twice** (a double tap
+      used to build two vineyards)
+- [ ] ⋮ menu on a project → **Rename**. The new name shows in the list and, if
+      the map is open, in its title bar
+- [ ] ⋮ → **Delete** asks once, removes it from the list, and offers **Undo** in
+      a snackbar
+- [ ] Trash icon in the app bar → **Deleted vineyards** lists it with the date
+- [ ] **Restore** brings it back with every plant and observation intact
+- [ ] ⚠ **Delete for good** requires typing the vineyard's name; the button stays
+      disabled until it matches. This is the only action in the app with no undo.
+- [ ] ⚠ Open project A, select a plant and pick the Draw tool, go back, open
+      project B: **nothing carries over** — no selection, Select tool active, no
+      draw field chosen. (Used to leak, and edits landed on A's plant.)
 
 Notes:
 
@@ -49,15 +62,18 @@ Notes:
 
 Appears automatically after creating a project.
 
-- [ ] Step 1 "What do you draw?" — offers Row and Block as ticked checkboxes
-- [ ] Step 2 "What do you record?" — routes to the field editor
-- [ ] Step 3 "What is a plant called?" — routes to the template editor
+- [ ] Step 1 "An aerial photo" — Five Sisters aerial or Choose a photo; shows
+      "Image set (WxH)" once one is chosen. Skippable.
+- [ ] Step 2 "What do you draw?" — offers Row and Block as ticked checkboxes
+- [ ] Step 3 "What do you record?" — routes to the field editor
+- [ ] Step 4 "What is a plant called?" — routes to the template editor
+- [ ] Last button reads **"Open the map"** and lands on the new vineyard's canvas,
+      not back on the project list
 - [ ] "Skip for now" exits at any step
 - [ ] "Back" moves to the previous step
+- [ ] ⚠ Back to step 2 and Next again does **not** create Row and Block twice
 - [ ] ⚠ Skipping everything leaves a **usable** project: identifiers fall back to
       bare plant numbers (`1`, `2`, `3`) rather than showing nothing
-- [ ] ⚠ **NON-OBVIOUS GAP** — the wizard never asks for the aerial image. You
-      must finish/skip it, return to the list, and use the image icon.
 
 Notes:
 
@@ -75,6 +91,16 @@ Notes:
 - [ ] ⚠ **NON-OBVIOUS** — this was a real data-loss bug: saving used to silently
       drop 12 config fields. Set several options + colours + a min/max, save,
       reopen, and confirm nothing vanished.
+- [ ] Per-type rules now have controls (they could only come from an import):
+  - Integer / decimal: **Minimum**, **Maximum**; decimal also **Decimal places**
+  - Rating: **Lowest**, **Highest**, and a box per score for what it means
+    ("1 = Dead") — shown under the buttons when entering a score
+  - Yes/no: what Yes and No **read as**
+  - Text: **Longest allowed**
+  - Categorical / multi-select: **Allow other values**
+- [ ] ⚠ **Emptying** the Maximum box and saving **removes** the maximum (it used
+      to be impossible to unset a rule once set)
+- [ ] Save cannot be double-tapped; a database error shows under the form
 
 ### Object fields specifically
 
@@ -87,6 +113,11 @@ Notes:
 - [ ] ⚠ Areas have **no** tolerance — inside a polygon is exact; "on" a line is a
       judgement about how accurately you tapped
 - [ ] "Shown when blank" (placeholder) is settable per field
+- [ ] ⚠ Turning "Plants belong to it" **on or off** for a field that already has
+      drawings, or changing a line's tolerance, now **re-derives every plant's
+      membership** — counted and confirmed like any other ID change, refused on a
+      collision, one press of undo. (It used to change nothing until some
+      unrelated edit quietly renamed those plants.)
 
 Notes:
 
@@ -104,12 +135,17 @@ One row per type. For each: enter a good value, a bad value, and clear it.
 - [ ] ⚠ Decimal rejects **infinity and NaN** ("is not a finite number") — these
       would poison every downstream calculation
 - [ ] **Boolean** — two big buttons; custom `trueLabel`/`falseLabel` are used
-- [ ] **Date** — `YYYY-MM-DD`; min/max dates enforced
-- [ ] **Datetime**
+- [ ] **Date** — `YYYY-MM-DD`; min/max dates enforced; calendar icon opens a
+      date picker; **Today** fills in today
+- [ ] **Datetime** — picker asks date then time; **Now**; a stored value opens in
+      local time, not UTC
 - [ ] **Categorical** — options shown as large tappable buttons; per-option
       colour swatch appears in the inspector
-- [ ] `allowOther` permits a value outside the option list; without it, refused
-- [ ] **Multi-select**
+- [ ] `allowOther` shows a **"Something else"** box under the options; without
+      it, only the list is offered
+- [ ] **Multi-select** — options are chips; tick **several**, then Save
+- [ ] ⚠ Multi-select used to save only the one option tapped. Tick two, save,
+      reopen: both are ticked.
 - [ ] **Rating** — buttons from `scaleMin` to `scaleMax` (defaults 1–5); a value
       outside the scale is refused
 - [ ] Colour ramp is offered only for integer / decimal / rating
@@ -140,6 +176,10 @@ Notes:
       distinguishing part
 - [ ] ⚠ A multi-part delimiter, or an empty delimiter, both work — check
       `3127` (empty) is what you get and decide if you want it
+- [ ] ⚠ Switching the delimiter **to** a character an existing name already
+      contains is refused, naming the culprit. Name a row `12-5` with `.` as the
+      delimiter, then try `-`. (Drawing refused it; changing the delimiter used
+      to let it through.)
 
 Notes:
 
@@ -156,6 +196,8 @@ Notes:
 - [ ] Image appears under the layout on the canvas
 - [ ] "Fit to layout" frames it
 - [ ] Choosing an image again **replaces** the existing one
+- [ ] ⚠ Open a project, go back, set a new image, reopen the project: the new
+      image shows **immediately** (it used to need a restart)
 - [ ] Two projects can start from the same image independently
 - [ ] ⚠ Image draws at **identity** — top-left at the layout origin, 1:1 pixels,
       no rotation. Correct for a fresh draw; there is no UI to nudge it.
@@ -178,6 +220,9 @@ Notes:
       way to move without putting a tool away
 - [ ] ⚠ Start a one-finger marquee, then put a second finger down **mid-drag**:
       navigation takes over cleanly and the view does not jump
+- [ ] ⚠ Same with **Move** and **Reshape**: a second finger mid-drag **abandons**
+      the edit — nothing is written, the shape snaps back. (It used to commit the
+      move wherever the two fingers met.)
 - [ ] The point under your fingers stays put while zooming
 - [ ] "Fit to layout" frames everything including objects, not just plants
 - [ ] Fit happens automatically once on opening a project with content
@@ -226,6 +271,11 @@ Notes:
       non-container line it means plants **carried** by it. Both are unioned.
 - [ ] ⚠ **Retired plants are excluded** from a selection by default. Retire a
       plant, select its whole row, and confirm the count drops by one.
+- [ ] ⚠ Retired plants draw as **hollow grey rings** (empty slots). A marquee or
+      lasso over them selects only the living plants around them.
+- [ ] ⚠ Tapping an empty slot with no living plant near selects **the slot**, so
+      it can be replanted. After a replant, tapping the spot selects the **new**
+      plant, never the dead one under it.
 - [ ] Selecting an object with no plants says so rather than selecting nothing
       silently
 
@@ -251,6 +301,8 @@ Notes:
 - [ ] Line: "Which end is plant 1" — "Where I started" / "Where I finished"
 - [ ] Line: plant it by count or by spacing, or leave it empty
 - [ ] Length shown in real units if calibrated, pixels if not
+- [ ] ⚠ A **block**, a **point**, or an **unplanted line** appears the moment you
+      press Done. (They used to stay invisible until some plant was edited.)
 
 ### The overlap rule — ⚠ read carefully
 
@@ -299,6 +351,9 @@ Notes:
       plant a new one on that row, and it becomes **3** — not 41.
 - [ ] Two plants sharing a `position_idx` on different carriers is legal; sharing
       a full rendered **identifier** is not
+- [ ] ⚠ Place a free plant **right next to** a planted row (inside its tolerance):
+      it joins the row and takes a number that does **not** clash — it used to
+      become a second `12.1`
 
 Notes:
 
@@ -323,7 +378,8 @@ Notes:
       plant IDs change" and needs no confirmation — renaming a road renames
       nothing
 - [ ] Confirmed rename updates every plant's ID at once, **without touching a
-      single plant row**
+      single plant row** — and the map labels and the open inspector update
+      **straight away**
 - [ ] Old IDs remain in each plant's history
 
 ### Plant more along it (the rock case)
@@ -346,6 +402,8 @@ Notes:
 - [ ] Deleting a container prompts with the ID-change count (every plant inside
       loses that part)
 - [ ] Undo restores the object **and** re-attaches its plants
+- [ ] ⚠ Deleting something that changes **no** IDs (a road, a post) still asks
+      once — it used to vanish on a single tap
 
 Notes:
 
@@ -354,6 +412,9 @@ Notes:
 ## 13. Reshape
 
 - [ ] Reshape tool: dragging a **corner** moves that corner only
+- [ ] ⚠ **REGRESSION CHECK** — the corner **stays where you let go**. Before 0.7.0
+      every reshape snapped back as if it had been a tap, because the drag
+      reported where it started rather than where it ended.
 - [ ] Hint banner explains what to do, and changes once you grab something
 - [ ] A drag that grabs no corner does nothing (and looks like it did nothing,
       not like the tool is broken)
@@ -423,6 +484,8 @@ Notes:
       too, not just the ones coming across
 - [ ] ⚠ Two lines with a **gap** between them join into one line spanning the
       gap. Deliberate, not a bug.
+- [ ] ⚠ After joining across a gap, the second line's plants **stay where they
+      were** on screen. (They used to slide back by the width of the gap.)
 - [ ] Refuses joining objects of **different fields** (a Row to a Terrace)
 - [ ] Refuses joining something to itself
 - [ ] ⚠ **The common case:** two rows both numbered from 1 would give one row with
@@ -468,6 +531,7 @@ Notes:
 ### Space (points along a line)
 
 - [ ] "Space" tool draws a **guide line**, then a sheet
+- [ ] The guide is **visible** while you tap it out (it used to be invisible)
 - [ ] Choose what to place: **Plants**, or any point-typed field
 - [ ] By count or by spacing
 - [ ] ⚠ **The guide is never saved.** After placing, confirm no new object was
@@ -476,6 +540,8 @@ Notes:
       carrier) — there is nothing left for a carrier to point at
 - [ ] ⚠ Plants placed via **object → "Space points along it"** *are* carried by
       that line. Same sheet, different outcome — the sheet says which.
+- [ ] ⚠ "Space points along it" actually places them — it used to fail silently
+      after the sheet closed
 - [ ] Point objects get sequential names
 - [ ] Point objects draw as **diamonds**, deliberately unlike a plant's round dot
 - [ ] One press of undo
@@ -512,11 +578,19 @@ Select exactly one plant.
 - [ ] Shows which containers hold it ("Row 12 · Block 1") or "Not inside anything"
 - [ ] ⚠ Container values are **shown, not editable**. They come from geometry, so
       the way to change one is to move the plant or the boundary.
-- [ ] Lists every field with its current value; `--` when unset
+- [ ] Lists every **value** field with its current value; `--` when unset
+- [ ] ⚠ Drawn-object fields (Row, Block, roads) are **not** listed as editable
+      rows — they are in the subtitle, derived from the map
+- [ ] **⋮ Actions** button opens the plant actions (set a value, number, mark as
+      removed, replace). Single plants could not reach these before.
+- [ ] A retired plant's subtitle starts with **"Removed YYYY-MM-DD"** in red
 - [ ] Categorical colour swatch appears next to the value
 - [ ] Tapping a field opens a type-appropriate editor
 - [ ] "Clear" appears only when there is a value
 - [ ] Dismissing the sheet **cancels** (distinct from clearing)
+- [ ] ⚠ **REGRESSION CHECK** — swipe the editor down, or tap outside it, on a
+      field that has a value. The value must **survive**. Before 0.7.0 a swipe
+      recorded a *clear*.
 - [ ] Close button clears the selection
 - [ ] ⚠ Panel is **live**: undo an edit and the panel updates itself. It must not
       sit there showing a value that has already been reverted.
@@ -541,8 +615,63 @@ Select exactly one plant.
       **did not happen**, not that it happened and was reversed
 - [ ] ⚠ Drag a boundary so the plant changes block, then check history — the
       plant itself was never touched, yet its ID changed
+- [ ] ⚠ Move a plant from Block 1 to Block 2: history reads exactly `1.7 → 2.7`.
+      (It used to read `0.7 → 2.7 → 0.7 → 2.7`.)
+- [ ] ⚠ A plant drawn in one gesture has **one** history entry, not a string of
+      half-built IDs like `0.0.1`, `1.0.1`
 - [ ] ⚠ Change the **template** and reread an old entry: past IDs re-render under
       the new template. The *parts* are what was recorded, not the text.
+
+Notes:
+
+---
+
+## 17a. Bulk edit — one value on many plants
+
+Select 2+ plants (or an object → "Select its plants").
+
+- [ ] Bar shows **"Set value"** directly, as well as under Actions
+- [ ] Field picker lists value fields only; write-once ones are marked
+- [ ] The value editor is the same one the inspector uses, titled
+      "Set Health on 40 plants"
+- [ ] A bad value is refused **before** any confirmation
+- [ ] Confirmation names the field, the value as it will be stored, and the count
+- [ ] **Observed: now** — "Change" picks an earlier day. A spray done Monday and
+      entered Thursday is a Monday observation. Future dates are not offered.
+- [ ] ⚠ **Write-once field** where some plants already have a value: offers
+      **"Only the N without one"** (default) or **"Overwrite all"**. Pick the first
+      and confirm the existing values are untouched.
+- [ ] ⚠ ID-part field (Clone in the template): counted, confirmed, and a
+      collision is refused — same gates as a single-plant edit
+- [ ] Clear is offered too, and clears the field on every plant
+- [ ] Snackbar confirms "Set Health to 3 on 40 plants"
+- [ ] ⚠ **One press of undo reverts every plant**
+- [ ] ⚠ This completes the array workflow: Run 24 rows → select a block's plants
+      → set Variety on all of them
+
+Notes:
+
+---
+
+## 17b. Colour by field
+
+- [ ] Palette icon in the map's app bar → pick a value field, or "Nothing"
+- [ ] Legend appears top-right with the field name and what each colour means;
+      ✕ on it turns colouring off
+- [ ] Categorical: uses the **colours chosen** for each option in the field editor
+- [ ] Rating / number: red (low) → amber → green (high); legend shows the scale
+      with any labels ("5 Excellent")
+- [ ] A number field **with a colour ramp** in its config uses that instead
+- [ ] Yes/no: green / red
+- [ ] Date: blue (oldest) → orange (newest)
+- [ ] Text: a colour per distinct value; past ten, the rest share **"Other"**
+- [ ] ⚠ Plants with **nothing recorded** go **grey** and the legend says "Not
+      recorded" — a gap in a survey must not look like a healthy plant
+- [ ] ⚠ Record a value in the inspector: that plant **recolours immediately**
+- [ ] ⚠ Undo it: the colour reverts
+- [ ] Colouring resets when you open a different vineyard
+- [ ] Pan/zoom with colouring on stays as smooth as without (plants are still
+      batched by colour)
 
 Notes:
 
@@ -585,8 +714,11 @@ Notes:
 
 ## 19. Move tool
 
-- [ ] Dragging a plant moves it
-- [ ] Dragging an object moves the whole object and everything it carries
+- [ ] Dragging a plant moves it **to where you let go**
+- [ ] Dragging an object moves the whole object and everything it carries, by
+      exactly the distance dragged
+- [ ] ⚠ **REGRESSION CHECK** — before 0.7.0 both of these silently did nothing
+      (the drag ended where it began)
 - [ ] Plants are preferred over objects when both are under your finger
 - [ ] ⚠ A **carried** plant dragged sideways **slides along its line** to the
       nearest point rather than coming off it. Detaching is an explicit action —
@@ -603,14 +735,17 @@ Notes:
 
 ## 20. Plant lifecycle
 
-Select plants → "Actions".
+Select plants → "Actions", or one plant → inspector **⋮**.
 
 - [ ] "Mark as removed" — confirmation names the **recorded observation count**
       ("47 recorded observations will be kept")
 - [ ] Different wording when nothing has been recorded yet
 - [ ] ⚠ History is kept and the **position stays on the map as an empty slot**,
       ready for a replant
-- [ ] "Replace with a new plant" (single selection only)
+- [ ] "Replace with a new plant" (single selection only — now reachable from the
+      inspector's ⋮)
+- [ ] ⚠ Select an **empty slot**: "Mark as removed" is not offered, and the
+      action reads **"Replant this slot"**
 - [ ] Replace offers a checklist of **write-once** fields to carry forward
 - [ ] ⚠ Which facts carry forward is a judgement only you can make — the variety
       almost certainly does, the planting date certainly does not
@@ -620,6 +755,11 @@ Select plants → "Actions".
 - [ ] ⚠ There is **no permanent delete and no trash**, by design. The sheet says
       so. A plant you pulled is data; one created by mistake is one press of undo.
 - [ ] Retire/replace are undoable
+- [ ] ⚠ **REGRESSION CHECK** — after a Replace, the old and new plant share an
+      ID. That must **not** block anything else: rename a row, renumber, edit the
+      template. Before 0.7.0 every later ID change in the project was refused,
+      naming the replanted pair.
+- [ ] ⚠ Retire plant 3, plant a new one on that row: it becomes **3**
 
 Notes:
 
@@ -635,6 +775,8 @@ Notes:
       reaped by the OS routinely.
 - [ ] Redo after undo restores the change
 - [ ] ⚠ A new edit after an undo makes the redo unavailable
+- [ ] ⚠ …but an action that **changes nothing** (a refused numbering, a
+      zero-distance drag) leaves redo available
 - [ ] ⚠ **One gesture = one undo**, however many rows it wrote. Drawing a planted
       row writes an object, 40 plants and their memberships — one press takes all
       of it back.
@@ -680,10 +822,12 @@ Notes:
       off and check: you must get an error, not a false "no updates".
 - [ ] ⚠ A 404 is an **error naming the URL**, never "up to date". This was the
       0.6.0/0.6.1 bug — it silently reported no updates for two releases.
+- [ ] ⚠ Finding an update **does not start downloading**. The button changes to
+      "Download and install" and the release notes appear underneath.
 - [ ] Download shows progress
+- [ ] A failed download returns to "Download and install", one tap to retry
 - [ ] Hands off to the Android installer
 - [ ] Permission-denied message names **VineViewer** (what Settings actually shows)
-- [ ] Release notes from the tag are displayed
 - [ ] An interrupted download does not resume onto a partial file
 
 Notes:
@@ -694,17 +838,7 @@ Notes:
 
 Built in the data layer with **no UI**:
 
-- **Colour-by-field.** The painter supports per-plant colours and the DAO can
-  fetch a field's values across a project, but nothing connects them.
-- **Project delete / trash / restore / purge.** All four exist as DAO methods.
-  There is no way to delete a project from the app.
-- **Bulk field edit across a selection.** The service exists and is tested; the
-  selection bar only offers numbering, retire and replace. **You cannot currently
-  set a field value on many plants at once from the UI** — which also means the
-  array tools' "set the attributes afterwards with multi-select" workflow is not
-  yet completable.
-- **Rolling back a bulk edit by batch.**
-- **Project rename** (DAO only).
+- **Rolling back a bulk edit by batch** (other than with undo, which works).
 - **`asOf` historical queries** — "what was this value in 2025" works in the data
   layer, with no UI.
 
@@ -723,7 +857,15 @@ Not built at all:
 
 Known gaps in what *is* built:
 
-- The setup wizard never asks for the aerial image.
+- Snapping a plant onto a line (`snapPlantToCarrier`) can still clash with a
+  nearby free plant's number.
+- Inserting with "shift" also shifts **retired** plants' numbers on that line.
+- Deleting a container *field* does not re-derive memberships.
+- Two concave blocks sharing an edge inside one's notch may be refused as
+  overlapping (the edge test counts a shared collinear edge as a crossing).
+
+- Date fields have no min/max controls in the field editor (the rules work if
+  present in the config).
 - **Q5 is reopened:** a block is a real object with exactly **one** attribute (its
   name) and nowhere to record an area's acreage or its own spray log.
 
@@ -751,5 +893,13 @@ If you only have time for a handful, these are the ones most likely to be broken
 - [ ] Wifi off, check for updates — error, not "up to date"
 - [ ] A project with **no objects at all**, and one with **no template** — both
       fully usable
+- [ ] Reshape a corner and **let go** — it stays (0.6.x threw it away)
+- [ ] Move a plant — it lands where you let go (0.6.x left it in place)
+- [ ] Swipe away the value editor on a field with a value — the value survives
+- [ ] Replace a plant, then try **any** rename or numbering — must not be refused
+      because of the replanted pair
+- [ ] Place a free plant right next to a planted row — no duplicate ID
+- [ ] Bulk-set a write-once field with "only the ones without one"
+- [ ] Draw a block with no plants — appears immediately
 
 Notes:

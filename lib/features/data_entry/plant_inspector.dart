@@ -11,7 +11,10 @@ import '../../core/models/identifier_template.dart';
 import '../../core/providers.dart';
 import '../canvas/canvas_controller.dart';
 import '../canvas/tools/identifier_change_prompt.dart';
+import '../canvas/tools/plant_actions_sheet.dart';
+import 'bulk_edit.dart';
 import '../schema/field_editor_screen.dart';
+import 'value_editor_sheet.dart';
 
 /// Panel for the selected plant: its address and every field, editable.
 ///
@@ -25,11 +28,19 @@ class PlantInspector extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final fields = ref.watch(fieldDefsProvider).valueOrNull ?? const [];
+    // Attributes only. A container's value is derived from geometry and shown
+    // in the subtitle; a non-container object has nothing to do with plants.
+    // Listing Row here offered an edit that wrote an event nothing reads.
+    final fields = [
+      for (final f in ref.watch(fieldDefsProvider).valueOrNull ?? const [])
+        if (f.role == FieldRole.attribute) f,
+    ];
     final identifier = ref.watch(_identifierProvider(plantId)).valueOrNull;
     final containers =
         ref.watch(_containersProvider(plantId)).valueOrNull ?? const {};
     final values = ref.watch(_valuesProvider(plantId)).valueOrNull ?? const {};
+    final plant = ref.watch(_plantProvider(plantId)).valueOrNull;
+    final retired = plant != null && plant.status != PlantStatus.active;
 
     return Card(
       margin: const EdgeInsets.all(8),
@@ -51,16 +62,46 @@ class PlantInspector extends ConsumerWidget {
               // they are shown rather than offered: the way to change one is to
               // move the plant or the boundary.
               subtitle: Text(
-                containers.isEmpty
-                    ? 'Not inside anything'
-                    : [
-                        for (final e in containers.entries)
-                          '${e.key} ${e.value}',
-                      ].join(' · '),
+                [
+                  // Said first and plainly: a slot looks like a plant in this
+                  // panel otherwise, and recording a reading against the dead
+                  // one is an easy mistake.
+                  if (retired)
+                    'Removed${plant.endedAt == null ? '' : ' ${_LabelHistorySheet._date(plant.endedAt!)}'}',
+                  if (containers.isEmpty)
+                    'Not inside anything'
+                  else
+                    for (final e in containers.entries) '${e.key} ${e.value}',
+                ].join(' · '),
+                style: retired
+                    ? TextStyle(color: Theme.of(context).colorScheme.error)
+                    : null,
               ),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  // Retire and replace live in the plant actions sheet, which
+                  // was only reachable from the multi-plant bar -- so the one
+                  // case "Replace with a new plant" exists for, a single
+                  // plant, could never get to it.
+                  IconButton(
+                    tooltip: 'Actions',
+                    icon: const Icon(Icons.more_vert),
+                    onPressed: () async {
+                      final action = await showModalBottomSheet<String>(
+                        context: context,
+                        isScrollControlled: true,
+                        builder: (context) => PlantActionsSheet(
+                          selection: {plantId},
+                          retired: retired,
+                        ),
+                      );
+                      if (action == PlantActionsSheet.setValue &&
+                          context.mounted) {
+                        await bulkSetValue(context, {plantId});
+                      }
+                    },
+                  ),
                   IconButton(
                     tooltip: 'ID history',
                     icon: const Icon(Icons.history),
@@ -108,27 +149,32 @@ class PlantInspector extends ConsumerWidget {
   }
 }
 
-final _identifierProvider = FutureProvider.family<PlantIdentifier?, String>((
+/// The plant row itself, for its lifecycle status.
+final _plantProvider = FutureProvider.autoDispose.family<Plant?, String>((
   ref,
   plantId,
 ) async {
-  // Depends on the layout so a snap, a renumber, or a boundary edit that
-  // changes containment all refresh what is shown.
-  ref.watch(layoutSnapshotProvider);
-  return ref.watch(labelServiceProvider).identifierOf(plantId);
+  ref.watch(identityRevisionProvider);
+  return ref.watch(layoutDaoProvider).plantById(plantId);
 });
+
+final _identifierProvider = FutureProvider.autoDispose
+    .family<PlantIdentifier?, String>((ref, plantId) async {
+      // Depends on the layout so a snap, a renumber, or a boundary edit that
+      // changes containment all refresh what is shown.
+      ref.watch(identityRevisionProvider);
+      return ref.watch(labelServiceProvider).identifierOf(plantId);
+    });
 
 /// Which containers hold this plant, as field name to object name.
 ///
 /// Read-only by nature: these are derived from geometry, so the way to change
 /// one is to move the plant or move the boundary.
-final _containersProvider = FutureProvider.family<Map<String, String>, String>((
-  ref,
-  plantId,
-) async {
-  ref.watch(layoutSnapshotProvider);
-  return ref.watch(labelServiceProvider).containersOf(plantId);
-});
+final _containersProvider = FutureProvider.autoDispose
+    .family<Map<String, String>, String>((ref, plantId) async {
+      ref.watch(identityRevisionProvider);
+      return ref.watch(labelServiceProvider).containersOf(plantId);
+    });
 
 /// The plant's current values, live.
 ///
@@ -136,19 +182,19 @@ final _containersProvider = FutureProvider.family<Map<String, String>, String>((
 /// writes to the event log directly, so anything that refreshed on the
 /// inspector's own bookkeeping would sit there showing a value that had already
 /// been reverted.
-final _valuesProvider = StreamProvider.family<Map<String, FieldEvent>, String>((
-  ref,
-  plantId,
-) {
-  return ref.watch(fieldEventsDaoProvider).watchCurrentValuesForPlant(plantId);
-});
+///
+/// Auto-disposed: a family that never let go kept one live query running for
+/// every plant inspected in the session, all of them re-run on every write.
+final _valuesProvider = StreamProvider.autoDispose
+    .family<Map<String, FieldEvent>, String>((ref, plantId) {
+      return ref
+          .watch(fieldEventsDaoProvider)
+          .watchCurrentValuesForPlant(plantId);
+    });
 
-final _historyProvider =
-    FutureProvider.family<List<IdentifierChangeRecord>, String>((
-      ref,
-      plantId,
-    ) async {
-      ref.watch(layoutSnapshotProvider);
+final _historyProvider = FutureProvider.autoDispose
+    .family<List<IdentifierChangeRecord>, String>((ref, plantId) async {
+      ref.watch(identityRevisionProvider);
       return ref.watch(labelServiceProvider).historyOf(plantId);
     });
 
@@ -279,21 +325,18 @@ class _FieldRow extends ConsumerWidget {
     WidgetRef ref,
     FieldConfig config,
   ) async {
-    final value = await showModalBottomSheet<Object?>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => _ValueEditorSheet(
-        field: field,
-        config: config,
-        current: event?.value,
-      ),
+    final edit = await showValueEditor(
+      context,
+      field: field,
+      config: config,
+      current: event?.value,
+      offerClear: event?.value != null,
     );
-    // Distinguishes "cancelled" from "cleared": the sheet returns the sentinel
-    // for a deliberate clear, and null when dismissed.
-    if (value == _cancelled) return;
-    if (!context.mounted) return;
+    // Null is a dismissal -- Cancel, a swipe, a tap outside. A deliberate
+    // clear comes back as an edit holding null.
+    if (edit == null || !context.mounted) return;
 
-    final resolved = value == _clear ? null : value;
+    final resolved = edit.value;
     final projectId = ref.read(activeProjectIdProvider);
     if (projectId == null) return;
 
@@ -459,194 +502,4 @@ Color? _parseHex(String hex) {
   if (cleaned.length != 6) return null;
   final value = int.tryParse(cleaned, radix: 16);
   return value == null ? null : Color(0xFF000000 | value);
-}
-
-/// Returned when the sheet is dismissed without a decision.
-const _cancelled = Object();
-
-/// Returned when the user deliberately clears the value.
-const _clear = Object();
-
-/// Type-appropriate entry for one field.
-class _ValueEditorSheet extends StatefulWidget {
-  const _ValueEditorSheet({
-    required this.field,
-    required this.config,
-    required this.current,
-  });
-
-  final FieldDef field;
-  final FieldConfig config;
-  final String? current;
-
-  @override
-  State<_ValueEditorSheet> createState() => _ValueEditorSheetState();
-}
-
-class _ValueEditorSheetState extends State<_ValueEditorSheet> {
-  late final TextEditingController _text = TextEditingController(
-    text: widget.current ?? '',
-  );
-
-  @override
-  void dispose() {
-    _text.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(
-        left: 20,
-        right: 20,
-        top: 20,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 20,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            widget.field.name,
-            style: Theme.of(context).textTheme.titleLarge,
-          ),
-          const SizedBox(height: 16),
-          ..._editor(),
-          const SizedBox(height: 20),
-          Row(
-            children: [
-              if (widget.current != null)
-                TextButton(
-                  onPressed: () => Navigator.pop(context, _clear),
-                  child: const Text('Clear'),
-                ),
-              const Spacer(),
-              TextButton(
-                onPressed: () => Navigator.pop(context, _cancelled),
-                child: const Text('Cancel'),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  List<Widget> _editor() {
-    switch (widget.field.type) {
-      case FieldType.categorical:
-      case FieldType.multiSelect:
-        // Big tappable options rather than a dropdown: this is the most-used
-        // entry path in the field, often one-handed and possibly gloved.
-        return [
-          for (final option in widget.config.options)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 4),
-              child: SizedBox(
-                width: double.infinity,
-                child: OutlinedButton(
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 18),
-                    backgroundColor: option == widget.current
-                        ? Theme.of(context).colorScheme.secondaryContainer
-                        : null,
-                  ),
-                  onPressed: () => Navigator.pop(context, option),
-                  child: Text(option, style: const TextStyle(fontSize: 16)),
-                ),
-              ),
-            ),
-        ];
-
-      case FieldType.boolean:
-        return [
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 18),
-                  ),
-                  onPressed: () => Navigator.pop(context, true),
-                  child: Text(widget.config.trueLabel ?? 'Yes'),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: OutlinedButton(
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 18),
-                  ),
-                  onPressed: () => Navigator.pop(context, false),
-                  child: Text(widget.config.falseLabel ?? 'No'),
-                ),
-              ),
-            ],
-          ),
-        ];
-
-      case FieldType.rating:
-        final min = widget.config.effectiveScaleMin;
-        final max = widget.config.effectiveScaleMax;
-        return [
-          Wrap(
-            spacing: 8,
-            children: [
-              for (var v = min; v <= max; v++)
-                SizedBox(
-                  width: 60,
-                  height: 56,
-                  child: OutlinedButton(
-                    style: OutlinedButton.styleFrom(
-                      backgroundColor: '$v' == widget.current
-                          ? Theme.of(context).colorScheme.secondaryContainer
-                          : null,
-                    ),
-                    onPressed: () => Navigator.pop(context, v),
-                    child: Text('$v', style: const TextStyle(fontSize: 18)),
-                  ),
-                ),
-            ],
-          ),
-        ];
-
-      case FieldType.date:
-      case FieldType.datetime:
-        return [
-          TextField(
-            controller: _text,
-            decoration: const InputDecoration(
-              labelText: 'Date',
-              hintText: 'YYYY-MM-DD',
-            ),
-          ),
-          const SizedBox(height: 12),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, _text.text),
-            child: const Text('Save'),
-          ),
-        ];
-
-      default:
-        return [
-          TextField(
-            controller: _text,
-            autofocus: true,
-            keyboardType:
-                widget.field.type == FieldType.integer ||
-                    widget.field.type == FieldType.decimal
-                ? const TextInputType.numberWithOptions(decimal: true)
-                : TextInputType.text,
-            decoration: const InputDecoration(labelText: 'Value'),
-            onSubmitted: (v) => Navigator.pop(context, v),
-          ),
-          const SizedBox(height: 12),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, _text.text),
-            child: const Text('Save'),
-          ),
-        ];
-    }
-  }
 }

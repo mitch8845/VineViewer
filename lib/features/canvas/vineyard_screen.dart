@@ -8,11 +8,13 @@ import '../../core/geometry/polyline.dart';
 import '../../core/geometry/shapes.dart';
 import '../../core/models/enums.dart';
 import '../../core/providers.dart';
+import '../data_entry/bulk_edit.dart';
 import '../data_entry/plant_inspector.dart';
 import '../schema/field_editor_screen.dart';
 import '../schema/identifier_template_editor.dart';
 import 'canvas_controller.dart';
 import 'frame_stats_overlay.dart';
+import 'plant_colouring.dart';
 import 'tools/array_sheet.dart';
 import 'tools/identifier_change_prompt.dart';
 import 'tools/new_object_sheet.dart';
@@ -26,9 +28,7 @@ import 'vineyard_painter.dart';
 
 /// The map screen: canvas, toolbar, and the drawing flows.
 class VineyardScreen extends ConsumerStatefulWidget {
-  const VineyardScreen({super.key, required this.projectName});
-
-  final String projectName;
+  const VineyardScreen({super.key});
 
   @override
   ConsumerState<VineyardScreen> createState() => _VineyardScreenState();
@@ -72,14 +72,23 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     final projectId = _projectId;
     if (projectId == null) return null;
 
-    return ref
-        .read(operationRecorderProvider)
-        .run(
-          projectId: projectId,
-          kind: kind,
-          description: description,
-          body: body,
-        );
+    // The operation is a transaction, so a failure leaves nothing half
+    // written -- but it used to leave nothing said, either: the tap simply did
+    // nothing, which on a tablet in a field is indistinguishable from a missed
+    // touch.
+    try {
+      return await ref
+          .read(operationRecorderProvider)
+          .run(
+            projectId: projectId,
+            kind: kind,
+            description: description,
+            body: body,
+          );
+    } catch (e) {
+      if (mounted) _say('$description failed, and nothing was changed: $e');
+      return null;
+    }
   }
 
   void _say(String message) {
@@ -186,6 +195,18 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                 ? ({...current}..remove(hit.id))
                 : {...current, hit.id},
           );
+      return;
+    }
+
+    // An empty slot, only when no living plant is near: a replant stands on
+    // the same spot as the plant it replaced, and the tap means the living one.
+    final slot = snapshot.retiredIndex.nearest(
+      layoutPoint,
+      maxDistance: tolerance,
+    );
+    if (slot != null) {
+      ref.read(selectedObjectProvider.notifier).state = null;
+      ref.read(selectionProvider.notifier).state = {slot.id};
       return;
     }
 
@@ -496,6 +517,21 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
       case CanvasTool.split:
         break;
     }
+  }
+
+  /// Throws away a drag that a second finger turned into navigation.
+  ///
+  /// Nothing is written: the marquee, lasso, reshape draft and grabbed plant
+  /// all simply vanish, and the map is left exactly as it was.
+  void _onDragCancel() {
+    _dragOrigin = null;
+    _draggingPlant = null;
+    _draggingObject = null;
+    _reshapingObject = null;
+    _shapeBeforeReshape = null;
+    ref.read(marqueeProvider.notifier).state = null;
+    ref.read(lassoProvider.notifier).state = const [];
+    ref.read(reshapeDraftProvider.notifier).state = null;
   }
 
   /// Applies a marquee or lasso result, respecting the sticky toggle.
@@ -841,7 +877,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     ref.read(pendingShapeProvider.notifier).state = const [];
 
     await writePointArray(
-      ref,
+      ref.read,
       projectId: projectId,
       guide: guide,
       plan: plan,
@@ -956,6 +992,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     final activeField = ref.watch(activeObjectFieldProvider);
     final draft = ref.watch(reshapeDraftProvider);
     final selectedObject = ref.watch(selectedObjectProvider);
+    final colouring = ref.watch(plantColouringProvider).valueOrNull;
 
     // Fit the view once the layout has something in it.
     if (!_fittedOnce && !snapshot.bounds.isEmpty) {
@@ -967,9 +1004,19 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.projectName),
+        title: Text(ref.watch(activeProjectProvider).valueOrNull?.name ?? ''),
         actions: [
           const UndoControls(),
+          IconButton(
+            tooltip: 'Colour plants by a field',
+            icon: Icon(
+              colouring == null ? Icons.palette_outlined : Icons.palette,
+            ),
+            color: colouring == null
+                ? null
+                : Theme.of(context).colorScheme.primary,
+            onPressed: _chooseColourField,
+          ),
           IconButton(
             tooltip: 'Plant ID format',
             icon: const Icon(Icons.tag),
@@ -1040,8 +1087,17 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                         )
                       : object,
                 // The shape being drawn, previewed live.
-                ?_previewOf(pending, activeField),
+                // The Space tool's guide belongs to no field, and needs
+                // drawing all the same -- it used to be invisible while tapped
+                // out, with only a counter changing.
+                ?_previewOf(
+                  pending,
+                  tool == CanvasTool.pointArray ? '__guide' : activeField,
+                ),
               ],
+              retired: snapshot.retired,
+              colors: colouring?.colors ?? const {},
+              fallbackColor: colouring == null ? null : PlantColouring.noValue,
               image: image,
               selection: selection,
               labels: labels,
@@ -1054,6 +1110,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             onDragStart: _onDragStart,
             onDragUpdate: _onDragUpdate,
             onDragEnd: _onDragEnd,
+            onDragCancel: _onDragCancel,
             onViewportChanged: (v) => _viewport = v,
           ),
           if (tool == CanvasTool.drawObject ||
@@ -1074,6 +1131,8 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             ),
           if (_showStats)
             const Positioned(top: 8, right: 8, child: FrameStatsOverlay()),
+          if (colouring != null && !_showStats)
+            Positioned(top: 8, right: 8, child: _Legend(colouring: colouring)),
           // Anchored bottom-left, clear of the toolbar, so the selected plant
           // stays visible while its values are read or changed -- in the field
           // you are looking at the plant and the screen at the same time.
@@ -1136,6 +1195,64 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
         ],
       ),
     );
+  }
+
+  /// Picks the attribute that colours the plants, or turns colouring off.
+  Future<void> _chooseColourField() async {
+    final projectId = _projectId;
+    if (projectId == null) return;
+    final fields = [
+      for (final f
+          in await ref.read(fieldDefsDaoProvider).forProject(projectId))
+        if (f.role == FieldRole.attribute) f,
+    ];
+    if (!mounted) return;
+    if (fields.isEmpty) {
+      _say('There are no fields to colour by yet. Add one under Fields.');
+      return;
+    }
+
+    final current = ref.read(colorByFieldProvider);
+    // A record so "turn it off" is distinguishable from dismissing the sheet.
+    final chosen = await showModalBottomSheet<({String? id})>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.7,
+          ),
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+                child: Text(
+                  'Colour plants by',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.format_color_reset),
+                title: const Text('Nothing -- plain green'),
+                selected: current == null,
+                onTap: () => Navigator.pop(context, (id: null)),
+              ),
+              for (final field in fields)
+                ListTile(
+                  leading: const Icon(Icons.palette_outlined),
+                  title: Text(field.name),
+                  selected: field.id == current,
+                  onTap: () => Navigator.pop(context, (id: field.id)),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (chosen != null) {
+      ref.read(colorByFieldProvider.notifier).state = chosen.id;
+    }
   }
 
   /// The in-progress shape, as an object the painter can draw.
@@ -1299,6 +1416,94 @@ class _ObjectBar extends ConsumerWidget {
   }
 }
 
+/// Explains what the plant colours mean.
+///
+/// Top-right, opposite the inspector, so both can be read at once -- colouring
+/// by health and then tapping the red ones is the whole workflow.
+class _Legend extends ConsumerWidget {
+  const _Legend({required this.colouring});
+
+  final PlantColouring colouring;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final entries = colouring.legend;
+    return Card(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: 220,
+          maxHeight: MediaQuery.of(context).size.height * 0.45,
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 4, 4, 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      colouring.fieldName,
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Stop colouring',
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.close, size: 18),
+                    onPressed: () =>
+                        ref.read(colorByFieldProvider.notifier).state = null,
+                  ),
+                ],
+              ),
+              if (entries.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.only(right: 8),
+                  child: Text('Nothing recorded yet.'),
+                ),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final entry in entries)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 2),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 14,
+                                height: 14,
+                                decoration: BoxDecoration(
+                                  color: entry.color,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: Text(
+                                  entry.label,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// One field definition by id, for naming a selected object.
 final _objectFieldProvider = FutureProvider.family<FieldDef?, String>(
   (ref, fieldDefId) => ref.watch(fieldDefsDaoProvider).byId(fieldDefId),
@@ -1323,12 +1528,24 @@ class _BulkBar extends ConsumerWidget {
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
             const Spacer(),
+            // The most common thing to do to a row's worth of plants, so it
+            // gets its own button rather than living one sheet down.
+            TextButton.icon(
+              onPressed: () => bulkSetValue(context, selection),
+              icon: const Icon(Icons.edit_note),
+              label: const Text('Set value'),
+            ),
             TextButton(
-              onPressed: () => showModalBottomSheet<void>(
-                context: context,
-                isScrollControlled: true,
-                builder: (context) => PlantActionsSheet(selection: selection),
-              ),
+              onPressed: () async {
+                final action = await showModalBottomSheet<String>(
+                  context: context,
+                  isScrollControlled: true,
+                  builder: (context) => PlantActionsSheet(selection: selection),
+                );
+                if (action == PlantActionsSheet.setValue && context.mounted) {
+                  await bulkSetValue(context, selection);
+                }
+              },
               child: const Text('Actions'),
             ),
             IconButton(

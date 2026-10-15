@@ -201,7 +201,11 @@ class Polyline {
       path: Polyline(joined),
       firstReversed: best.a,
       secondReversed: best.b,
-      joinOffset: first.length,
+      // Where the second line *starts* on the joined path, which is past the
+      // bridging segment, not at the end of the first line. Leaving the gap out
+      // shifted every plant on the second line back by its width -- a 50px gap
+      // put them 50px short, some of them onto the bridge.
+      joinOffset: first.length + best.gap,
     );
   }
 

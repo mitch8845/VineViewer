@@ -50,18 +50,70 @@ class MembershipService {
   }) async {
     final timestamp = now ?? DateTime.now();
 
-    final containers = await _containersIn(projectId, objectIds);
+    // Every container is loaded even for a narrow reconcile. The object scope
+    // decides which *plants* are recomputed, not which containers they are
+    // tested against -- see below.
+    final containers = await _containersIn(projectId, null);
     // Every plant still has to be considered even when no container exists:
     // deleting the last block must clear the memberships it created.
-    final plants = await _plantsIn(projectId, plantIds);
+    var plants = await _plantsIn(projectId, plantIds);
     if (plants.isEmpty) return 0;
 
-    final wanted = _derive(plants, containers);
-    final existing = await _existingFor(
-      projectId,
-      plantIds: plantIds,
-      objectIds: objectIds,
-    );
+    final Set<_Key> wanted;
+    final Map<_Key, String> existing;
+
+    if (objectIds == null) {
+      wanted = _derive(plants, containers);
+      existing = await _existingFor(projectId, plantIds: plantIds);
+    } else {
+      // **An object-scoped reconcile cannot look at the scoped objects alone.**
+      //
+      // The carrier-wins tie-break is a judgement *between* same-field lines,
+      // so deriving against Row 2 by itself sees no contest and hands Row 2
+      // every plant within its tolerance -- including the ones snapped to Row 1
+      // six pixels away, which then hold two Row values. The reverse happens
+      // too: a plant leaving Row 2 may now uncontestedly belong to Row 1, which
+      // a Row-2-only pass would never add.
+      //
+      // So the scope becomes *plants and fields* rather than objects: every
+      // plant the scoped objects hold now or held before, recomputed against
+      // every container of the scoped objects' fields. That is exactly what a
+      // project-wide reconcile would decide for those memberships, at a cost
+      // proportional to the plants touched rather than to the project.
+      final scoped = [
+        for (final c in containers)
+          if (objectIds.contains(c.id)) c,
+      ];
+      final stored = await _existingFor(projectId, plantIds: plantIds);
+
+      final affected = <String>{
+        for (final key in _deriveRaw(plants, scoped)) key.plantId,
+        for (final key in stored.keys)
+          if (objectIds.contains(key.objectId)) key.plantId,
+      };
+      // The field of an object that is not a container -- or no longer exists
+      // -- is still in scope, so its leftover memberships are cleared.
+      final fields = <String>{
+        for (final c in scoped) c.fieldDefId,
+        for (final key in stored.keys)
+          if (objectIds.contains(key.objectId)) key.fieldDefId,
+      };
+
+      plants = [
+        for (final p in plants)
+          if (affected.contains(p.id)) p,
+      ];
+      wanted = _derive(plants, [
+        for (final c in containers)
+          if (fields.contains(c.fieldDefId)) c,
+      ]);
+      existing = {
+        for (final e in stored.entries)
+          if (affected.contains(e.key.plantId) &&
+              fields.contains(e.key.fieldDefId))
+            e.key: e.value,
+      };
+    }
 
     // Written as a diff rather than delete-all-then-reinsert. An unchanged
     // membership must produce no journal row, or dragging one plant would
@@ -134,15 +186,21 @@ class MembershipService {
   /// the capture triggers, so a preview the user then cancelled would sit in the
   /// undo journal as an operation that happened -- and in label history as a
   /// rename that never took place.
+  ///
+  /// [fieldOverride] asks it of the schema: *if Block stopped being a
+  /// container, or Row's tolerance doubled, what would every plant be called?*
+  /// Keyed by field id; a field absent from the map keeps its stored settings.
   Future<Map<String, Map<String, String>>> previewContainerValues({
     required String projectId,
     Map<String, Shape?> geometryOverride = const {},
     Map<String, Offset> positionOverride = const {},
+    Map<String, ContainerSettings> fieldOverride = const {},
   }) async {
     final containers = await _containersIn(
       projectId,
       null,
       geometryOverride: geometryOverride,
+      fieldOverride: fieldOverride,
     );
     final plants = [
       for (final plant in await _plantsIn(projectId, null))
@@ -172,19 +230,18 @@ class MembershipService {
     String projectId,
     Set<String>? objectIds, {
     Map<String, Shape?> geometryOverride = const {},
+    Map<String, ContainerSettings> fieldOverride = const {},
   }) async {
     final rows = await _db
         .customSelect(
           'SELECT o.id AS id, o.field_def_id AS field_def_id, '
           '       o.label AS label, o.geometry AS geometry, '
-          '       f.draw_type AS draw_type, f.tolerance AS tolerance '
+          '       f.draw_type AS draw_type, f.tolerance AS tolerance, '
+          '       f.is_container AS is_container '
           'FROM map_objects o '
           'JOIN field_defs f ON f.id = o.field_def_id '
           'WHERE o.project_id = ?1 '
-          '  AND o.deleted_at IS NULL AND f.deleted_at IS NULL '
-          // Non-containers contribute nothing: a road crossing the vineyard
-          // must not put a field on a single plant.
-          '  AND f.is_container = 1',
+          '  AND o.deleted_at IS NULL AND f.deleted_at IS NULL',
           variables: [Variable<String>(projectId)],
           readsFrom: {_db.mapObjects, _db.fieldDefs},
         )
@@ -194,6 +251,13 @@ class MembershipService {
     for (final r in rows) {
       final id = r.read<String>('id');
       if (objectIds != null && !objectIds.contains(id)) continue;
+
+      final fieldDefId = r.read<String>('field_def_id');
+      final override = fieldOverride[fieldDefId];
+      // Non-containers contribute nothing: a road crossing the vineyard must
+      // not put a field on a single plant. Filtered here rather than in SQL so
+      // a preview can ask about a field that is not a container *yet*.
+      if (!(override?.isContainer ?? r.read<bool>('is_container'))) continue;
 
       final drawType = DrawType.values.asNameMap()[r.read<String>('draw_type')];
       // A point contains nothing, so it is never a container. FieldDefsDao
@@ -209,11 +273,15 @@ class MembershipService {
           : Shape.tryParse(r.readNullable<String>('geometry'), drawType);
       if (shape == null) continue;
 
-      final tolerance = r.readNullable<double>('tolerance') ?? defaultTolerance;
+      final tolerance =
+          (override != null
+              ? override.tolerance
+              : r.readNullable<double>('tolerance')) ??
+          defaultTolerance;
       containers.add(
         _Container(
           id: id,
-          fieldDefId: r.read<String>('field_def_id'),
+          fieldDefId: fieldDefId,
           label: r.read<String>('label'),
           shape: shape,
           tolerance: tolerance,
@@ -252,7 +320,11 @@ class MembershipService {
   }
 
   /// The memberships geometry says should exist.
-  Set<_Key> _derive(List<_Plant> plants, List<_Container> containers) {
+  Set<_Key> _derive(List<_Plant> plants, List<_Container> containers) =>
+      _carrierWins(_deriveRaw(plants, containers), plants);
+
+  /// Every container each plant falls inside, before any tie is broken.
+  Set<_Key> _deriveRaw(List<_Plant> plants, List<_Container> containers) {
     final wanted = <_Key>{};
 
     for (final container in containers) {
@@ -272,7 +344,7 @@ class MembershipService {
       }
     }
 
-    return _carrierWins(wanted, plants);
+    return wanted;
   }
 
   /// Resolves a plant held by two container **lines of the same field**.
@@ -335,7 +407,6 @@ class MembershipService {
   Future<Map<_Key, String>> _existingFor(
     String projectId, {
     Set<String>? plantIds,
-    Set<String>? objectIds,
   }) async {
     final rows = await _db
         .customSelect(
@@ -357,13 +428,25 @@ class MembershipService {
         fieldDefId: r.read<String>('field_def_id'),
       );
       // Scoped the same way the derivation was, or a narrow reconcile would
-      // delete memberships it never recomputed.
+      // delete memberships it never recomputed. The object scope is applied by
+      // the caller, which widens it to whole fields first.
       if (plantIds != null && !plantIds.contains(key.plantId)) continue;
-      if (objectIds != null && !objectIds.contains(key.objectId)) continue;
       existing[key] = r.read<String>('id');
     }
     return existing;
   }
+}
+
+/// A container field's settings as a preview would have them.
+///
+/// Both together, because they are only meaningful together: a tolerance on a
+/// field that is not a container decides nothing. A null [tolerance] means
+/// [MembershipService.defaultTolerance], exactly as a null column does.
+class ContainerSettings {
+  const ContainerSettings({required this.isContainer, this.tolerance});
+
+  final bool isContainer;
+  final double? tolerance;
 }
 
 class _Plant {

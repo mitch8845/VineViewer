@@ -32,6 +32,8 @@ class VineyardScene {
     this.imageTransform = Matrix4.identity,
     this.selection = const <String>{},
     this.colors = const <String, Color>{},
+    this.fallbackColor,
+    this.retired = const <String, Offset>{},
     this.labels = const <String, String>{},
     this.showLabels = false,
     this.marquee,
@@ -60,8 +62,20 @@ class VineyardScene {
 
   final Set<String> selection;
 
-  /// Per-plant colour from colour-by-field. Absent means use the default.
+  /// Per-plant colour from colour-by-field. Absent means [fallbackColor].
   final Map<String, Color> colors;
+
+  /// Colour for a plant missing from [colors], or null for the default green.
+  /// Colour-by-field sets this to grey, so a plant with nothing recorded is
+  /// visibly a gap rather than passing for a healthy one.
+  final Color? fallbackColor;
+
+  /// Retired plants -- the empty slots -- drawn as hollow rings.
+  ///
+  /// Not in [index]: a slot is where a plant was, not a plant, and painting it
+  /// the same as a living one is what made a replant look like two plants on
+  /// one spot.
+  final Map<String, Offset> retired;
 
   final Map<String, String> labels;
   final bool showLabels;
@@ -241,8 +255,9 @@ class VineyardPainter extends CustomPainter {
   }
 
   void _paintPlants(Canvas canvas) {
-    if (scene.plants.isEmpty) return;
     if (viewport.scale < _markerVisibleScale) return;
+    _paintRetired(canvas);
+    if (scene.plants.isEmpty) return;
 
     // The culling that makes the whole thing viable: query the index for what
     // is on screen instead of walking 3,000 plants and rejecting most of them.
@@ -262,10 +277,12 @@ class VineyardPainter extends CustomPainter {
     // pixels: the same dots as a handful of batched drawPoints calls cost a
     // fraction of it. Round stroke caps make each point render as a dot of
     // diameter strokeWidth.
+    final fallback = scene.fallbackColor ?? _defaultPlantColor;
     final byColour = <Color, List<Offset>>{};
     for (final point in onScreen) {
-      (byColour[scene.colors[point.id] ?? _defaultPlantColor] ??= <Offset>[])
-          .add(point.position);
+      (byColour[scene.colors[point.id] ?? fallback] ??= <Offset>[]).add(
+        point.position,
+      );
     }
 
     for (final entry in byColour.entries) {
@@ -291,6 +308,33 @@ class VineyardPainter extends CustomPainter {
           );
         }
         if (drawLabels) _paintLabel(canvas, point, radius);
+      }
+    }
+  }
+
+  /// Empty slots: a thin grey ring where a plant used to be.
+  ///
+  /// Per-plant calls, unlike living plants, because there are few of them --
+  /// a vineyard losing a tenth of its vines in a season would be a disaster
+  /// long before it was a rendering problem.
+  void _paintRetired(Canvas canvas) {
+    if (scene.retired.isEmpty) return;
+    final visible = viewport.visibleLayoutRect(padding: 20);
+    final radius = (5 / viewport.scale).clamp(0.5, 40.0);
+    final ring = Paint()
+      ..color = const Color(0xFF8D8D8D)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5 / viewport.scale;
+    final selected = Paint()
+      ..color = _selectionPaint.color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2 / viewport.scale;
+
+    for (final entry in scene.retired.entries) {
+      if (!visible.contains(entry.value)) continue;
+      canvas.drawCircle(entry.value, radius * 0.8, ring);
+      if (scene.selection.contains(entry.key)) {
+        canvas.drawCircle(entry.value, radius * 1.8, selected);
       }
     }
   }

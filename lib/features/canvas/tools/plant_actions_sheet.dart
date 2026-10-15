@@ -12,9 +12,21 @@ import '../canvas_controller.dart';
 /// permanent delete and no trash: a plant you pulled is data, and a plant you
 /// created by mistake is one press of undo.
 class PlantActionsSheet extends ConsumerWidget {
-  const PlantActionsSheet({super.key, required this.selection});
+  const PlantActionsSheet({
+    super.key,
+    required this.selection,
+    this.retired = false,
+  });
 
   final Set<String> selection;
+
+  /// Whether the (single) plant is already retired -- an empty slot. Then the
+  /// only lifecycle action that means anything is planting into it again.
+  final bool retired;
+
+  /// Returned when the user picks "Set a value", for the caller to run with
+  /// a context that outlives this sheet.
+  static const setValue = 'set_value';
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -34,6 +46,18 @@ class PlantActionsSheet extends ConsumerWidget {
             ),
           ),
           ListTile(
+            leading: const Icon(Icons.edit_note),
+            title: const Text('Set a value'),
+            subtitle: const Text(
+              'The same value on every one of them -- a spray, a date, a clone',
+            ),
+            // Handed back to the caller rather than run from here: the flow
+            // is several awaits long, and this sheet's context is gone the
+            // moment it pops.
+            onTap: () => Navigator.pop(context, PlantActionsSheet.setValue),
+          ),
+          const Divider(height: 1),
+          ListTile(
             leading: const Icon(Icons.format_list_numbered),
             title: const Text('Number them'),
             subtitle: const Text('Set where the numbers start and which way'),
@@ -47,22 +71,28 @@ class PlantActionsSheet extends ConsumerWidget {
             },
           ),
           const Divider(height: 1),
-          ListTile(
-            leading: const Icon(Icons.remove_circle_outline),
-            title: const Text('Mark as removed'),
-            subtitle: const Text(
-              'Died or was pulled. History is kept and the position stays as an '
-              'empty slot, ready for a replant.',
+          if (!retired)
+            ListTile(
+              leading: const Icon(Icons.remove_circle_outline),
+              title: const Text('Mark as removed'),
+              subtitle: const Text(
+                'Died or was pulled. History is kept and the position stays as an '
+                'empty slot, ready for a replant.',
+              ),
+              onTap: () => _retire(context, ref),
             ),
-            onTap: () => _retire(context, ref),
-          ),
           if (selection.length == 1)
             ListTile(
               leading: const Icon(Icons.autorenew),
-              title: const Text('Replace with a new plant'),
-              subtitle: const Text(
-                'Retires this one and plants a successor in its place, keeping '
-                'the same ID.',
+              title: Text(
+                retired ? 'Replant this slot' : 'Replace with a new plant',
+              ),
+              subtitle: Text(
+                retired
+                    ? 'Plants a successor where this one was, keeping the same '
+                          'ID. The old plant keeps its history.'
+                    : 'Retires this one and plants a successor in its place, '
+                          'keeping the same ID.',
               ),
               onTap: () => _replace(context, ref),
             ),

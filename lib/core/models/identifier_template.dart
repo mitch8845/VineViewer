@@ -140,12 +140,27 @@ class IdentifierTemplate {
 
 /// A rendered identifier. Replaces v2's `PlantLabel`.
 class PlantIdentifier {
-  const PlantIdentifier({required this.parts, required this.delimiter});
+  const PlantIdentifier({
+    required this.parts,
+    required this.delimiter,
+    this.retired = false,
+  });
 
   /// Already placeholder-substituted, so this never contains a hole.
   final List<String> parts;
 
   final String delimiter;
+
+  /// Whether the plant holding this is retired -- removed or missing.
+  ///
+  /// A retired plant keeps its identifier for history's sake but no longer
+  /// occupies it, so uniqueness checks skip it: a replant shares its
+  /// predecessor's identifier by design. Carried on the identifier rather than
+  /// beside it so every caller that renders and compares gets this for free.
+  ///
+  /// **Not part of equality.** Two identifiers reading the same are the same
+  /// identifier; whether anyone still answers to it is a fact about the plant.
+  final bool retired;
 
   String get text => parts.join(delimiter);
 

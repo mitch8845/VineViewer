@@ -41,11 +41,6 @@ class OperationRecorder {
     if (await _openOperationId() != null) return body();
 
     return _db.transaction(() async {
-      // A fresh action invalidates anything that was undone, as everywhere
-      // else. Done before the context is set so this housekeeping is not
-      // itself captured.
-      await _clearRedoStack(projectId);
-
       final operationId = await _db
           .into(_db.operations)
           .insert(
@@ -64,7 +59,17 @@ class OperationRecorder {
       // A gesture that changed nothing -- a rejected validation, a drag that
       // ended where it started -- must not leave an undo step that does
       // nothing when pressed.
-      await _discardIfEmpty(operationId);
+      //
+      // **Nor may it cost the user their redo.** A fresh action invalidates
+      // anything that was undone, as everywhere else -- but only an action that
+      // actually did something. Clearing first, as this once did, meant that
+      // opening and cancelling a dialog after an undo silently threw the redo
+      // away. Done after the context is cleared so the housekeeping is not
+      // itself captured, and the new operation is still applied, so it is not
+      // swept up with the undone ones.
+      if (await _discardIfEmpty(operationId)) {
+        await _clearRedoStack(projectId);
+      }
 
       return result;
     });
@@ -97,16 +102,18 @@ class OperationRecorder {
         .go();
   }
 
-  Future<void> _discardIfEmpty(int operationId) async {
+  /// Deletes the operation if it captured nothing. Returns whether it is kept.
+  Future<bool> _discardIfEmpty(int operationId) async {
     final captured =
         await (_db.select(_db.operationRows)
               ..where((r) => r.operationId.equals(operationId))
               ..limit(1))
             .getSingleOrNull();
-    if (captured != null) return;
+    if (captured != null) return true;
 
     await (_db.delete(
       _db.operations,
     )..where((o) => o.id.equals(operationId))).go();
+    return false;
   }
 }

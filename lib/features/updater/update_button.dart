@@ -16,7 +16,7 @@ class UpdateButton extends StatefulWidget {
   State<UpdateButton> createState() => _UpdateButtonState();
 }
 
-enum _Stage { idle, checking, downloading, installing }
+enum _Stage { idle, checking, available, downloading, installing }
 
 class _UpdateButtonState extends State<UpdateButton> {
   late final UpdateService _service = widget.service ?? UpdateService();
@@ -25,7 +25,10 @@ class _UpdateButtonState extends State<UpdateButton> {
   String? _message;
   double? _progress;
 
-  bool get _busy => _stage != _Stage.idle;
+  /// The release found by the last check, waiting for the user to say yes.
+  UpdateInfo? _pending;
+
+  bool get _busy => _stage != _Stage.idle && _stage != _Stage.available;
 
   Future<void> _run() async {
     setState(() {
@@ -51,41 +54,57 @@ class _UpdateButtonState extends State<UpdateButton> {
         });
 
       case UpdateAvailable(:final current, :final info):
+        // Asked, not assumed. The download used to start the moment a check
+        // found something -- tens of megabytes, possibly over a phone hotspot
+        // in the middle of a vineyard, with no idea what was in it.
         setState(() {
-          _stage = _Stage.downloading;
-          _message = 'Downloading v${info.version} (from v$current)...';
+          _stage = _Stage.available;
+          _pending = info;
+          _message = 'v${info.version} is available (you have v$current).';
         });
+    }
+  }
 
-        try {
-          final apk = await _service.download(
-            info,
-            onProgress: (p) {
-              if (mounted) setState(() => _progress = p);
-            },
-          );
-          if (!mounted) return;
+  Future<void> _install() async {
+    final info = _pending;
+    if (info == null) return;
+    setState(() {
+      _stage = _Stage.downloading;
+      _message = 'Downloading v${info.version}...';
+    });
 
-          setState(() {
-            _stage = _Stage.installing;
-            _progress = null;
-            _message = 'Opening installer...';
-          });
+    try {
+      final apk = await _service.download(
+        info,
+        onProgress: (p) {
+          if (mounted) setState(() => _progress = p);
+        },
+      );
+      if (!mounted) return;
 
-          final error = await _service.install(apk);
-          if (!mounted) return;
+      setState(() {
+        _stage = _Stage.installing;
+        _progress = null;
+        _message = 'Opening installer...';
+      });
 
-          setState(() {
-            _stage = _Stage.idle;
-            _message = error ?? 'Installer opened. Follow the prompts.';
-          });
-        } catch (e) {
-          if (!mounted) return;
-          setState(() {
-            _stage = _Stage.idle;
-            _progress = null;
-            _message = 'Download failed: $e';
-          });
-        }
+      final error = await _service.install(apk);
+      if (!mounted) return;
+
+      setState(() {
+        _stage = _Stage.idle;
+        _pending = null;
+        _message = error ?? 'Installer opened. Follow the prompts.';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        // Back to the offer rather than to a fresh check, so a dropped
+        // connection is one tap to retry.
+        _stage = _Stage.available;
+        _progress = null;
+        _message = 'Download failed: $e';
+      });
     }
   }
 
@@ -101,7 +120,11 @@ class _UpdateButtonState extends State<UpdateButton> {
           style: FilledButton.styleFrom(
             padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 18),
           ),
-          onPressed: _busy ? null : _run,
+          onPressed: _busy
+              ? null
+              : _stage == _Stage.available
+              ? _install
+              : _run,
           icon: _busy
               ? const SizedBox(
                   width: 18,
@@ -111,6 +134,7 @@ class _UpdateButtonState extends State<UpdateButton> {
               : const Icon(Icons.system_update),
           label: Text(switch (_stage) {
             _Stage.idle => 'Check for updates',
+            _Stage.available => 'Download and install',
             _Stage.checking => 'Checking...',
             _Stage.downloading => 'Downloading...',
             _Stage.installing => 'Installing...',
@@ -126,6 +150,19 @@ class _UpdateButtonState extends State<UpdateButton> {
           Text(
             '${(_progress! * 100).toStringAsFixed(0)}%',
             style: theme.textTheme.bodySmall,
+          ),
+        ],
+        if (_stage == _Stage.available &&
+            (_pending?.notes.trim().isNotEmpty ?? false)) ...[
+          const SizedBox(height: 12),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 320, maxHeight: 220),
+            child: SingleChildScrollView(
+              child: Text(
+                _pending!.notes.trim(),
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
           ),
         ],
         if (_message != null) ...[

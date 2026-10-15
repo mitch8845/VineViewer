@@ -94,6 +94,51 @@ class _IdentifierTemplateEditorState
     return rendered[data.plantNumbers.keys.first]?.text;
   }
 
+  /// An existing name or value that contains the delimiter being chosen.
+  ///
+  /// Drawing and renaming refuse a row called `12.5` when the delimiter is
+  /// `.` -- but switching the delimiter *to* `.` with that row already there
+  /// was accepted, producing exactly the ambiguous `3.12.5.7` the refusal
+  /// exists to prevent. The duplicate check cannot see it: the IDs are still
+  /// distinct, just no longer readable.
+  Future<String?> _delimiterClash(String projectId) async {
+    final delimiter = _delimiter.text;
+    if (delimiter.isEmpty) return null;
+
+    final partIds = {
+      for (final part in _parts)
+        if (part case FieldPart(:final fieldDefId)) fieldDefId,
+    };
+    final fields = {
+      for (final f in _available)
+        if (partIds.contains(f.id)) f.id: f,
+    };
+
+    for (final object
+        in await ref.read(layoutDaoProvider).objectsInProject(projectId)) {
+      final field = fields[object.fieldDefId];
+      if (field != null && object.label.contains(delimiter)) {
+        return '${field.name} "${object.label}" contains "$delimiter", so IDs '
+            'using it could not be read apart. Rename it first, or pick a '
+            'different separator.';
+      }
+    }
+
+    final events = ref.read(fieldEventsDaoProvider);
+    for (final field in fields.values) {
+      if (field.role != FieldRole.attribute) continue;
+      final values = await events.currentValuesForField(field.id);
+      for (final event in values.values) {
+        final value = event.value;
+        if (value != null && value.contains(delimiter)) {
+          return 'Some plants have ${field.name} "$value", which contains '
+              '"$delimiter". Pick a different separator.';
+        }
+      }
+    }
+    return null;
+  }
+
   Future<void> _save() async {
     final projectId = ref.read(activeProjectIdProvider);
     final data = _data;
@@ -101,6 +146,13 @@ class _IdentifierTemplateEditorState
 
     final labels = ref.read(labelServiceProvider);
     final current = await labels.templateFor(projectId);
+
+    final clash = await _delimiterClash(projectId);
+    if (!mounted) return;
+    if (clash != null) {
+      setState(() => _refusal = clash);
+      return;
+    }
 
     // Rendered under both templates and compared before anything is written.
     // This is the whole reason fetching and rendering are separate.

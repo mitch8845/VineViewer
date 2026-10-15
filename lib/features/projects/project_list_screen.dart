@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/db/daos/field_defs_dao.dart';
+import '../../core/db/database.dart';
 import '../../core/geometry/polyline.dart';
 import '../../core/geometry/shapes.dart';
 import '../../core/models/enums.dart';
@@ -27,6 +28,13 @@ class ProjectListScreen extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('VineViewer'),
         actions: [
+          IconButton(
+            tooltip: 'Deleted vineyards',
+            icon: const Icon(Icons.delete_outline),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const _TrashScreen()),
+            ),
+          ),
           IconButton(
             tooltip: 'Check for updates',
             icon: const Icon(Icons.system_update),
@@ -64,12 +72,42 @@ class ProjectListScreen extends ConsumerWidget {
                           ? 'No aerial image'
                           : 'Image ${project.imageWidth}x${project.imageHeight}',
                     ),
-                    trailing: IconButton(
-                      tooltip: 'Aerial image',
-                      icon: const Icon(Icons.image_outlined),
-                      onPressed: () => _chooseAerial(context, ref, project.id),
+                    trailing: PopupMenuButton<_ProjectAction>(
+                      tooltip: 'More',
+                      onSelected: (action) => switch (action) {
+                        _ProjectAction.image => _chooseAerial(
+                          context,
+                          ref,
+                          project.id,
+                        ),
+                        _ProjectAction.rename => _rename(context, ref, project),
+                        _ProjectAction.delete => _delete(context, ref, project),
+                      },
+                      itemBuilder: (context) => const [
+                        PopupMenuItem(
+                          value: _ProjectAction.image,
+                          child: ListTile(
+                            leading: Icon(Icons.image_outlined),
+                            title: Text('Aerial image'),
+                          ),
+                        ),
+                        PopupMenuItem(
+                          value: _ProjectAction.rename,
+                          child: ListTile(
+                            leading: Icon(Icons.drive_file_rename_outline),
+                            title: Text('Rename'),
+                          ),
+                        ),
+                        PopupMenuItem(
+                          value: _ProjectAction.delete,
+                          child: ListTile(
+                            leading: Icon(Icons.delete_outline),
+                            title: Text('Delete'),
+                          ),
+                        ),
+                      ],
                     ),
-                    onTap: () => _open(context, ref, project.id, project.name),
+                    onTap: () => _open(context, ref, project.id),
                   );
                 },
               ),
@@ -82,13 +120,79 @@ class ProjectListScreen extends ConsumerWidget {
     );
   }
 
-  void _open(BuildContext context, WidgetRef ref, String id, String name) {
+  void _open(BuildContext context, WidgetRef ref, String id) {
+    resetProjectScopedState(ref);
     ref.read(activeProjectIdProvider.notifier).state = id;
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => VineyardScreen(projectName: name),
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => const VineyardScreen()));
+  }
+
+  Future<void> _rename(
+    BuildContext context,
+    WidgetRef ref,
+    Project project,
+  ) async {
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => _NameDialog(
+        title: 'Rename vineyard',
+        action: 'Rename',
+        initial: project.name,
       ),
     );
+    if (name == null || name.trim().isEmpty || name.trim() == project.name) {
+      return;
+    }
+    await ref.read(projectsDaoProvider).rename(project.id, name);
+  }
+
+  /// Moves a vineyard to the trash.
+  ///
+  /// Soft, and said so: the plan reserves typed confirmation for *permanent*
+  /// deletion, which only happens from the trash. Here a plain confirm is
+  /// enough, because nothing is lost -- and an undo is offered on the spot.
+  Future<void> _delete(
+    BuildContext context,
+    WidgetRef ref,
+    Project project,
+  ) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Delete "${project.name}"?'),
+        content: const Text(
+          'It moves to Deleted vineyards, where it can be restored with all '
+          'of its plants and history.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+
+    final dao = ref.read(projectsDaoProvider);
+    await dao.softDelete(project.id);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context)
+      ..removeCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('Deleted "${project.name}".'),
+          action: SnackBarAction(
+            label: 'Undo',
+            onPressed: () => dao.restore(project.id),
+          ),
+        ),
+      );
   }
 
   Future<void> _createProject(BuildContext context, WidgetRef ref) async {
@@ -100,6 +204,7 @@ class ProjectListScreen extends ConsumerWidget {
 
     final id = await ref.read(projectsDaoProvider).create(name: name.trim());
     if (!context.mounted) return;
+    resetProjectScopedState(ref);
 
     // Straight into setup: the identifier is composed from fields, so there is
     // an order to this that a new project cannot discover on its own. Every
@@ -163,11 +268,36 @@ class ProjectListScreen extends ConsumerWidget {
   }
 }
 
-class _EmptyState extends ConsumerWidget {
+class _EmptyState extends ConsumerStatefulWidget {
   const _EmptyState();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_EmptyState> createState() => _EmptyStateState();
+}
+
+class _EmptyStateState extends ConsumerState<_EmptyState> {
+  /// Set while seeding. Building 4,000 plants takes seconds on the tablet, and
+  /// with no feedback a second tap built a second vineyard.
+  bool _seeding = false;
+
+  Future<void> _seed() async {
+    if (_seeding) return;
+    setState(() => _seeding = true);
+    try {
+      await _seedDemo(ref);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not build the test vineyard: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _seeding = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -180,9 +310,19 @@ class _EmptyState extends ConsumerWidget {
           // anyone has drawn one by hand, so seeding is a first-class action
           // rather than a hidden debug flag.
           OutlinedButton.icon(
-            onPressed: () => _seedDemo(ref),
-            icon: const Icon(Icons.science_outlined),
-            label: const Text('Create 4,000-plant test vineyard'),
+            onPressed: _seeding ? null : _seed,
+            icon: _seeding
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.science_outlined),
+            label: Text(
+              _seeding
+                  ? 'Building 4,000 plants...'
+                  : 'Create 4,000-plant test vineyard',
+            ),
           ),
         ],
       ),
@@ -195,11 +335,26 @@ class _EmptyState extends ConsumerWidget {
   /// `Block.Row.Plant` template -- so the seeded project exercises exactly what
   /// a hand-drawn one would, including identifier rendering and containment.
   Future<void> _seedDemo(WidgetRef ref) async {
+    final projectId = await ref
+        .read(projectsDaoProvider)
+        .create(name: 'Performance test');
+
+    // One operation, so the whole layout is one press of undo -- the plan's
+    // undo stress test is exactly this, and it was not journaled at all.
+    await ref
+        .read(operationRecorderProvider)
+        .run(
+          projectId: projectId,
+          kind: 'seed_demo',
+          description: 'Build the 4,000-plant test layout',
+          body: () => _seedLayout(ref, projectId),
+        );
+  }
+
+  Future<void> _seedLayout(WidgetRef ref, String projectId) async {
     final projects = ref.read(projectsDaoProvider);
     final layout = ref.read(layoutDaoProvider);
     final fields = ref.read(fieldDefsDaoProvider);
-
-    final projectId = await projects.create(name: 'Performance test');
 
     final rowField = await fields.create(
       projectId: projectId,
@@ -286,14 +441,22 @@ class _EmptyState extends ConsumerWidget {
 }
 
 class _NameDialog extends StatefulWidget {
-  const _NameDialog();
+  const _NameDialog({
+    this.title = 'New vineyard',
+    this.action = 'Create',
+    this.initial = '',
+  });
+
+  final String title;
+  final String action;
+  final String initial;
 
   @override
   State<_NameDialog> createState() => _NameDialogState();
 }
 
 class _NameDialogState extends State<_NameDialog> {
-  final _controller = TextEditingController();
+  late final _controller = TextEditingController(text: widget.initial);
 
   @override
   void dispose() {
@@ -304,7 +467,7 @@ class _NameDialogState extends State<_NameDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('New vineyard'),
+      title: Text(widget.title),
       content: TextField(
         controller: _controller,
         autofocus: true,
@@ -318,7 +481,150 @@ class _NameDialogState extends State<_NameDialog> {
         ),
         FilledButton(
           onPressed: () => Navigator.pop(context, _controller.text),
-          child: const Text('Create'),
+          child: Text(widget.action),
+        ),
+      ],
+    );
+  }
+}
+
+enum _ProjectAction { image, rename, delete }
+
+/// Deleted vineyards: restore, or remove for good.
+///
+/// Permanent removal asks for the name to be typed, as the plan requires. It
+/// takes every plant, observation and drawing with it, and it is the one
+/// action in the app with no undo.
+class _TrashScreen extends ConsumerStatefulWidget {
+  const _TrashScreen();
+
+  @override
+  ConsumerState<_TrashScreen> createState() => _TrashScreenState();
+}
+
+class _TrashScreenState extends ConsumerState<_TrashScreen> {
+  late Future<List<Project>> _deleted = _load();
+
+  Future<List<Project>> _load() => ref.read(projectsDaoProvider).deleted();
+
+  void _reload() => setState(() => _deleted = _load());
+
+  Future<void> _purge(Project project) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => _PurgeDialog(name: project.name),
+    );
+    if (confirmed != true) return;
+    await ref.read(projectsDaoProvider).purge(project.id);
+    _reload();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Deleted vineyards')),
+      body: FutureBuilder<List<Project>>(
+        future: _deleted,
+        builder: (context, snapshot) {
+          final list = snapshot.data;
+          if (list == null) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (list.isEmpty) {
+            return const Center(child: Text('Nothing has been deleted.'));
+          }
+          return ListView(
+            children: [
+              for (final project in list)
+                ListTile(
+                  leading: const Icon(Icons.grass),
+                  title: Text(project.name),
+                  subtitle: Text(
+                    'Deleted ${_date(project.deletedAt ?? project.updatedAt)}',
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextButton(
+                        onPressed: () async {
+                          await ref
+                              .read(projectsDaoProvider)
+                              .restore(project.id);
+                          _reload();
+                        },
+                        child: const Text('Restore'),
+                      ),
+                      IconButton(
+                        tooltip: 'Delete for good',
+                        icon: const Icon(Icons.delete_forever_outlined),
+                        onPressed: () => _purge(project),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  static String _date(DateTime at) =>
+      '${at.year}-${at.month.toString().padLeft(2, '0')}-'
+      '${at.day.toString().padLeft(2, '0')}';
+}
+
+class _PurgeDialog extends StatefulWidget {
+  const _PurgeDialog({required this.name});
+
+  final String name;
+
+  @override
+  State<_PurgeDialog> createState() => _PurgeDialogState();
+}
+
+class _PurgeDialogState extends State<_PurgeDialog> {
+  final _typed = TextEditingController();
+
+  @override
+  void dispose() {
+    _typed.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final matches = _typed.text.trim() == widget.name.trim();
+    return AlertDialog(
+      title: const Text('Delete for good?'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Every plant, observation and drawing in "${widget.name}" will be '
+            'erased. This cannot be undone.\n\nType the name to confirm.',
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _typed,
+            autofocus: true,
+            decoration: InputDecoration(hintText: widget.name),
+            onChanged: (_) => setState(() {}),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+          onPressed: matches ? () => Navigator.pop(context, true) : null,
+          child: const Text('Delete for good'),
         ),
       ],
     );

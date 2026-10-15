@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:drift/drift.dart';
 
 import '../db/database.dart';
+import '../models/enums.dart';
 import '../models/identifier_template.dart';
 
 /// Composes and resolves plant identifiers.
@@ -56,7 +57,7 @@ class LabelService {
   }) async {
     final plants = await _db
         .customSelect(
-          'SELECT id, position_idx FROM plants '
+          'SELECT id, position_idx, status FROM plants '
           'WHERE project_id = ?1 AND deleted_at IS NULL',
           variables: [Variable<String>(projectId)],
           readsFrom: {_db.plants},
@@ -108,8 +109,11 @@ class LabelService {
         .get();
 
     final numbers = <String, int>{};
+    final retired = <String>{};
     for (final r in plants) {
-      numbers[r.read<String>('id')] = r.read<int>('position_idx');
+      final id = r.read<String>('id');
+      numbers[id] = r.read<int>('position_idx');
+      if (r.read<String>('status') != _active) retired.add(id);
     }
 
     // Containers first, then attributes over the top. Order matters only in the
@@ -138,8 +142,20 @@ class LabelService {
       plantNumbers: numbers,
       values: values,
       placeholders: await _placeholders(projectId),
+      retired: retired,
     );
   }
+
+  /// `plants.status` for a plant in service, as stored.
+  ///
+  /// **A retired plant keeps its identifier but no longer occupies it.** It
+  /// still renders -- its history, its inspector and the empty slot on the map
+  /// all need to say what it was called -- but uniqueness is a rule about the
+  /// living vineyard. Replace With New Plant deliberately gives the successor
+  /// the same carrier, number and memberships, so the dead plant and its
+  /// replacement render identically by design; counting that as a collision
+  /// would refuse every later identifier change in the project.
+  static final _active = PlantStatus.active.name;
 
   Future<Map<String, String>> _placeholders(String projectId) async {
     final rows = await _db
@@ -194,6 +210,7 @@ class LabelService {
       out[plantId] = PlantIdentifier(
         parts: parts,
         delimiter: template.delimiter,
+        retired: data.retired.contains(plantId),
       );
     }
     return out;
@@ -222,6 +239,19 @@ class LabelService {
   /// Callers build [after] however they need -- a new template, a renamed
   /// object, a numbering plan -- and this reports the blast radius and any
   /// collisions. Nothing is written.
+  ///
+  /// **Only collisions the change introduces are reported.** A duplicate that
+  /// already exists -- left by an import, which writes rows without coming
+  /// through here -- is not the fault of renaming a block on the other side of
+  /// the vineyard, and refusing that rename would make one bad row lock every
+  /// identifier in the project. A text counts as introduced when the set of
+  /// plants holding it afterwards is not a subset of the set holding it before:
+  /// joining an existing collision is the change's fault, and so is swapping
+  /// which plants hold it even though the count stays the same.
+  ///
+  /// Retired plants are left out of the duplicate check entirely -- see
+  /// [PlantIdentifier.retired] -- but still count towards [IdentifierChange.changed],
+  /// since their identifier genuinely reads differently afterwards.
   static IdentifierChange compare(
     Map<String, PlantIdentifier> before,
     Map<String, PlantIdentifier> after,
@@ -231,18 +261,28 @@ class LabelService {
       if (before[entry.key]?.text != entry.value.text) changed++;
     }
 
-    final seen = <String, int>{};
-    for (final id in after.values) {
-      seen.update(id.text, (n) => n + 1, ifAbsent: () => 1);
-    }
-
+    final held = _holders(before);
     return IdentifierChange(
       changed: changed,
       duplicates: [
-        for (final e in seen.entries)
-          if (e.value > 1) e.key,
+        for (final e in _holders(after).entries)
+          if (e.value.length > 1 &&
+              !e.value.every((p) => held[e.key]?.contains(p) ?? false))
+            e.key,
       ]..sort(),
     );
+  }
+
+  /// identifier text -> the living plants that hold it.
+  static Map<String, Set<String>> _holders(
+    Map<String, PlantIdentifier> identifiers,
+  ) {
+    final holders = <String, Set<String>>{};
+    for (final e in identifiers.entries) {
+      if (e.value.retired) continue;
+      (holders[e.value.text] ??= {}).add(e.key);
+    }
+    return holders;
   }
 
   /// What renaming an object would do to identifiers. **Nothing is written.**
@@ -326,6 +366,7 @@ class LabelService {
           plantNumbers: data.plantNumbers,
           values: next,
           placeholders: data.placeholders,
+          retired: data.retired,
         ),
         template,
       ),
@@ -396,20 +437,17 @@ class LabelService {
     blankPlaceholder: blankPlaceholder,
   );
 
-  /// Identifiers held by more than one plant.
+  /// Identifiers held by more than one living plant.
   ///
   /// Uniqueness is maintained in application code rather than by a constraint,
   /// so it is worth being able to prove it holds -- especially after an import,
-  /// which writes rows without going through any of this.
+  /// which writes rows without going through any of this. Retired plants are
+  /// not counted: a replant shares its predecessor's identifier by design.
   Future<List<String>> findDuplicateIdentifiers(String projectId) async {
-    final identifiers = await identifiersForProject(projectId);
-    final seen = <String, int>{};
-    for (final id in identifiers.values) {
-      seen.update(id.text, (n) => n + 1, ifAbsent: () => 1);
-    }
+    final holders = _holders(await identifiersForProject(projectId));
     return [
-      for (final e in seen.entries)
-        if (e.value > 1) e.key,
+      for (final e in holders.entries)
+        if (e.value.length > 1) e.key,
     ]..sort();
   }
 
@@ -508,8 +546,13 @@ class LabelService {
           final gained = entry.after;
           final lost = entry.before;
           if (gained != null && lost == null) {
-            // Undoing a gain: before this, the plant was not in it.
-            holders.remove(gained['field_def_id'] as String);
+            // Undoing a gain: before this, the plant was not in *that object*.
+            // Checked by object rather than cleared by field, because reconcile
+            // writes a block change as insert-new-then-delete-old: walking back,
+            // the old block is restored first, and clearing the field here would
+            // then wipe it out again.
+            final field = gained['field_def_id'] as String;
+            if (holders[field] == gained['object_id']) holders.remove(field);
           } else if (lost != null && gained == null) {
             // Undoing a loss: before this, the plant was in it.
             holders[lost['field_def_id'] as String] =
@@ -571,9 +614,15 @@ class LabelService {
 
     // The starting identifier carries no date: the journal records what changed
     // an identifier, never when it was first given.
-    record(null, null);
+    //
+    // Skipped when the journal saw the plant being *created*: the state before
+    // that is not an identifier the plant ever had, just placeholders -- a
+    // `0.0.7` for a plant that did not yet exist.
+    final createdInJournal = own.isNotEmpty && own.first.before == null;
+    if (!createdInJournal) record(null, null);
 
-    for (final entry in merged) {
+    for (var i = 0; i < merged.length; i++) {
+      final entry = merged[i];
       switch (entry.table) {
         case 'plants':
           final after = entry.after;
@@ -585,7 +634,11 @@ class LabelService {
             holders[gained['field_def_id'] as String] =
                 gained['object_id'] as String;
           } else if (lost != null) {
-            holders.remove(lost['field_def_id'] as String);
+            // Only if it is still the object being lost. Reconcile inserts
+            // the new block's row before deleting the old one, so by now the
+            // field may already name the new block -- which must survive.
+            final field = lost['field_def_id'] as String;
+            if (holders[field] == lost['object_id']) holders.remove(field);
           }
         case 'map_objects':
           // A rename changes every identifier on that object without touching
@@ -594,18 +647,29 @@ class LabelService {
           final after = entry.after;
           if (after != null) labels[entry.rowId] = after['label'] as String;
         case 'field_events':
+          // No `continue` in this loop: skipping to the next row would also skip
+          // recording the end of this operation below.
           final after = entry.after;
-          if (after == null) continue;
-          final field = after['field_def_id'] as String;
-          if (!attributeIds.contains(field)) continue;
-          final value = after['value'] as String?;
-          if (value == null) {
-            values.remove(field);
-          } else {
-            values[field] = value;
+          final field = after?['field_def_id'] as String?;
+          if (after != null && attributeIds.contains(field)) {
+            final value = after['value'] as String?;
+            if (value == null) {
+              values.remove(field);
+            } else {
+              values[field!] = value;
+            }
           }
       }
-      record(entry.at, entry.description);
+
+      // **Once per operation, not once per journal row.** One gesture writes
+      // several rows -- a plant and then each of its memberships, one field at
+      // a time -- and the states between them never existed outside the
+      // transaction. Recording after each row listed a plant created inside
+      // Block 1 on Row 12 as `0.0.7`, `1.0.7`, then `1.12.7`.
+      final last =
+          i == merged.length - 1 ||
+          merged[i + 1].operationId != entry.operationId;
+      if (last) record(entry.at, entry.description);
     }
 
     // Anything that bypassed the journal -- an import, a restored archive --
@@ -718,7 +782,8 @@ class LabelService {
 
     final rows = await _db
         .customSelect(
-          'SELECT r.id AS id, r.row_id AS row_id, r.before AS before, '
+          'SELECT r.id AS id, r.operation_id AS operation_id, '
+          '       r.row_id AS row_id, r.before AS before, '
           '       r.after AS after, o.created_at AS created_at, '
           '       o.description AS description '
           'FROM operation_rows r '
@@ -736,6 +801,7 @@ class LabelService {
       for (final r in rows)
         _JournalEntry(
           id: r.read<int>('id'),
+          operationId: r.read<int>('operation_id'),
           table: table,
           rowId: r.read<String>('row_id'),
           before: _decode(r.readNullable<String>('before')),
@@ -767,28 +833,104 @@ class LabelService {
   /// Lowest-unused rather than highest-plus-one, so a gap left by a removed
   /// plant is reused instead of the numbers climbing forever while the line
   /// stays the same length.
+  ///
+  /// Only living plants occupy a number. Retire plant 3 and the next plant on
+  /// that row is 3 again -- the dead one keeps its label for history, and
+  /// uniqueness ignores it, so the two never collide.
   Future<int> nextPlantNumber({
     required String projectId,
     String? carrierId,
+  }) async => _lowestUnused(
+    await _numbersInScope(projectId: projectId, carrierId: carrierId),
+  );
+
+  /// Numbers held by living plants sharing [carrierId]'s scope.
+  Future<Set<int>> _numbersInScope({
+    required String projectId,
+    String? carrierId,
+    String? ignoringPlantId,
   }) async {
     // `IS` rather than `=`, so the carrier-less scope works: `carrier_id =
     // NULL` is never true, which would make every free plant look like the only
     // one and number them all 1.
     final rows = await _db
         .customSelect(
-          'SELECT position_idx FROM plants '
-          'WHERE project_id = ?1 AND deleted_at IS NULL AND carrier_id IS ?2',
-          variables: [Variable<String>(projectId), Variable<String>(carrierId)],
+          'SELECT id, position_idx FROM plants '
+          'WHERE project_id = ?1 AND deleted_at IS NULL AND carrier_id IS ?2 '
+          '  AND status = ?3',
+          variables: [
+            Variable<String>(projectId),
+            Variable<String>(carrierId),
+            Variable<String>(_active),
+          ],
           readsFrom: {_db.plants},
         )
         .get();
 
-    final used = {for (final r in rows) r.read<int>('position_idx')};
+    return {
+      for (final r in rows)
+        if (r.read<String>('id') != ignoringPlantId)
+          r.read<int>('position_idx'),
+    };
+  }
+
+  static int _lowestUnused(Set<int> used, [bool Function(int)? alsoTaken]) {
     var candidate = 1;
-    while (used.contains(candidate)) {
+    while (used.contains(candidate) || (alsoTaken?.call(candidate) ?? false)) {
       candidate++;
     }
     return candidate;
+  }
+
+  /// The lowest number [plantId] can take without duplicating an identifier.
+  ///
+  /// [nextPlantNumber] answers within a carrier's scope, which is only the
+  /// whole question for a plant whose identifier is decided by that carrier. A
+  /// **free** plant dropped within tolerance of Row 12 is numbered from the
+  /// carrier-less pool -- which starts at 1 -- but its membership puts it on
+  /// Row 12, where plant 1 already lives: two `12.1`s. So this renders the
+  /// plant as it stands, with its real memberships and attributes, and skips
+  /// every number that would read the same as some other living plant, as
+  /// well as every number already taken in its own carrier scope.
+  ///
+  /// With no plant number in the template there is nothing a number can fix,
+  /// and the scope answer is returned unchanged.
+  Future<int> lowestSafeNumber(String plantId) async {
+    final plant = await (_db.select(
+      _db.plants,
+    )..where((v) => v.id.equals(plantId))).getSingle();
+
+    final scope = await _numbersInScope(
+      projectId: plant.projectId,
+      carrierId: plant.carrierId,
+      ignoringPlantId: plantId,
+    );
+
+    final template = await templateFor(plant.projectId);
+    if (!template.parts.contains(const PlantPart())) {
+      return _lowestUnused(scope);
+    }
+
+    final data = await dataFor(plant.projectId);
+    final taken = <String>{
+      for (final e in render(data, template).entries)
+        if (e.key != plantId && !e.value.retired) e.value.text,
+    };
+    final own = data.values[plantId] ?? const <String, String>{};
+
+    return _lowestUnused(
+      scope,
+      (n) => taken.contains(
+        render(
+          IdentifierData(
+            plantNumbers: {plantId: n},
+            values: {plantId: own},
+            placeholders: data.placeholders,
+          ),
+          template,
+        )[plantId]!.text,
+      ),
+    );
   }
 
   /// Numbers a plant being inserted into a carrier at a chosen point.
@@ -928,6 +1070,7 @@ class IdentifierData {
     required this.plantNumbers,
     required this.values,
     required this.placeholders,
+    this.retired = const {},
   });
 
   /// plant id -> `position_idx`.
@@ -939,6 +1082,10 @@ class IdentifierData {
 
   /// field id -> what to show when it has no value.
   final Map<String, String> placeholders;
+
+  /// Plants no longer in service -- removed or missing. They render as usual
+  /// but take no part in uniqueness; see [PlantIdentifier.retired].
+  final Set<String> retired;
 
   /// A copy with one field's value replaced for some plants.
   ///
@@ -955,6 +1102,7 @@ class IdentifierData {
       plantNumbers: plantNumbers,
       values: next,
       placeholders: placeholders,
+      retired: retired,
     );
   }
 
@@ -963,6 +1111,7 @@ class IdentifierData {
     plantNumbers: {...plantNumbers, ...byPlant},
     values: values,
     placeholders: placeholders,
+    retired: retired,
   );
 }
 
@@ -1007,6 +1156,7 @@ class IdentifierChangeRecord {
 class _JournalEntry {
   const _JournalEntry({
     required this.id,
+    required this.operationId,
     required this.table,
     required this.rowId,
     required this.before,
@@ -1017,6 +1167,10 @@ class _JournalEntry {
 
   /// The journal row's own id, which is also the order things happened in.
   final int id;
+
+  /// The gesture this row belongs to. History records one identifier per
+  /// operation, so this is what decides where one step ends.
+  final int operationId;
 
   final String table;
   final String rowId;

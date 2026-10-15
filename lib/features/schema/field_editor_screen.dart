@@ -9,6 +9,7 @@ import '../../core/models/enums.dart';
 import '../../core/models/field_config.dart';
 import '../../core/providers.dart';
 import '../canvas/canvas_controller.dart';
+import '../canvas/tools/identifier_change_prompt.dart';
 
 /// Live list of field definitions for the active project.
 final fieldDefsProvider = StreamProvider<List<FieldDef>>((ref) {
@@ -183,6 +184,22 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
   late final TextEditingController _placeholder;
   late final TextEditingController _tolerance;
 
+  // Per-type rules. Text rather than numbers so a half-typed "-" or an empty
+  // box is representable; parsed on save, where blank means "no rule".
+  late final TextEditingController _min;
+  late final TextEditingController _max;
+  late final TextEditingController _precision;
+  late final TextEditingController _scaleMin;
+  late final TextEditingController _scaleMax;
+  late final TextEditingController _trueLabel;
+  late final TextEditingController _falseLabel;
+  late final TextEditingController _maxLength;
+  late bool _allowOther;
+
+  /// Rating value -> what it means, e.g. "1" -> "Dead".
+  late Map<String, String> _labels;
+  bool _saving = false;
+
   /// The config this field was opened with. Everything the form does not touch
   /// is carried forward from here on save.
   late FieldConfig _existingConfig;
@@ -226,6 +243,19 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
         : FieldConfig.parse(existing.config);
     _options = [..._existingConfig.options];
     _optionColors = {..._existingConfig.optionColors};
+
+    final c = _existingConfig;
+    String text(Object? v) => v == null ? '' : '$v';
+    _min = TextEditingController(text: text(c.min));
+    _max = TextEditingController(text: text(c.max));
+    _precision = TextEditingController(text: text(c.precision));
+    _scaleMin = TextEditingController(text: text(c.scaleMin));
+    _scaleMax = TextEditingController(text: text(c.scaleMax));
+    _trueLabel = TextEditingController(text: c.trueLabel ?? '');
+    _falseLabel = TextEditingController(text: c.falseLabel ?? '');
+    _maxLength = TextEditingController(text: text(c.maxLength));
+    _allowOther = c.allowOther;
+    _labels = {...c.labels};
   }
 
   @override
@@ -234,6 +264,18 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
     _optionInput.dispose();
     _placeholder.dispose();
     _tolerance.dispose();
+    for (final c in [
+      _min,
+      _max,
+      _precision,
+      _scaleMin,
+      _scaleMax,
+      _trueLabel,
+      _falseLabel,
+      _maxLength,
+    ]) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -243,8 +285,50 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
   /// dropped every value without a control here -- a rating field's scale, a
   /// number field's min/max/precision, colour ramps, custom labels -- so
   /// renaming a field silently destroyed its configuration.
-  FieldConfig get _config =>
-      _existingConfig.copyWith(options: _options, optionColors: _optionColors);
+  ///
+  /// Built through the JSON map rather than `copyWith`, which cannot set a
+  /// value back to null: emptying the Maximum box has to remove the maximum,
+  /// not quietly keep the old one.
+  FieldConfig get _config {
+    final map = _existingConfig.toMap();
+    void put(String key, Object? value) =>
+        value == null ? map.remove(key) : map[key] = value;
+    String? blank(TextEditingController c) =>
+        c.text.trim().isEmpty ? null : c.text.trim();
+
+    put('options', _options.isEmpty ? null : _options);
+    put('option_colors', _optionColors.isEmpty ? null : _optionColors);
+
+    switch (_type) {
+      case FieldType.integer:
+      case FieldType.decimal:
+        put('min', num.tryParse(_min.text.trim()));
+        put('max', num.tryParse(_max.text.trim()));
+        if (_type == FieldType.decimal) {
+          put('precision', int.tryParse(_precision.text.trim()));
+        }
+      case FieldType.rating:
+        put('scale_min', int.tryParse(_scaleMin.text.trim()));
+        put('scale_max', int.tryParse(_scaleMax.text.trim()));
+        final labels = {
+          for (final e in _labels.entries)
+            if (e.value.trim().isNotEmpty) e.key: e.value.trim(),
+        };
+        put('labels', labels.isEmpty ? null : labels);
+      case FieldType.boolean:
+        put('true_label', blank(_trueLabel));
+        put('false_label', blank(_falseLabel));
+      case FieldType.categorical:
+      case FieldType.multiSelect:
+        put('allow_other', _allowOther ? true : null);
+      case FieldType.text:
+        put('max_length', int.tryParse(_maxLength.text.trim()));
+      case FieldType.date:
+      case FieldType.datetime:
+        break;
+    }
+    return FieldConfig.fromMap(map);
+  }
 
   /// Blank means "no placeholder chosen", not an empty placeholder.
   String? get _blankPlaceholder =>
@@ -255,9 +339,51 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
   bool get _isObject => _role == FieldRole.object;
 
   Future<void> _save() async {
+    if (_saving) return;
     final dao = ref.read(fieldDefsDaoProvider);
     final projectId = ref.read(activeProjectIdProvider);
     if (projectId == null) return;
+
+    setState(() => _saving = true);
+    try {
+      await _write(dao, projectId);
+    } catch (e) {
+      if (mounted) setState(() => _problems = ['Could not save: $e']);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _write(FieldDefsDao dao, String projectId) async {
+    // Turning "plants belong to it" on or off, or changing how close counts
+    // as on a line, re-derives every plant's membership -- an ID change like
+    // any other, so it is counted and confirmed the same way.
+    final existing = widget.existing;
+    if (existing != null &&
+        (existing.isContainer != _isContainer ||
+            existing.tolerance != _toleranceValue)) {
+      final change = await ref
+          .read(layoutDaoProvider)
+          .previewFieldChange(
+            fieldDefId: existing.id,
+            isContainer: _isContainer,
+            // Null means "keep what is stored" to the preview, but "use the
+            // default" to the save -- so a cleared box is passed as the
+            // default it stands for.
+            tolerance: _toleranceValue ?? MembershipService.defaultTolerance,
+          );
+      if (!mounted) return;
+      final ok = await confirmIdentifierChange(
+        context,
+        change: change,
+        action: 'Change ${existing.name}',
+        proceedLabel: 'Save',
+        refusalAdvice:
+            'Those plants would only be told apart by ${existing.name}. Add a '
+            'part to the ID format that tells them apart first.',
+      );
+      if (!ok || !mounted) return;
+    }
 
     final result = await ref
         .read(operationRecorderProvider)
@@ -411,6 +537,7 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
         'For facts that do not change: variety, rootstock, plant date',
       ),
     ),
+    ..._ruleControls(),
     if (_type.hasOptions) ...[
       const Divider(height: 32),
       const Text(
@@ -441,8 +568,153 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
           IconButton(icon: const Icon(Icons.add), onPressed: _addOption),
         ],
       ),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: _allowOther,
+        onChanged: (v) => setState(() => _allowOther = v),
+        title: const Text('Allow other values'),
+        subtitle: const Text(
+          'Data entry offers a box for something not on the list',
+        ),
+      ),
     ],
   ];
+
+  Widget _numberBox(
+    TextEditingController controller,
+    String label, {
+    bool decimal = true,
+    String? helper,
+  }) => Expanded(
+    child: TextField(
+      controller: controller,
+      keyboardType: TextInputType.numberWithOptions(
+        decimal: decimal,
+        signed: true,
+      ),
+      decoration: InputDecoration(labelText: label, helperText: helper),
+      onChanged: (_) => setState(() {}),
+    ),
+  );
+
+  /// The validation rules for the chosen type.
+  ///
+  /// These existed in the config and were enforced on entry, but had no
+  /// controls -- a range or a rating scale could only come from an import.
+  List<Widget> _ruleControls() {
+    switch (_type) {
+      case FieldType.integer:
+      case FieldType.decimal:
+        return [
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              _numberBox(_min, 'Minimum', decimal: _type == FieldType.decimal),
+              const SizedBox(width: 12),
+              _numberBox(_max, 'Maximum', decimal: _type == FieldType.decimal),
+              if (_type == FieldType.decimal) ...[
+                const SizedBox(width: 12),
+                _numberBox(_precision, 'Decimal places', decimal: false),
+              ],
+            ],
+          ),
+          const Padding(
+            padding: EdgeInsets.only(top: 4),
+            child: Text(
+              'Blank means no limit. Values outside are refused on entry.',
+              style: TextStyle(fontSize: 12),
+            ),
+          ),
+        ];
+
+      case FieldType.rating:
+        final lo = int.tryParse(_scaleMin.text.trim()) ?? 1;
+        final hi = int.tryParse(_scaleMax.text.trim()) ?? 5;
+        // Capped so a typo like 100 does not build a hundred label boxes.
+        final labelled = hi >= lo && hi - lo <= 10;
+        return [
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              _numberBox(_scaleMin, 'Lowest', decimal: false, helper: '1'),
+              const SizedBox(width: 12),
+              _numberBox(_scaleMax, 'Highest', decimal: false, helper: '5'),
+            ],
+          ),
+          if (labelled) ...[
+            const SizedBox(height: 12),
+            const Text(
+              'What each score means (optional) -- shown when entering it',
+              style: TextStyle(fontSize: 12),
+            ),
+            for (var v = lo; v <= hi; v++)
+              TextFormField(
+                key: ValueKey('label-$v'),
+                initialValue: _labels['$v'] ?? '',
+                decoration: InputDecoration(
+                  prefixText: '$v  ',
+                  isDense: true,
+                  hintText: v == lo
+                      ? 'e.g. Dead'
+                      : v == hi
+                      ? 'e.g. Excellent'
+                      : null,
+                ),
+                onChanged: (text) => _labels['$v'] = text,
+              ),
+          ],
+        ];
+
+      case FieldType.boolean:
+        return [
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _trueLabel,
+                  decoration: const InputDecoration(
+                    labelText: 'Yes reads as',
+                    hintText: 'Yes',
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: TextField(
+                  controller: _falseLabel,
+                  decoration: const InputDecoration(
+                    labelText: 'No reads as',
+                    hintText: 'No',
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ];
+
+      case FieldType.text:
+        return [
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              _numberBox(
+                _maxLength,
+                'Longest allowed',
+                decimal: false,
+                helper: 'Characters. Blank means no limit.',
+              ),
+            ],
+          ),
+        ];
+
+      case FieldType.categorical:
+      case FieldType.multiSelect:
+      case FieldType.date:
+      case FieldType.datetime:
+        return const [];
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -544,7 +816,7 @@ class _FieldEditorSheetState extends ConsumerState<_FieldEditorSheet> {
                 ),
                 const SizedBox(width: 8),
                 FilledButton(
-                  onPressed: _save,
+                  onPressed: _saving ? null : _save,
                   child: Text(_isNew ? 'Create' : 'Save'),
                 ),
               ],

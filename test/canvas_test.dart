@@ -139,6 +139,7 @@ void main() {
       void Function(Offset)? onDragStart,
       void Function(Offset)? onDragUpdate,
       void Function(Offset)? onDragEnd,
+      VoidCallback? onDragCancel,
       void Function(CanvasViewport)? onViewport,
     }) async {
       await tester.pumpWidget(
@@ -151,6 +152,7 @@ void main() {
               onDragStart: onDragStart,
               onDragUpdate: onDragUpdate,
               onDragEnd: onDragEnd,
+              onDragCancel: onDragCancel,
               onViewportChanged: onViewport,
             ),
           ),
@@ -221,16 +223,48 @@ void main() {
       expect(viewport!.translation, isNot(before));
     });
 
+    testWidgets('a drag ends where the finger lifts, not where it started', (
+      tester,
+    ) async {
+      // The end used to be reported at the gesture's *start* point. A marquee
+      // hid it, since it tracks its own rectangle; Move moved a plant to where
+      // it already was, and Reshape threw every drag away as a tap.
+      Offset? start;
+      Offset? end;
+      await pumpCanvas(
+        tester,
+        tool: CanvasTool.move,
+        onDragStart: (p) => start = p,
+        onDragEnd: (p) => end = p,
+      );
+
+      final gesture = await tester.startGesture(const Offset(100, 100));
+      await tester.pump();
+      await gesture.moveTo(const Offset(160, 140));
+      await tester.pump();
+      await gesture.moveTo(const Offset(220, 180));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(start, isNotNull);
+      expect(end, const Offset(220, 180));
+    });
+
     testWidgets('a second finger takes over mid-drag without a jump', (
       tester,
     ) async {
       // Starting a marquee then pinching must not have both fighting for the
-      // same gesture.
+      // same gesture -- and must not *commit* the tool's drag either. A
+      // reshape half-dragged when you reach to zoom is abandoned, not written
+      // wherever the two fingers happened to meet.
       var dragEnded = false;
+      var dragCancelled = false;
       await pumpCanvas(
         tester,
         tool: CanvasTool.select,
         onDragEnd: (_) => dragEnded = true,
+        onDragCancel: () => dragCancelled = true,
       );
 
       final a = await tester.startGesture(const Offset(200, 200));
@@ -244,7 +278,8 @@ void main() {
       await b.moveBy(const Offset(30, 0));
       await tester.pump();
 
-      expect(dragEnded, isTrue, reason: 'the tool drag should be handed off');
+      expect(dragCancelled, isTrue, reason: 'the tool drag is handed off');
+      expect(dragEnded, isFalse, reason: 'and not committed');
 
       await a.up();
       await b.up();

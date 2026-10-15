@@ -195,6 +195,7 @@ class LayoutDao {
     required String projectId,
     Map<String, Shape?> geometry = const {},
     Map<String, Offset> positions = const {},
+    Map<String, ContainerSettings> fields = const {},
   }) async {
     final before = await _labels.identifiersForProject(projectId);
     final after = LabelService.render(
@@ -204,12 +205,47 @@ class LayoutDao {
           projectId: projectId,
           geometryOverride: geometry,
           positionOverride: positions,
+          fieldOverride: fields,
         ),
       ),
       await _labels.templateFor(projectId),
     );
 
     return LabelService.compare(before, after);
+  }
+
+  /// What changing a field's container flag or tolerance would do.
+  /// **Nothing is written.**
+  ///
+  /// The schema-side twin of [previewGeometryChange]. Unticking "contains
+  /// plants" on Block blanks the Block part of every identifier in the vineyard,
+  /// and widening Row's tolerance can sweep plants into a row they were beside --
+  /// both renames nobody would guess from a checkbox, so the field editor should
+  /// put this count to the user before `FieldDefsDao.update` reconciles.
+  ///
+  /// A null argument keeps the field's stored value.
+  Future<IdentifierChange> previewFieldChange({
+    required String fieldDefId,
+    bool? isContainer,
+    double? tolerance,
+  }) async {
+    final field =
+        await (_db.select(_db.fieldDefs)
+              ..where((f) => f.id.equals(fieldDefId) & f.deletedAt.isNull()))
+            .getSingleOrNull();
+    if (field == null) {
+      return const IdentifierChange(changed: 0, duplicates: []);
+    }
+
+    return previewLayoutChange(
+      projectId: field.projectId,
+      fields: {
+        fieldDefId: ContainerSettings(
+          isContainer: isContainer ?? field.isContainer,
+          tolerance: tolerance ?? field.tolerance,
+        ),
+      },
+    );
   }
 
   /// What changing one object's shape would do. Pass null to ask about deleting
@@ -505,9 +541,31 @@ class LayoutDao {
         plantIds: {id},
         now: timestamp,
       );
+      // Numbered from the carrier-less pool, but a free plant dropped beside a
+      // row *renders* on that row -- so the pool's answer can read exactly like
+      // a plant already there. Checked against the identifier the plant
+      // actually ended up with, once its memberships exist to render it.
+      await _renumberIfClashing(id, number, timestamp);
     });
 
     return id;
+  }
+
+  /// Moves [plantId] off [number] if that would duplicate an identifier.
+  ///
+  /// A no-op in the common case, so it costs one journal row only when it
+  /// changes something -- and since label history records once per operation,
+  /// the brief clashing number never appears there either.
+  Future<void> _renumberIfClashing(
+    String plantId,
+    int number,
+    DateTime timestamp,
+  ) async {
+    final safe = await _labels.lowestSafeNumber(plantId);
+    if (safe == number) return;
+    await (_db.update(_db.plants)..where((v) => v.id.equals(plantId))).write(
+      PlantsCompanion(positionIdx: Value(safe), updatedAt: Value(timestamp)),
+    );
   }
 
   /// Creates plants along a carrier at the given arc-length offsets.
@@ -535,10 +593,16 @@ class LayoutDao {
     final ids = <String>[];
 
     await _db.transaction(() async {
+      // Living plants only, matching `LabelService.nextPlantNumber`: a retired
+      // plant's number is free for its replacement, which is what lets "retire
+      // plant 3, plant a new one" give 3 again.
       final used = <int>{
         for (final v
             in await (_db.select(_db.plants)..where(
-                  (v) => v.carrierId.equals(carrierId) & v.deletedAt.isNull(),
+                  (v) =>
+                      v.carrierId.equals(carrierId) &
+                      v.deletedAt.isNull() &
+                      v.status.equalsValue(PlantStatus.active),
                 ))
                 .get())
           v.positionIdx,
@@ -667,6 +731,17 @@ class LayoutDao {
           updatedAt: Value(timestamp),
         ),
       );
+      // The plant has not moved, but it has lost the carrier that broke any
+      // same-field tie in its favour -- so its memberships are re-derived
+      // before its identifier is checked.
+      await _memberships.reconcile(
+        projectId: plant.projectId,
+        plantIds: {plantId},
+        now: timestamp,
+      );
+      // Left beside its row, it still renders on that row, where the free
+      // pool's number may already be taken. Same trap as [createPlant].
+      await _renumberIfClashing(plantId, number, timestamp);
     });
   }
 
@@ -727,19 +802,27 @@ class LayoutDao {
   }
 
   /// Retires a plant, keeping its history (decision D7).
+  ///
+  /// **A no-op on a plant already retired.** Its `endedAt` is when it died, and
+  /// a second retire -- a bulk retire over a selection that included it, say --
+  /// would otherwise move that date to today and rewrite its history.
   Future<void> retirePlant(
     String plantId, {
     required PlantStatusChange change,
     DateTime? now,
   }) async {
     final timestamp = now ?? DateTime.now();
-    await (_db.update(_db.plants)..where((v) => v.id.equals(plantId))).write(
-      PlantsCompanion(
-        status: Value(change.status),
-        endedAt: Value(timestamp),
-        updatedAt: Value(timestamp),
-      ),
-    );
+    await (_db.update(_db.plants)..where(
+          (v) =>
+              v.id.equals(plantId) & v.status.equalsValue(PlantStatus.active),
+        ))
+        .write(
+          PlantsCompanion(
+            status: Value(change.status),
+            endedAt: Value(timestamp),
+            updatedAt: Value(timestamp),
+          ),
+        );
   }
 
   /// Retires a plant and plants a successor in its place.

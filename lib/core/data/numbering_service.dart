@@ -172,15 +172,21 @@ class NumberingService {
     if (!change.isSafe) return NumberingRefused(change.duplicates);
 
     final timestamp = now ?? DateTime.now();
-    await _db.transaction(() async {
+    // One batch rather than an awaited round trip per plant: numbering a whole
+    // block is thousands of updates, and nearly all of their cost was the
+    // per-statement trip, not the write. The capture triggers are unaffected --
+    // they are FOR EACH ROW in SQLite and fire however the statement arrives --
+    // so the renumber is undoable exactly as before. `batch` runs in the
+    // surrounding transaction when there is one, and opens its own otherwise.
+    await _db.batch((batch) {
       for (final entry in plan.assignments.entries) {
-        await (_db.update(
+        batch.update(
           _db.plants,
-        )..where((v) => v.id.equals(entry.key))).write(
           PlantsCompanion(
             positionIdx: Value(entry.value),
             updatedAt: Value(timestamp),
           ),
+          where: (v) => v.id.equals(entry.key),
         );
       }
     });

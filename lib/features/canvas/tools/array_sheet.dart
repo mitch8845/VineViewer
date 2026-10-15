@@ -357,59 +357,61 @@ class PointArrayPlan {
 /// not in the same widget tree: the throwaway-guide tool on the canvas, and the
 /// "space points along it" action on a selected object. They differ only in
 /// whether there is a real line for plants to be carried by.
+///
+/// Takes a bare [read] rather than a `WidgetRef`: the object sheet calls this
+/// after it has closed, and a closed sheet's ref throws on use. Passing
+/// `ref.read` or a `ProviderContainer`'s `read` both work.
 Future<void> writePointArray(
-  WidgetRef ref, {
+  T Function<T>(ProviderListenable<T> provider) read, {
   required String projectId,
   required Polyline guide,
   required PointArrayPlan plan,
   required String? carrierId,
 }) async {
-  final layout = ref.read(layoutDaoProvider);
-  final labels = ref.read(labelServiceProvider);
+  final layout = read(layoutDaoProvider);
+  final labels = read(labelServiceProvider);
   final field = plan.field;
 
-  await ref
-      .read(operationRecorderProvider)
-      .run(
-        projectId: projectId,
-        kind: plan.isPlant ? 'array_plants' : 'array_points',
-        description: plan.isPlant
-            ? 'Place ${plan.offsets.length} plants'
-            : 'Place ${plan.offsets.length} ${field!.name} points',
-        body: () async {
-          if (plan.isPlant) {
-            // Carried when there is a real line to carry them, free-standing
-            // when the guide was a throwaway -- there would be nothing left for
-            // a carrier to point at.
-            if (carrierId != null) {
-              await layout.placePlantsAlongCarrier(
-                carrierId: carrierId,
-                offsets: plan.offsets,
-              );
-            } else {
-              for (final offset in plan.offsets) {
-                await layout.createPlant(
-                  projectId: projectId,
-                  position: guide.pointAt(offset),
-                );
-              }
-            }
-            return;
-          }
-
-          // Labels resolved one at a time inside the operation, so each is free
-          // against the ones just written rather than against a stale snapshot.
+  await read(operationRecorderProvider).run(
+    projectId: projectId,
+    kind: plan.isPlant ? 'array_plants' : 'array_points',
+    description: plan.isPlant
+        ? 'Place ${plan.offsets.length} plants'
+        : 'Place ${plan.offsets.length} ${field!.name} points',
+    body: () async {
+      if (plan.isPlant) {
+        // Carried when there is a real line to carry them, free-standing
+        // when the guide was a throwaway -- there would be nothing left for
+        // a carrier to point at.
+        if (carrierId != null) {
+          await layout.placePlantsAlongCarrier(
+            carrierId: carrierId,
+            offsets: plan.offsets,
+          );
+        } else {
           for (final offset in plan.offsets) {
-            final label = await labels.nextObjectLabel(field!.id);
-            await layout.createObject(
+            await layout.createPlant(
               projectId: projectId,
-              fieldDefId: field.id,
-              label: '$label',
-              geometry: PointShape(guide.pointAt(offset)),
+              position: guide.pointAt(offset),
             );
           }
-        },
-      );
+        }
+        return;
+      }
+
+      // Labels resolved one at a time inside the operation, so each is free
+      // against the ones just written rather than against a stale snapshot.
+      for (final offset in plan.offsets) {
+        final label = await labels.nextObjectLabel(field!.id);
+        await layout.createObject(
+          projectId: projectId,
+          fieldDefId: field.id,
+          label: '$label',
+          geometry: PointShape(guide.pointAt(offset)),
+        );
+      }
+    },
+  );
 }
 
 /// Places evenly spaced instances along a line.

@@ -171,9 +171,17 @@ class ObjectActionsSheet extends ConsumerWidget {
         .objectFieldsForProject(projectId);
     if (path == null || !context.mounted) return;
 
-    Navigator.pop(context);
+    // Everything this sheet's context and ref are needed for, taken before it
+    // closes: both are dead by the time the next sheet returns, and using the
+    // ref then threw -- so nothing was placed and nothing was said.
+    final container = ProviderScope.containerOf(context, listen: false);
+    final calibration = ref.read(calibrationProvider).valueOrNull;
+    final navigator = Navigator.of(context);
+    navigator.pop();
+    if (!navigator.mounted) return;
+
     final plan = await showModalBottomSheet<PointArrayPlan>(
-      context: context,
+      context: navigator.context,
       isScrollControlled: true,
       builder: (context) => PointArraySheet(
         guide: path,
@@ -182,13 +190,13 @@ class ObjectActionsSheet extends ConsumerWidget {
             if (f.drawType == DrawType.point) f,
         ],
         guideIsThrowaway: false,
-        calibration: ref.read(calibrationProvider).valueOrNull,
+        calibration: calibration,
       ),
     );
     if (plan == null) return;
 
     await writePointArray(
-      ref,
+      container.read,
       projectId: projectId,
       guide: path,
       plan: plan,
@@ -217,6 +225,32 @@ class ObjectActionsSheet extends ConsumerWidget {
           'first, then delete it.',
     );
     if (!ok || !context.mounted) return;
+
+    // The identifier prompt only speaks up when IDs change, so a road, a post,
+    // or a line no ID mentions used to vanish on a single tap. Undo would
+    // bring it back, but a delete deserves one deliberate press.
+    if (change.isSafe && change.changed == 0) {
+      final sure = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('Delete $fieldName $label?'),
+          content: const Text(
+            'Its plants stay where they are. Undo brings it back.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Delete it'),
+            ),
+          ],
+        ),
+      );
+      if (sure != true || !context.mounted) return;
+    }
 
     await ref
         .read(operationRecorderProvider)

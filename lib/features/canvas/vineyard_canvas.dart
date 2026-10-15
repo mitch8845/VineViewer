@@ -84,6 +84,7 @@ class VineyardCanvas extends StatefulWidget {
     this.onDragStart,
     this.onDragUpdate,
     this.onDragEnd,
+    this.onDragCancel,
     this.onViewportChanged,
     this.minScale = 0.05,
     this.maxScale = 20,
@@ -99,6 +100,14 @@ class VineyardCanvas extends StatefulWidget {
   final void Function(Offset layoutPoint)? onDragStart;
   final void Function(Offset layoutPoint)? onDragUpdate;
   final void Function(Offset layoutPoint)? onDragEnd;
+
+  /// A single-pointer drag abandoned because a second finger arrived.
+  ///
+  /// Distinct from [onDragEnd], which commits. Putting a second finger down is
+  /// reaching for the map, not finishing the edit -- a reshape half-dragged
+  /// when you decide to zoom must not be written where the two fingers
+  /// happened to meet.
+  final VoidCallback? onDragCancel;
 
   final void Function(CanvasViewport)? onViewportChanged;
 
@@ -119,6 +128,12 @@ class VineyardCanvasState extends State<VineyardCanvas> {
   Offset _translationAtGestureStart = Offset.zero;
   Offset _focalAtGestureStart = Offset.zero;
   bool _draggingWithTool = false;
+
+  /// Where the single pointer last was. The drag ends here, not where it
+  /// started: [ScaleEndDetails] carries no position, and reporting the start
+  /// point instead made every move a move to where the plant already was, and
+  /// every reshape a zero-length drag that was thrown away as a tap.
+  Offset _lastFocal = Offset.zero;
 
   CanvasViewport get viewport => CanvasViewport(
     scale: _scale,
@@ -149,6 +164,7 @@ class VineyardCanvasState extends State<VineyardCanvas> {
     _scaleAtGestureStart = _scale;
     _translationAtGestureStart = _translation;
     _focalAtGestureStart = details.localFocalPoint;
+    _lastFocal = details.localFocalPoint;
 
     // One pointer always belongs to the tool -- including select, where the
     // drag is a marquee. Two or more is navigation, handled in the update.
@@ -164,7 +180,7 @@ class VineyardCanvasState extends State<VineyardCanvas> {
     if (details.pointerCount >= 2) {
       if (_draggingWithTool) {
         _draggingWithTool = false;
-        widget.onDragEnd?.call(viewport.toLayout(details.localFocalPoint));
+        widget.onDragCancel?.call();
         // Rebase so the view does not jump when navigation takes over.
         _scaleAtGestureStart = _scale;
         _translationAtGestureStart = _translation;
@@ -175,6 +191,7 @@ class VineyardCanvasState extends State<VineyardCanvas> {
     }
 
     if (_draggingWithTool) {
+      _lastFocal = details.localFocalPoint;
       widget.onDragUpdate?.call(viewport.toLayout(details.localFocalPoint));
     }
   }
@@ -199,9 +216,18 @@ class VineyardCanvasState extends State<VineyardCanvas> {
   }
 
   void _onScaleEnd(ScaleEndDetails details) {
-    if (_draggingWithTool) {
-      _draggingWithTool = false;
-      widget.onDragEnd?.call(viewport.toLayout(_focalAtGestureStart));
+    if (!_draggingWithTool) return;
+    _draggingWithTool = false;
+
+    // The recognizer ends the gesture and starts a new one whenever a pointer
+    // is added, so a second finger arrives *here* first -- not as a
+    // two-pointer update. Pointers still down means that is what happened:
+    // the drag is abandoned for navigation, not committed. Only a lift with
+    // nothing left on the glass finishes it.
+    if (details.pointerCount > 0) {
+      widget.onDragCancel?.call();
+    } else {
+      widget.onDragEnd?.call(viewport.toLayout(_lastFocal));
     }
   }
 

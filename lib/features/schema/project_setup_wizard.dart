@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/db/database.dart';
 import '../../core/models/enums.dart';
 import '../../core/providers.dart';
+import '../canvas/canvas_controller.dart';
+import '../canvas/vineyard_screen.dart';
+import '../projects/aerial_image.dart';
 import 'field_editor_screen.dart';
 import 'identifier_template_editor.dart';
 
@@ -34,7 +38,35 @@ class _ProjectSetupWizardState extends ConsumerState<ProjectSetupWizard> {
 
   bool _working = false;
 
+  /// Set once the objects are written, so Back-then-Next does not try to
+  /// create Row and Block a second time.
+  bool _objectsCreated = false;
+
+  static const _imageStep = 0;
+  static const _objectStep = 1;
+  static const _lastStep = 3;
+
+  Future<void> _setAerial({required bool fromDevice}) async {
+    setState(() => _working = true);
+    try {
+      if (fromDevice) {
+        await pickAerialImage(ref, widget.projectId);
+      } else {
+        await installSampleAerial(ref, widget.projectId);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Could not set the image: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _working = false);
+    }
+  }
+
   Future<void> _createObjects() async {
+    if (_objectsCreated) return;
     setState(() => _working = true);
     final dao = ref.read(fieldDefsDaoProvider);
 
@@ -61,7 +93,19 @@ class _ProjectSetupWizardState extends ConsumerState<ProjectSetupWizard> {
           },
         );
 
+    _objectsCreated = true;
     if (mounted) setState(() => _working = false);
+  }
+
+  /// Straight onto the map: the next thing anyone does after setting up a
+  /// vineyard is draw it, and landing back on the project list made them find
+  /// it and tap it first.
+  void _finish(NavigatorState navigator) {
+    resetProjectScopedState(ref);
+    ref.read(activeProjectIdProvider.notifier).state = widget.projectId;
+    navigator.pushReplacement(
+      MaterialPageRoute<void>(builder: (_) => const VineyardScreen()),
+    );
   }
 
   @override
@@ -82,12 +126,12 @@ class _ProjectSetupWizardState extends ConsumerState<ProjectSetupWizard> {
           // Captured before the await, so the analyzer can see it is not a
           // BuildContext reached across the gap.
           final navigator = Navigator.of(context);
-          if (_step == 0) await _createObjects();
+          if (_step == _objectStep) await _createObjects();
           if (!mounted) return;
-          if (_step < 2) {
+          if (_step < _lastStep) {
             setState(() => _step++);
           } else {
-            navigator.pop();
+            _finish(navigator);
           }
         },
         onStepCancel: _step == 0 ? null : () => setState(() => _step--),
@@ -97,7 +141,7 @@ class _ProjectSetupWizardState extends ConsumerState<ProjectSetupWizard> {
             children: [
               FilledButton(
                 onPressed: _working ? null : details.onStepContinue,
-                child: Text(_step == 2 ? 'Done' : 'Next'),
+                child: Text(_step == _lastStep ? 'Open the map' : 'Next'),
               ),
               const SizedBox(width: 8),
               if (details.onStepCancel != null)
@@ -110,8 +154,67 @@ class _ProjectSetupWizardState extends ConsumerState<ProjectSetupWizard> {
         ),
         steps: [
           Step(
+            title: const Text('An aerial photo'),
+            isActive: _step >= _imageStep,
+            content: Consumer(
+              builder: (context, ref, _) {
+                final project = ref.watch(_projectProvider(widget.projectId));
+                final hasImage = project.valueOrNull?.imagePath != null;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'You draw rows and blocks over a photo of the vineyard, '
+                      'so it is easiest to choose one first. It can be changed '
+                      'later from the project list.',
+                    ),
+                    const SizedBox(height: 16),
+                    if (hasImage)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.check_circle,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Image set '
+                              '(${project.value!.imageWidth}x'
+                              '${project.value!.imageHeight})',
+                            ),
+                          ],
+                        ),
+                      ),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        OutlinedButton.icon(
+                          onPressed: _working
+                              ? null
+                              : () => _setAerial(fromDevice: false),
+                          icon: const Icon(Icons.grass),
+                          label: const Text('Five Sisters aerial'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _working
+                              ? null
+                              : () => _setAerial(fromDevice: true),
+                          icon: const Icon(Icons.photo_library_outlined),
+                          label: const Text('Choose a photo'),
+                        ),
+                      ],
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+          Step(
             title: const Text('What do you draw?'),
-            isActive: _step >= 0,
+            isActive: _step >= _objectStep,
             content: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -139,7 +242,7 @@ class _ProjectSetupWizardState extends ConsumerState<ProjectSetupWizard> {
           ),
           Step(
             title: const Text('What do you record?'),
-            isActive: _step >= 1,
+            isActive: _step >= 2,
             content: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -163,7 +266,7 @@ class _ProjectSetupWizardState extends ConsumerState<ProjectSetupWizard> {
           ),
           Step(
             title: const Text('What is a plant called?'),
-            isActive: _step >= 2,
+            isActive: _step >= 3,
             content: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -196,6 +299,17 @@ class _ProjectSetupWizardState extends ConsumerState<ProjectSetupWizard> {
     );
   }
 }
+
+/// This project's row, live, so the image step shows the result of a pick.
+final _projectProvider = StreamProvider.autoDispose.family<Project?, String>((
+  ref,
+  projectId,
+) {
+  final db = ref.watch(databaseProvider);
+  return (db.select(
+    db.projects,
+  )..where((p) => p.id.equals(projectId))).watchSingleOrNull();
+});
 
 /// One object the wizard offers to create.
 class _ObjectDraft {

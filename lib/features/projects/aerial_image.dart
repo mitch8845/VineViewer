@@ -14,6 +14,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../core/providers.dart';
+import '../canvas/canvas_controller.dart';
 
 /// The Five Sisters aerial that ships with the app.
 const sampleAerialAsset = 'assets/aerial/five_sisters_aerial.jpg';
@@ -65,6 +66,13 @@ Future<void> setProjectImage(
   await ref
       .read(projectsDaoProvider)
       .setImage(projectId, imagePath: path, width: width, height: height);
+
+  // The decoded image is cached per project, and the file is overwritten in
+  // place under the same name -- so nothing about the provider's inputs
+  // changes, and without this a new aerial did not appear until another
+  // project had been opened or the app restarted.
+  ref.invalidate(backgroundImageProvider);
+  ref.invalidate(calibrationProvider);
 }
 
 /// Opens the system picker and attaches the chosen image to a project.

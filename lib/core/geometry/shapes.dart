@@ -242,9 +242,23 @@ bool _collinearOverlaps(Offset a1, Offset a2, Offset b1, Offset b2) {
   return hi - lo > 0;
 }
 
+/// Whether two bounding boxes meet, **edges included**.
+///
+/// The pre-filter for every exact overlap test, and deliberately not
+/// `Rect.overlaps`, which is strict. A horizontal line has zero-height bounds,
+/// and two zero-height boxes never strictly overlap -- so two rows drawn along
+/// the same stretch of the same y were never compared at all, and the one
+/// overlap a line check most needs to catch sailed through. A pre-filter may
+/// only ever be too permissive; the exact test after it decides.
+bool boundsTouch(Rect a, Rect b) =>
+    a.left <= b.right &&
+    b.left <= a.right &&
+    a.top <= b.bottom &&
+    b.top <= a.bottom;
+
 /// Whether two lines share ground, as opposed to merely touching.
 bool polylinesCross(Polyline a, Polyline b) {
-  if (!a.bounds.overlaps(b.bounds)) return false;
+  if (!boundsTouch(a.bounds, b.bounds)) return false;
 
   for (var i = 0; i < a.points.length - 1; i++) {
     for (var j = 0; j < b.points.length - 1; j++) {
@@ -293,6 +307,11 @@ Offset _centroid(List<Offset> vertices) {
 /// far milder than the consequence of being too strict, which is being unable
 /// to draw adjacent blocks.
 bool polygonsOverlap(List<Offset> a, List<Offset> b) {
+  // **Strict** here, unlike [polylinesCross]. A polygon has an interior, so two
+  // whose boxes merely touch can at most touch themselves -- and that is legal.
+  // It is also load-bearing: the edge test below counts a shared collinear edge
+  // as crossing, so two blocks abutting along a fence line would be refused if
+  // they ever reached it.
   if (!_boundsOf(a).overlaps(_boundsOf(b))) return false;
 
   for (var i = 0; i < a.length; i++) {
@@ -326,8 +345,10 @@ typedef ShapeRef = ({String id, String label, Shape shape});
   for (final other in others) {
     if (other.shape is PointShape) continue;
     // Bounds first. Exact tests are cheap at 75 rows and stay cheap at ten
-    // times that only because most pairs never reach them.
-    if (!candidate.bounds.overlaps(other.shape.bounds)) continue;
+    // times that only because most pairs never reach them. Inclusive, so a
+    // pair of horizontal rows is compared at all; each exact test applies the
+    // strictness its own shapes need.
+    if (!boundsTouch(candidate.bounds, other.shape.bounds)) continue;
 
     final collides = switch ((candidate, other.shape)) {
       (final PolylineShape a, final PolylineShape b) => polylinesCross(

@@ -1,6 +1,7 @@
 import 'package:drift/drift.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../data/membership_service.dart';
 import '../../models/enums.dart';
 import '../../models/field_config.dart';
 import '../database.dart';
@@ -29,10 +30,16 @@ class FieldDefInvalid extends FieldDefResult {
 
 /// CRUD for user-defined field definitions.
 class FieldDefsDao {
-  FieldDefsDao(this._db, {Uuid? uuid}) : _uuid = uuid ?? const Uuid();
+  /// [memberships] defaults to one built on the same database. It holds no
+  /// state, so a private instance agrees with the shared one by construction,
+  /// and the existing constructor call sites need not change.
+  FieldDefsDao(this._db, {Uuid? uuid, MembershipService? memberships})
+    : _uuid = uuid ?? const Uuid(),
+      _memberships = memberships ?? MembershipService(_db);
 
   final AppDatabase _db;
   final Uuid _uuid;
+  final MembershipService _memberships;
 
   Future<FieldDefResult> create({
     required String projectId,
@@ -283,22 +290,53 @@ class FieldDefsDao {
 
     if (problems.isNotEmpty) return FieldDefInvalid(problems);
 
-    await (_db.update(_db.fieldDefs)..where((f) => f.id.equals(id))).write(
-      FieldDefsCompanion(
-        name: trimmed == null ? const Value.absent() : Value(trimmed),
-        config: config == null ? const Value.absent() : Value(config.toJson()),
-        isStatic: isStatic == null ? const Value.absent() : Value(isStatic),
-        isContainer: isContainer == null
-            ? const Value.absent()
-            : Value(isContainer),
-        blankPlaceholder: blankPlaceholder == null
-            ? const Value.absent()
-            : Value(blankPlaceholder),
-        tolerance: tolerance == null ? const Value.absent() : Value(tolerance),
-        sortOrder: sortOrder == null ? const Value.absent() : Value(sortOrder),
-        updatedAt: Value(now ?? DateTime.now()),
-      ),
-    );
+    final timestamp = now ?? DateTime.now();
+
+    // **Containment is derived from these two settings, so changing either
+    // re-derives it** -- in the same transaction, and so in the same undo step
+    // when the caller wraps this in a gesture. Otherwise unticking "contains
+    // plants" on Block left every plant's Block membership in place, still
+    // rendering in identifiers, until some unrelated edit happened to reconcile
+    // the plants it touched -- and then only those.
+    //
+    // Project-wide, because a field's instances can be anywhere. Only when a
+    // value actually changes: saving the field editor with nothing altered must
+    // not cost a full reconcile.
+    final containmentChanged =
+        (isContainer != null && isContainer != existing.isContainer) ||
+        (tolerance != null && tolerance != existing.tolerance);
+
+    await _db.transaction(() async {
+      await (_db.update(_db.fieldDefs)..where((f) => f.id.equals(id))).write(
+        FieldDefsCompanion(
+          name: trimmed == null ? const Value.absent() : Value(trimmed),
+          config: config == null
+              ? const Value.absent()
+              : Value(config.toJson()),
+          isStatic: isStatic == null ? const Value.absent() : Value(isStatic),
+          isContainer: isContainer == null
+              ? const Value.absent()
+              : Value(isContainer),
+          blankPlaceholder: blankPlaceholder == null
+              ? const Value.absent()
+              : Value(blankPlaceholder),
+          tolerance: tolerance == null
+              ? const Value.absent()
+              : Value(tolerance),
+          sortOrder: sortOrder == null
+              ? const Value.absent()
+              : Value(sortOrder),
+          updatedAt: Value(timestamp),
+        ),
+      );
+
+      if (containmentChanged) {
+        await _memberships.reconcile(
+          projectId: existing.projectId,
+          now: timestamp,
+        );
+      }
+    });
 
     return FieldDefSaved(id);
   }
