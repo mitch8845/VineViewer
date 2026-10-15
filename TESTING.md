@@ -1,6 +1,6 @@
 # VineViewer — feature and test checklist
 
-Everything the app does as of **0.9.0**, written to be walked through with a
+Everything the app does as of **0.10.0**, written to be walked through with a
 tablet in hand. Tick, strike out, and write in the margins.
 
 Notation: `[ ]` to do · `[x]` works · `[!]` broken · `[?]` unclear what should
@@ -15,7 +15,9 @@ hunting for a feature that isn't there.
 
 ## 1. Install and first run
 
-- [ ] Install 0.9.0 through **Check for updates** (0.7.0 onwards updates itself)
+- [ ] Install 0.10.0 through **Check for updates**
+- [ ] ⚠ **0.10.0 upgrades the database** (adds one column). Open Five Sisters
+      afterwards: same plants, same IDs, same values, undo still works (0.7.0 onwards updates itself)
 - [ ] Home-screen icon label reads **VineViewer**
 - [ ] Title bar reads **VineViewer** (0.6.0/0.6.1 wrongly said "PlantViewer")
 - [ ] App opens to the project list without a crash on a fresh install
@@ -799,6 +801,43 @@ Notes:
 
 ---
 
+## 17e. Filter (show only some values)
+
+Colour plants by a field (Layers), then use the legend.
+
+- [ ] Every legend entry has a checkbox and a **count**
+- [ ] Tap an entry → those plants disappear; tap again → back
+- [ ] **Hold** an entry → only that value shows
+- [ ] Legend shows "Showing N of M" and **Show all**
+- [ ] ⚠ Hidden plants cannot be tapped, marquee'd or lassoed
+- [ ] ⚠ With a filter on, a **Row / Block chip** selects only the visible
+      plants in it (e.g. only the Dead ones in Row 12)
+- [ ] ⚠ Plants already selected that the filter hides are dropped from the
+      selection
+- [ ] Numbers and dates filter by the legend's steps / days; ratings exactly
+- [ ] Record a value that moves a plant into a hidden value: it disappears
+- [ ] Switching the colour-by field, or closing the legend, clears the filter
+
+## 17f. Change log
+
+Map → ⋮ → **Change log**.
+
+- [ ] Every change, newest first, grouped by day, with the time and what it
+      touched ("40 plants · 40 values")
+- [ ] Single edits read "Set Health to 3 on 1.12.7"; bulk edits "Set Health to
+      3 on 40 plants"
+- [ ] Undone changes stay listed, struck through: **"Undone · can redo"**, then
+      just **"Undone"** once a new edit makes redo impossible
+- [ ] "Show undone" hides them
+- [ ] ⚠ Covers vineyard **rename**, **delete/restore** and **aerial photo**
+      changes too (these used to bypass the journal)
+- [ ] ⚠ Change the aerial photo, then undo: the **old photo** comes back
+- [ ] Bottom of the list: "Vineyard created …"
+
+Notes:
+
+---
+
 ## 18. ID-change prompts — all four triggers
 
 Four different things rename a plant. Only one is about naming. Each must count
@@ -874,8 +913,13 @@ Select plants → "More", or one plant → inspector **⋯**.
 - [ ] ⚠ The successor takes the **same position, carrier, offset and number**, so
       the ID is continuous — but a **fresh identity**, so the dead plant keeps its
       entire history rather than having it reattributed
-- [ ] ⚠ There is **no permanent delete and no trash**, by design. The sheet says
-      so. A plant you pulled is data; one created by mistake is one press of undo.
+- [ ] **Delete this plant / these plants** (red, at the bottom of the actions) —
+      for a plant created by mistake. The confirmation names how many readings
+      go with it and points to "Mark as removed" for vines that died.
+- [ ] ⚠ A deleted plant is gone from the map, its ID, the calendar, the
+      colouring counts and selections; its number is free on its row
+- [ ] ⚠ The delete is one entry in the **change log**, and undo brings the
+      plant **and its readings** back
 - [ ] Retire/replace are undoable
 - [ ] ⚠ **REGRESSION CHECK** — after a Replace, the old and new plant share an
       ID. That must **not** block anything else: rename a row, renumber, edit the

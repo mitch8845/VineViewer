@@ -57,7 +57,7 @@ class AppDatabase extends _$AppDatabase {
   /// **v3 and v4 both wipe**, and [_wipeToV4] serves every upgrade path from
   /// v1, v2 or v3. See [migration].
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -73,7 +73,13 @@ class AppDatabase extends _$AppDatabase {
       // v1-to-v2 step that carefully added the three journal tables would only
       // be building tables that the next line drops. Deleted rather than left
       // in place looking load-bearing.
-      if (from < 4) await _wipeToV4(m);
+      if (from < 4) {
+        await _wipeToV4(m);
+      } else if (from < 5) {
+        // v5 keeps abandoned undo history rather than deleting it. Additive:
+        // a nullable column, so a v4 database upgrades with nothing lost.
+        await m.addColumn(operations, operations.discardedAt);
+      }
     },
     beforeOpen: (details) async {
       // Must be enabled per connection: SQLite defaults foreign keys OFF, so

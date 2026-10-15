@@ -287,6 +287,15 @@ class Operations extends Table {
   IntColumn get undoneAt =>
       integer().nullable().map(const DateTimeMsConverter())();
 
+  /// Set when an undone operation is abandoned by a fresh edit, which makes it
+  /// impossible to redo.
+  ///
+  /// The operation used to be **deleted** at that point, so the change log
+  /// forgot every undone edit as soon as anything else happened. Marked
+  /// instead: undo and redo skip it, the change log keeps it.
+  IntColumn get discardedAt =>
+      integer().nullable().map(const DateTimeMsConverter())();
+
   IntColumn get createdAt => integer().map(const DateTimeMsConverter())();
 }
 

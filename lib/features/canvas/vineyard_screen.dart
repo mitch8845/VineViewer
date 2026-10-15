@@ -10,6 +10,7 @@ import '../../core/providers.dart';
 import '../data_entry/bulk_edit.dart';
 import '../data_entry/plant_inspector.dart';
 import '../history/calendar_screen.dart';
+import '../history/change_log_screen.dart';
 import '../projects/import_screen.dart';
 import '../schema/field_editor_screen.dart';
 import '../schema/identifier_template_editor.dart';
@@ -131,7 +132,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
 
   /// Cuts the line under the tap at that point.
   Future<void> _splitAt(ui.Offset layoutPoint) async {
-    final snapshot = ref.read(layoutSnapshotProvider).valueOrNull;
+    final LayoutSnapshot? snapshot = ref.read(mapSnapshotProvider);
     if (snapshot == null) return;
 
     final tolerance = _viewport.screenToLayoutDistance(_tapRadiusScreenPx);
@@ -178,7 +179,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
 
   /// Selects the plant under the tap, or failing that the object under it.
   void _selectAt(ui.Offset layoutPoint) {
-    final snapshot = ref.read(layoutSnapshotProvider).valueOrNull;
+    final LayoutSnapshot? snapshot = ref.read(mapSnapshotProvider);
     if (snapshot == null) return;
 
     final sticky = ref.read(stickySelectProvider);
@@ -294,7 +295,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
   /// the cost.
   Future<void> _insertPlantAt(ui.Offset layoutPoint) async {
     final projectId = _projectId;
-    final snapshot = ref.read(layoutSnapshotProvider).valueOrNull;
+    final LayoutSnapshot? snapshot = ref.read(mapSnapshotProvider);
     if (projectId == null || snapshot == null) return;
 
     final neighbour = snapshot.index.nearest(
@@ -357,7 +358,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
   void _onDragStart(ui.Offset layoutPoint) {
     _dragOrigin = layoutPoint;
     final tool = ref.read(activeToolProvider);
-    final snapshot = ref.read(layoutSnapshotProvider).valueOrNull;
+    final LayoutSnapshot? snapshot = ref.read(mapSnapshotProvider);
 
     switch (tool) {
       case CanvasTool.select:
@@ -454,7 +455,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     if (origin == null) return;
 
     final tool = ref.read(activeToolProvider);
-    final snapshot = ref.read(layoutSnapshotProvider).valueOrNull;
+    final LayoutSnapshot? snapshot = ref.read(mapSnapshotProvider);
 
     switch (tool) {
       case CanvasTool.select:
@@ -972,8 +973,13 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final snapshot =
+    // What the map shows, filter applied -- everything drawn and everything
+    // a finger can pick comes from this. The full layout is still used for the
+    // vineyard's size in the top bar and for framing the view.
+    final full =
         ref.watch(layoutSnapshotProvider).valueOrNull ?? LayoutSnapshot.empty;
+    final snapshot = ref.watch(mapSnapshotProvider);
+    final legendFilter = ref.watch(legendFilterProvider);
     final tool = ref.watch(activeToolProvider);
     final selection = ref.watch(selectionProvider);
     final labels = ref.watch(labelsProvider).valueOrNull ?? const {};
@@ -985,6 +991,10 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     final draft = ref.watch(reshapeDraftProvider);
     final selectedObject = ref.watch(selectedObjectProvider);
     final colouring = ref.watch(plantColouringProvider).valueOrNull;
+    final hidden =
+        colouring != null && legendFilter?.fieldId == colouring.fieldId
+        ? legendFilter!.hidden
+        : const <String>{};
     final showStats = ref.watch(showFrameStatsProvider);
     final fields = ref.watch(fieldDefsProvider).valueOrNull ?? const [];
     final fieldNames = {
@@ -993,10 +1003,10 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     };
 
     // Fit the view once the layout has something in it.
-    if (!_fittedOnce && !snapshot.bounds.isEmpty) {
+    if (!_fittedOnce && !full.bounds.isEmpty) {
       _fittedOnce = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        _canvasKey.currentState?.fitTo(snapshot.bounds);
+        _canvasKey.currentState?.fitTo(full.bounds);
       });
     }
 
@@ -1090,7 +1100,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                       title:
                           ref.watch(activeProjectProvider).valueOrNull?.name ??
                           '',
-                      subtitle: _summary(snapshot, fieldNames),
+                      subtitle: _summary(full, fieldNames),
                       undo: const UndoControls(),
                       layersActive:
                           colouring != null || showLabels || opacity < 1,
@@ -1154,8 +1164,22 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                     bottom: bottomInset,
                     child: MapLegend(
                       colouring: colouring,
-                      onClose: () =>
-                          ref.read(colorByFieldProvider.notifier).state = null,
+                      hidden: hidden,
+                      onToggle: (label) => _setFilter(
+                        colouring,
+                        hidden.contains(label)
+                            ? ({...hidden}..remove(label))
+                            : {...hidden, label},
+                      ),
+                      onOnly: (label) => _setFilter(colouring, {
+                        for (final l in colouring.legend)
+                          if (l.label != label) l.label,
+                      }),
+                      onShowAll: () => _setFilter(colouring, const {}),
+                      onClose: () {
+                        ref.read(colorByFieldProvider.notifier).state = null;
+                        ref.read(legendFilterProvider.notifier).state = null;
+                      },
                     ),
                   ),
                 Positioned(
@@ -1216,6 +1240,27 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     );
   }
 
+  /// Sets which legend entries are hidden, and drops hidden plants from the
+  /// selection -- a selection the map no longer shows would be one a bulk edit
+  /// could still reach.
+  void _setFilter(PlantColouring colouring, Set<String> hidden) {
+    ref.read(legendFilterProvider.notifier).state = hidden.isEmpty
+        ? null
+        : (fieldId: colouring.fieldId, hidden: hidden);
+    if (hidden.isEmpty) return;
+    final visible = colouring.visible(hidden);
+    final retired = ref.read(layoutSnapshotProvider).valueOrNull?.retired;
+    ref
+        .read(selectionProvider.notifier)
+        .update(
+          (current) => {
+            for (final id in current)
+              if (visible.contains(id) || (retired?.containsKey(id) ?? false))
+                id,
+          },
+        );
+  }
+
   /// "1,976 plants · 46 Rows · 2 Blocks" -- what this vineyard is, at a glance.
   String _summary(LayoutSnapshot snapshot, Map<String, String> fieldNames) {
     String count(int n) => groupDigits(n);
@@ -1247,6 +1292,9 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
               'import' when projectId != null => ImportScreen(
                 projectId: projectId,
               ),
+              'log' when projectId != null => ChangeLogScreen(
+                projectId: projectId,
+              ),
               _ => const IdentifierTemplateEditor(),
             },
           ),
@@ -1270,6 +1318,14 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
           ),
         ),
         PopupMenuDivider(),
+        PopupMenuItem(
+          value: 'log',
+          child: ListTile(
+            leading: Icon(Icons.manage_history),
+            title: Text('Change log'),
+            subtitle: Text('Every change, newest first'),
+          ),
+        ),
         PopupMenuItem(
           value: 'import',
           child: ListTile(

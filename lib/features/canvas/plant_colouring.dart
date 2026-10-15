@@ -11,14 +11,34 @@ typedef LegendEntry = ({String label, Color color});
 /// Per-plant colours for one field, and the legend that explains them.
 class PlantColouring {
   const PlantColouring({
+    required this.fieldId,
     required this.fieldName,
     required this.colors,
     required this.legend,
+    this.keyOf = const {},
+    this.counts = const {},
   });
 
+  final String fieldId;
   final String fieldName;
   final Map<String, Color> colors;
   final List<LegendEntry> legend;
+
+  /// Which legend entry each plant falls under, by the entry's label -- what
+  /// the filter hides and shows. Every plant passed in has one, including
+  /// [notRecorded] for plants with nothing recorded.
+  final Map<String, String> keyOf;
+
+  /// How many plants fall under each legend entry, by label.
+  final Map<String, int> counts;
+
+  static const notRecorded = 'Not recorded';
+
+  /// The plants under any legend entry not in [hidden].
+  Set<String> visible(Set<String> hidden) => {
+    for (final e in keyOf.entries)
+      if (!hidden.contains(e.value)) e.key,
+  };
 
   /// Plants with nothing recorded. Grey rather than the default green, so a gap
   /// in the survey is visible as a gap rather than passing for a healthy plant.
@@ -70,14 +90,24 @@ class PlantColouring {
       }),
     };
 
-    final hasGaps = values.length > present.length;
+    final keyOf = <String, String>{
+      for (final id in values.keys) id: colouring.keyOf[id] ?? notRecorded,
+    };
+    final counts = <String, int>{};
+    for (final k in keyOf.values) {
+      counts[k] = (counts[k] ?? 0) + 1;
+    }
     return PlantColouring(
+      fieldId: field.id,
       fieldName: field.name,
       colors: colouring.colors,
       legend: [
         ...colouring.legend,
-        if (hasGaps) (label: 'Not recorded', color: noValue),
+        if (counts.containsKey(notRecorded))
+          (label: notRecorded, color: noValue),
       ],
+      keyOf: keyOf,
+      counts: counts,
     );
   }
 
@@ -115,14 +145,17 @@ class PlantColouring {
   static _Partial _boolean(Map<String, String> present, FieldConfig config) {
     const yes = Color(0xFF1A9641);
     const no = Color(0xFFD7191C);
+    final yesLabel = config.trueLabel ?? 'Yes';
+    final noLabel = config.falseLabel ?? 'No';
     return _Partial(
       colors: {
         for (final e in present.entries) e.key: e.value == '1' ? yes : no,
       },
-      legend: [
-        (label: config.trueLabel ?? 'Yes', color: yes),
-        (label: config.falseLabel ?? 'No', color: no),
-      ],
+      legend: [(label: yesLabel, color: yes), (label: noLabel, color: no)],
+      keyOf: {
+        for (final e in present.entries)
+          e.key: e.value == '1' ? yesLabel : noLabel,
+      },
     );
   }
 
@@ -182,9 +215,15 @@ class PlantColouring {
     }
     if (folded) legend.add((label: 'Other', color: other));
 
+    final listed = {for (final l in legend) l.label};
     return _Partial(
       colors: {for (final e in valueOf.entries) e.key: colourOf[e.value]!},
       legend: legend,
+      // Folded values filter together, under the "Other" they are drawn as.
+      keyOf: {
+        for (final e in valueOf.entries)
+          e.key: listed.contains(e.value) ? e.value : 'Other',
+      },
     );
   }
 
@@ -224,9 +263,18 @@ class PlantColouring {
         return stops.last.$2;
       }
 
+      String nearest(double v) {
+        var best = stops.first.$1;
+        for (final (s, _) in stops) {
+          if ((s - v).abs() < (best - v).abs()) best = s;
+        }
+        return labelOf(best);
+      }
+
       return _Partial(
         colors: {for (final e in parsed.entries) e.key: at(e.value)},
         legend: [for (final (v, c) in stops) (label: labelOf(v), color: c)],
+        keyOf: {for (final e in parsed.entries) e.key: nearest(e.value)},
       );
     }
 
@@ -239,15 +287,17 @@ class PlantColouring {
     double t(double v) => span <= 0 ? 1.0 : (v - min) / span;
 
     final legendSteps = steps.clamp(2, 7);
+    String step(int i) => labelOf(min + span * i / (legendSteps - 1));
+    // Each plant falls under the nearest step, so filtering "3" on a 1-5
+    // rating is exact and on a free number is the band around that value.
+    int stepOf(double v) => (t(v).clamp(0.0, 1.0) * (legendSteps - 1)).round();
     return _Partial(
       colors: {for (final e in parsed.entries) e.key: _rampAt(t(e.value))},
       legend: [
         for (var i = legendSteps - 1; i >= 0; i--)
-          (
-            label: labelOf(min + span * i / (legendSteps - 1)),
-            color: _rampAt(i / (legendSteps - 1)),
-          ),
+          (label: step(i), color: _rampAt(i / (legendSteps - 1))),
       ],
+      keyOf: {for (final e in parsed.entries) e.key: step(stepOf(e.value))},
     );
   }
 
@@ -262,6 +312,10 @@ class PlantColouring {
     };
     if (parsed.isEmpty) return const _Partial(colors: {}, legend: []);
 
+    String label(DateTime d) =>
+        '${d.year}-${d.month.toString().padLeft(2, '0')}-'
+        '${d.day.toString().padLeft(2, '0')}';
+
     final ms = parsed.values.map((d) => d.millisecondsSinceEpoch);
     final first = ms.reduce((a, b) => a < b ? a : b);
     final last = ms.reduce((a, b) => a > b ? a : b);
@@ -270,18 +324,42 @@ class PlantColouring {
         ? recent
         : Color.lerp(old, recent, (d.millisecondsSinceEpoch - first) / span)!;
 
-    String day(int msSinceEpoch) {
-      final d = DateTime.fromMillisecondsSinceEpoch(msSinceEpoch);
-      return '${d.year}-${d.month.toString().padLeft(2, '0')}-'
-          '${d.day.toString().padLeft(2, '0')}';
+    // A handful of distinct days -- planting dates, a scheduled spray -- get
+    // an entry each, newest first, so each can be filtered on its own.
+    final distinct = {for (final d in parsed.values) label(d): d};
+    if (distinct.length <= 8) {
+      final days = distinct.entries.toList()
+        ..sort((a, b) => b.value.compareTo(a.value));
+      return _Partial(
+        colors: {for (final e in parsed.entries) e.key: at(e.value)},
+        legend: [for (final d in days) (label: d.key, color: at(d.value))],
+        keyOf: {for (final e in parsed.entries) e.key: label(e.value)},
+      );
     }
 
+    // More than that, banded: six spans of the range, each labelled by where
+    // it starts.
+    const bands = 6;
+    int bandOf(DateTime d) => span == 0
+        ? 0
+        : ((d.millisecondsSinceEpoch - first) / span * bands).floor().clamp(
+            0,
+            bands - 1,
+          );
+    String bandLabel(int b) =>
+        'from ${label(DateTime.fromMillisecondsSinceEpoch(first + span * b ~/ bands))}';
     return _Partial(
       colors: {for (final e in parsed.entries) e.key: at(e.value)},
       legend: [
-        (label: day(last), color: recent),
-        if (span > 0) (label: day(first), color: old),
+        for (var b = bands - 1; b >= 0; b--)
+          (
+            label: bandLabel(b),
+            color: Color.lerp(old, recent, (b + 0.5) / bands)!,
+          ),
       ],
+      keyOf: {
+        for (final e in parsed.entries) e.key: bandLabel(bandOf(e.value)),
+      },
     );
   }
 
@@ -297,9 +375,14 @@ class PlantColouring {
 }
 
 class _Partial {
-  const _Partial({required this.colors, required this.legend});
+  const _Partial({
+    required this.colors,
+    required this.legend,
+    this.keyOf = const {},
+  });
   final Map<String, Color> colors;
   final List<LegendEntry> legend;
+  final Map<String, String> keyOf;
 }
 
 Color? _parseHex(String? hex) {

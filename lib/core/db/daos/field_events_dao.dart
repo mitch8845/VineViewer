@@ -277,7 +277,7 @@ class FieldEventsDao {
           "SELECT date(e.observed_at / 1000, 'unixepoch', 'localtime') AS day, "
           '       e.field_def_id AS field, COUNT(*) AS n '
           'FROM field_events e JOIN plants p ON p.id = e.plant_id '
-          'WHERE p.project_id = ?1 AND e.deleted_at IS NULL '
+          'WHERE p.project_id = ?1 AND e.deleted_at IS NULL AND p.deleted_at IS NULL '
           '  AND e.observed_at >= ?2 AND e.observed_at < ?3 '
           'GROUP BY day, field',
           variables: [
@@ -307,7 +307,7 @@ class FieldEventsDao {
     final rows = await _db
         .customSelect(
           'SELECT e.* FROM field_events e JOIN plants p ON p.id = e.plant_id '
-          'WHERE p.project_id = ?1 AND e.deleted_at IS NULL '
+          'WHERE p.project_id = ?1 AND e.deleted_at IS NULL AND p.deleted_at IS NULL '
           '  AND e.observed_at >= ?2 AND e.observed_at < ?3 '
           'ORDER BY e.observed_at, e.recorded_at, e.rowid',
           variables: [
@@ -327,7 +327,7 @@ class FieldEventsDao {
         .customSelect(
           'SELECT e.field_def_id AS field, MAX(e.observed_at) AS at '
           'FROM field_events e JOIN plants p ON p.id = e.plant_id '
-          'WHERE p.project_id = ?1 AND e.deleted_at IS NULL '
+          'WHERE p.project_id = ?1 AND e.deleted_at IS NULL AND p.deleted_at IS NULL '
           'GROUP BY e.field_def_id',
           variables: [Variable<String>(projectId)],
           readsFrom: {_db.fieldEvents, _db.plants},

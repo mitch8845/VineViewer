@@ -408,12 +408,66 @@ Future<int> selectPlantsOf(WidgetRef ref, String objectId) async {
   final selection = ref.read(selectionProvider.notifier);
   final selectedObject = ref.read(selectedObjectProvider.notifier);
   final sticky = ref.read(stickySelectProvider);
+  // Only what the filter is showing: selecting "Row 12" while the map shows
+  // only the Dead plants means the dead plants of Row 12.
+  final visible = ref.read(visiblePlantsProvider);
 
-  final plants = await dao.resolveSelection(objectIds: [objectId]);
+  var plants = await dao.resolveSelection(objectIds: [objectId]);
+  if (visible != null) plants = plants.intersection(visible);
   selectedObject.state = null;
   selection.update((current) => sticky ? {...current, ...plants} : plants);
   return plants.length;
 }
+
+/// Legend entries the filter hides, for the field they were hidden on.
+///
+/// Tied to the field so switching colour-by never carries a filter across to
+/// a field where those labels mean something else -- "3" on Health is not "3"
+/// on Vigour.
+typedef LegendFilter = ({String fieldId, Set<String> hidden});
+
+final legendFilterProvider = StateProvider<LegendFilter?>((ref) => null);
+
+/// The plants the filter leaves showing, or null when nothing is filtered.
+final visiblePlantsProvider = Provider<Set<String>?>((ref) {
+  final colouring = ref.watch(plantColouringProvider).valueOrNull;
+  final filter = ref.watch(legendFilterProvider);
+  if (colouring == null ||
+      filter == null ||
+      filter.fieldId != colouring.fieldId ||
+      filter.hidden.isEmpty) {
+    return null;
+  }
+  return colouring.visible(filter.hidden);
+});
+
+/// The layout as the map shows it: filtered plants taken out entirely.
+///
+/// Out of the index as well as out of the picture, so a marquee or lasso over
+/// a filtered map can only pick up what is showing. A filter that hid plants
+/// but let a bulk edit sweep them up would be worse than no filter at all.
+final mapSnapshotProvider = Provider<LayoutSnapshot>((ref) {
+  final snapshot =
+      ref.watch(layoutSnapshotProvider).valueOrNull ?? LayoutSnapshot.empty;
+  final visible = ref.watch(visiblePlantsProvider);
+  if (visible == null) return snapshot;
+
+  final positions = <String, ui.Offset>{};
+  final points = <IndexedPoint>[];
+  for (final e in snapshot.positions.entries) {
+    if (!visible.contains(e.key)) continue;
+    positions[e.key] = e.value;
+    points.add((id: e.key, position: e.value));
+  }
+  return LayoutSnapshot(
+    positions: positions,
+    index: SpatialIndex.build(points),
+    objects: snapshot.objects,
+    bounds: snapshot.bounds,
+    retired: snapshot.retired,
+    retiredIndex: snapshot.retiredIndex,
+  );
+});
 
 /// Clears everything that belongs to the project being left.
 ///
@@ -433,6 +487,7 @@ void resetProjectScopedState(WidgetRef ref) {
   ref.read(marqueeProvider.notifier).state = null;
   ref.read(lassoProvider.notifier).state = const [];
   ref.read(colorByFieldProvider.notifier).state = null;
+  ref.read(legendFilterProvider.notifier).state = null;
 }
 
 /// The active project's scale calibration, or uncalibrated.
@@ -459,8 +514,12 @@ final backgroundImageProvider = FutureProvider<ui.Image?>((ref) async {
   final projectId = ref.watch(activeProjectIdProvider);
   if (projectId == null) return null;
 
-  final project = await ref.watch(projectsDaoProvider).byId(projectId);
-  final path = project?.imagePath;
+  // Follows the project row, so undoing a photo change -- which puts the old
+  // path back -- shows the old photo. Each photo has its own file, so the
+  // path changes exactly when the picture does.
+  final path = await ref.watch(
+    activeProjectProvider.selectAsync((p) => p?.imagePath),
+  );
   if (path == null) return null;
 
   try {

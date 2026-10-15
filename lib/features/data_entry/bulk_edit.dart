@@ -166,7 +166,9 @@ Future<void> bulkSetValue(BuildContext context, Set<String> plantIds) async {
     result = await read(operationRecorderProvider).run(
       projectId: projectId,
       kind: 'bulk_set_value',
-      description: 'Set ${field.name} on ${_plants(targets.length)}',
+      description: stored == null
+          ? 'Clear ${field.name} on ${_plants(targets.length)}'
+          : 'Set ${field.name} to $shown on ${_plants(targets.length)}',
       body: () => read(plantDataServiceProvider).setValueForSelection(
         plantIds: targets,
         fieldDefId: field.id,

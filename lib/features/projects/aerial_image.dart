@@ -63,9 +63,19 @@ Future<void> setProjectImage(
     // user can see what went wrong rather than the action doing nothing.
   }
 
+  // Journaled: the change log shows when the photo changed, and undo puts
+  // the previous one back -- which works because each photo is its own file
+  // (see [_install]), so the old one is still on disk to point back to.
   await ref
-      .read(projectsDaoProvider)
-      .setImage(projectId, imagePath: path, width: width, height: height);
+      .read(operationRecorderProvider)
+      .run(
+        projectId: projectId,
+        kind: 'set_image',
+        description: 'Change the aerial photo',
+        body: () => ref
+            .read(projectsDaoProvider)
+            .setImage(projectId, imagePath: path, width: width, height: height),
+      );
 
   // The decoded image is cached per project, and the file is overwritten in
   // place under the same name -- so nothing about the provider's inputs
@@ -135,11 +145,13 @@ Future<void> installSampleAerial(WidgetRef ref, String projectId) async {
 /// Writes [bytes] to this project's aerial file and records it.
 ///
 /// Named per project so two vineyards can start from the same image and then
-/// have it repositioned independently. Overwrites deliberately: choosing an
-/// image again is the user asking to replace the one that is there.
+/// have it repositioned independently, and per pick so a new photo never
+/// overwrites the old one. It used to: and then undoing the change pointed
+/// the project back at a file that already held the new photo.
 Future<void> _install(WidgetRef ref, String projectId, Uint8List bytes) async {
   final directory = await getApplicationDocumentsDirectory();
-  final file = File('${directory.path}/aerials/$projectId.img');
+  final stamp = DateTime.now().millisecondsSinceEpoch;
+  final file = File('${directory.path}/aerials/$projectId-$stamp.img');
   await file.parent.create(recursive: true);
   await file.writeAsBytes(bytes, flush: true);
 

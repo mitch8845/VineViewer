@@ -801,6 +801,35 @@ class LayoutDao {
     });
   }
 
+  /// Deletes plants outright, with everything recorded against them.
+  ///
+  /// For a plant created by mistake and found too late to undo. It is not
+  /// what happens to a vine that died -- that is [retirePlant], which keeps the
+  /// history -- and the UI says so before it gets here.
+  ///
+  /// Marked deleted rather than removed, as everywhere else in the schema: the
+  /// plant and its readings drop out of every query, the map and the IDs, but
+  /// the journal still holds them, so the delete is itself one undoable
+  /// change and appears in the change log.
+  Future<void> deletePlants(Iterable<String> plantIds, {DateTime? now}) async {
+    final ids = plantIds.toList();
+    if (ids.isEmpty) return;
+    final timestamp = now ?? DateTime.now();
+    await _db.transaction(() async {
+      await (_db.update(_db.fieldEvents)
+            ..where((e) => e.plantId.isIn(ids) & e.deletedAt.isNull()))
+          .write(FieldEventsCompanion(deletedAt: Value(timestamp)));
+      await (_db.update(
+        _db.plants,
+      )..where((v) => v.id.isIn(ids) & v.deletedAt.isNull())).write(
+        PlantsCompanion(
+          deletedAt: Value(timestamp),
+          updatedAt: Value(timestamp),
+        ),
+      );
+    });
+  }
+
   /// Retires a plant, keeping its history (decision D7).
   ///
   /// **A no-op on a plant already retired.** Its `endedAt` is when it died, and

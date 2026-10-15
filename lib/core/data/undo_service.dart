@@ -43,7 +43,7 @@ class UndoService {
   /// Live undo/redo availability for the toolbar.
   Stream<UndoAvailability> watch(String projectId) {
     return (_db.select(_db.operations)
-          ..where((o) => o.projectId.equals(projectId))
+          ..where((o) => o.projectId.equals(projectId) & o.discardedAt.isNull())
           ..orderBy([(o) => OrderingTerm.desc(o.id)])
           ..limit(stackLimit))
         .watch()
@@ -53,7 +53,11 @@ class UndoService {
   Future<UndoAvailability> availability(String projectId) async {
     final window =
         await (_db.select(_db.operations)
-              ..where((o) => o.projectId.equals(projectId))
+              // Discarded operations are history, not undo: filtered before
+              // the limit, or a long run of them could hide the whole stack.
+              ..where(
+                (o) => o.projectId.equals(projectId) & o.discardedAt.isNull(),
+              )
               ..orderBy([(o) => OrderingTerm.desc(o.id)])
               ..limit(stackLimit))
             .get();

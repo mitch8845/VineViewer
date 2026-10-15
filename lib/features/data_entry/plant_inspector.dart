@@ -871,6 +871,29 @@ class _FieldRow extends ConsumerWidget {
     final projectId = ref.read(activeProjectIdProvider);
     if (projectId == null) return;
 
+    // Says what, to what, and on which plant: this is the line the change log
+    // shows, and "Set Health" alone says nothing a season later.
+    final config = ref.read(fieldDefsDaoProvider).configOf(field);
+    final encoded = FieldValueCodec.encode(
+      type: field.type,
+      input: value,
+      config: config,
+    );
+    final shown = encoded is FieldValueAccepted
+        ? FieldValueCodec.display(
+            type: field.type,
+            stored: encoded.stored,
+            config: config,
+          )
+        : null;
+    final plantName =
+        (await ref.read(labelServiceProvider).identifierOf(plantId))?.text;
+    if (!context.mounted) return;
+    final description = [
+      shown == null ? 'Clear ${field.name}' : 'Set ${field.name} to $shown',
+      if (plantName != null) 'on $plantName',
+    ].join(' ');
+
     // One press of undo puts the old value back, and because undo replays the
     // journal rather than appending a correction, the mistaken entry does not
     // linger in this plant's history.
@@ -879,7 +902,7 @@ class _FieldRow extends ConsumerWidget {
         .run(
           projectId: projectId,
           kind: 'set_value',
-          description: 'Set ${field.name}',
+          description: description,
           body: () => ref
               .read(plantDataServiceProvider)
               .setValue(

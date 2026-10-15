@@ -177,7 +177,14 @@ class ProjectListScreen extends ConsumerWidget {
     if (name == null || name.trim().isEmpty || name.trim() == project.name) {
       return;
     }
-    await ref.read(projectsDaoProvider).rename(project.id, name);
+    await ref
+        .read(operationRecorderProvider)
+        .run(
+          projectId: project.id,
+          kind: 'rename_project',
+          description: 'Rename vineyard to "${name.trim()}"',
+          body: () => ref.read(projectsDaoProvider).rename(project.id, name),
+        );
   }
 
   /// Moves a vineyard to the trash.
@@ -213,7 +220,15 @@ class ProjectListScreen extends ConsumerWidget {
     if (ok != true || !context.mounted) return;
 
     final dao = ref.read(projectsDaoProvider);
-    await dao.softDelete(project.id);
+    final recorder = ref.read(operationRecorderProvider);
+    // Journaled like any other change, so the vineyard's change log says when
+    // it was deleted and restored -- not only what happened inside it.
+    await recorder.run(
+      projectId: project.id,
+      kind: 'delete_project',
+      description: 'Delete vineyard',
+      body: () => dao.softDelete(project.id),
+    );
     if (!context.mounted) return;
     ScaffoldMessenger.of(context)
       ..removeCurrentSnackBar()
@@ -222,7 +237,12 @@ class ProjectListScreen extends ConsumerWidget {
           content: Text('Deleted "${project.name}".'),
           action: SnackBarAction(
             label: 'Undo',
-            onPressed: () => dao.restore(project.id),
+            onPressed: () => recorder.run(
+              projectId: project.id,
+              kind: 'restore_project',
+              description: 'Restore vineyard',
+              body: () => dao.restore(project.id),
+            ),
           ),
         ),
       );
@@ -756,8 +776,15 @@ class _TrashScreenState extends ConsumerState<_TrashScreen> {
                       TextButton(
                         onPressed: () async {
                           await ref
-                              .read(projectsDaoProvider)
-                              .restore(project.id);
+                              .read(operationRecorderProvider)
+                              .run(
+                                projectId: project.id,
+                                kind: 'restore_project',
+                                description: 'Restore vineyard',
+                                body: () => ref
+                                    .read(projectsDaoProvider)
+                                    .restore(project.id),
+                              );
                           _reload();
                         },
                         child: const Text('Restore'),

@@ -95,11 +95,16 @@ class OperationRecorder {
     [operationId],
   );
 
+  /// Makes every undone operation unredoable -- by marking it, not deleting
+  /// it, so the change log still shows what was done and taken back.
   Future<void> _clearRedoStack(String projectId) async {
-    await (_db.delete(
-          _db.operations,
-        )..where((o) => o.projectId.equals(projectId) & o.undoneAt.isNotNull()))
-        .go();
+    await (_db.update(_db.operations)..where(
+          (o) =>
+              o.projectId.equals(projectId) &
+              o.undoneAt.isNotNull() &
+              o.discardedAt.isNull(),
+        ))
+        .write(OperationsCompanion(discardedAt: Value(DateTime.now())));
   }
 
   /// Deletes the operation if it captured nothing. Returns whether it is kept.

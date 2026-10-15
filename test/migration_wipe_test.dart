@@ -267,7 +267,7 @@ void main() {
 
   for (final fixture in fixtures.entries) {
     group('upgrading from ${fixture.key}', () {
-      test('leaves a working v4 database', () async {
+      test('leaves a working, current database', () async {
         await fixture.value();
 
         final db = AppDatabase(NativeDatabase(file));
@@ -276,7 +276,7 @@ void main() {
         final version = await db
             .customSelect('PRAGMA user_version')
             .getSingle();
-        expect(version.data.values.first, 4);
+        expect(version.data.values.first, db.schemaVersion);
 
         // The old tables are gone and the v4 ones are usable.
         final projectId = await ProjectsDao(db).create(name: 'Fresh');

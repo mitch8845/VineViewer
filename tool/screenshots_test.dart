@@ -1,4 +1,4 @@
-﻿// Renders the app's main screens to PNGs for design review.
+// Renders the app's main screens to PNGs for design review.
 //
 // Not part of the suite -- `flutter test` only runs test/. Run with:
 //
@@ -34,6 +34,7 @@ import 'package:vine_viewer/features/canvas/tools/object_actions_sheet.dart';
 import 'package:vine_viewer/features/data_entry/value_editor_sheet.dart';
 import 'package:vine_viewer/core/import/table_reader.dart';
 import 'package:vine_viewer/features/history/calendar_screen.dart';
+import 'package:vine_viewer/features/history/change_log_screen.dart';
 import 'package:vine_viewer/features/projects/import_screen.dart';
 import 'package:vine_viewer/features/projects/project_list_screen.dart';
 import 'package:vine_viewer/features/schema/field_editor_screen.dart';
@@ -261,6 +262,42 @@ Future<_Seed> _seed(AppDatabase db, ProviderContainer c) async {
     observedAt: today,
   );
   seed.weakPlant = weakOnes.first;
+
+  // A few real, journaled edits for the change log; the last one undone.
+
+  final recorder = c.read(operationRecorderProvider);
+
+  await recorder.run(
+    projectId: seed.projectId,
+    kind: 'import',
+    description: 'Import 3,025 values',
+    body: () => events.recordBulk(
+      plantIds: seed.plants.take(300),
+      fieldDefId: seed.varietyField,
+      value: 'Marquette',
+      source: EventSource.import,
+    ),
+  );
+  await recorder.run(
+    projectId: seed.projectId,
+    kind: 'set_value',
+    description: 'Set Health',
+    body: () => events.record(
+      plantId: seed.plants[3],
+      fieldDefId: seed.healthField,
+      value: '2',
+    ),
+  );
+  await recorder.run(
+    projectId: seed.projectId,
+    kind: 'rename_project',
+    description: 'Rename vineyard to "Five Sisters Vineyard"',
+    body: () => c
+        .read(projectsDaoProvider)
+        .rename(seed.projectId, 'Five Sisters Vineyard'),
+  );
+  await c.read(undoServiceProvider).undo(seed.projectId);
+
   await events.record(
     plantId: allPlants[5],
     fieldDefId: seed.varietyField,
@@ -352,6 +389,20 @@ void main() {
     container.read(colorByFieldProvider.notifier).state = seed.healthField;
     await _settle(tester);
     await _capture(tester, '04_colour_and_bulk');
+
+    // Filter: only the weak plants.
+    container.read(selectionProvider.notifier).state = const {};
+    final colouring = container.read(plantColouringProvider).valueOrNull!;
+    container.read(legendFilterProvider.notifier).state = (
+      fieldId: seed.healthField,
+      hidden: {
+        for (final l in colouring.legend)
+          if (!l.label.startsWith('1') && !l.label.startsWith('2')) l.label,
+      },
+    );
+    await _settle(tester);
+    await _capture(tester, '04b_filter');
+    container.read(legendFilterProvider.notifier).state = null;
 
     container.read(selectionProvider.notifier).state = const {};
     container.read(colorByFieldProvider.notifier).state = null;
@@ -454,6 +505,9 @@ void main() {
     Navigator.of(tester.element(find.byType(VineyardScreen))).pop();
     await _settle(tester);
     container.read(selectionProvider.notifier).state = const {};
+
+    await show(ChangeLogScreen(projectId: seed.projectId));
+    await _capture(tester, '16_change_log');
 
     // Unmount and drain drift's stream-cancel timers before the test ends.
     await tester.pumpWidget(const SizedBox());

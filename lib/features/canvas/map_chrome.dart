@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/db/database.dart';
+import '../../core/format.dart';
 import '../../core/models/enums.dart';
 import '../schema/field_editor_screen.dart';
 import 'canvas_controller.dart';
@@ -596,22 +597,45 @@ class SelectionBadge extends StatelessWidget {
 /// at once -- colouring by health and then tapping the red ones is the whole
 /// workflow.
 class MapLegend extends StatelessWidget {
-  const MapLegend({super.key, required this.colouring, required this.onClose});
+  const MapLegend({
+    super.key,
+    required this.colouring,
+    required this.onClose,
+    this.hidden = const {},
+    this.onToggle,
+    this.onOnly,
+    this.onShowAll,
+  });
 
   final PlantColouring colouring;
   final VoidCallback onClose;
 
+  /// Legend entries the filter is hiding, by label.
+  final Set<String> hidden;
+
+  /// Hides or shows one entry's plants.
+  final ValueChanged<String>? onToggle;
+
+  /// Shows only one entry's plants -- a long press, for "just the dead ones".
+  final ValueChanged<String>? onOnly;
+  final VoidCallback? onShowAll;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     final entries = colouring.legend;
+    final total = colouring.keyOf.length;
+    final showing =
+        total - hidden.fold<int>(0, (n, l) => n + (colouring.counts[l] ?? 0));
+
     return ConstrainedBox(
       constraints: BoxConstraints(
-        maxWidth: 240,
-        maxHeight: MediaQuery.of(context).size.height * 0.45,
+        maxWidth: 260,
+        maxHeight: MediaQuery.of(context).size.height * 0.5,
       ),
       child: MapSurface(
-        padding: const EdgeInsets.fromLTRB(14, 4, 4, 10),
+        padding: const EdgeInsets.fromLTRB(14, 4, 4, 8),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -620,9 +644,11 @@ class MapLegend extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
-                  Icons.palette_outlined,
+                  hidden.isEmpty ? Icons.palette_outlined : Icons.filter_alt,
                   size: 16,
-                  color: theme.colorScheme.onSurfaceVariant,
+                  color: hidden.isEmpty
+                      ? scheme.onSurfaceVariant
+                      : scheme.primary,
                 ),
                 const SizedBox(width: 6),
                 Flexible(
@@ -642,6 +668,31 @@ class MapLegend extends StatelessWidget {
                 ),
               ],
             ),
+            if (hidden.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(right: 6, bottom: 4),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Showing ${groupDigits(showing)} of ${groupDigits(total)}',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: scheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    TextButton(
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        minimumSize: const Size(0, 32),
+                      ),
+                      onPressed: onShowAll,
+                      child: const Text('Show all'),
+                    ),
+                  ],
+                ),
+              ),
             if (entries.isEmpty)
               const Padding(
                 padding: EdgeInsets.only(right: 10),
@@ -653,36 +704,102 @@ class MapLegend extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     for (final entry in entries)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 3),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Container(
-                              width: 14,
-                              height: 14,
-                              decoration: BoxDecoration(
-                                color: entry.color,
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: Colors.black26,
-                                  width: 1,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Flexible(
-                              child: Text(
-                                entry.label,
-                                overflow: TextOverflow.ellipsis,
-                                style: theme.textTheme.bodyMedium,
-                              ),
-                            ),
-                          ],
-                        ),
+                      _LegendRow(
+                        entry: entry,
+                        count: colouring.counts[entry.label] ?? 0,
+                        shown: !hidden.contains(entry.label),
+                        onTap: onToggle == null
+                            ? null
+                            : () => onToggle!(entry.label),
+                        onLongPress: onOnly == null
+                            ? null
+                            : () => onOnly!(entry.label),
                       ),
                   ],
                 ),
+              ),
+            ),
+            if (onToggle != null && hidden.isEmpty && entries.length > 1)
+              Padding(
+                padding: const EdgeInsets.only(top: 4, right: 10),
+                child: Text(
+                  'Tap to hide a value · hold to show only it',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// One legend entry, doubling as its filter checkbox.
+class _LegendRow extends StatelessWidget {
+  const _LegendRow({
+    required this.entry,
+    required this.count,
+    required this.shown,
+    this.onTap,
+    this.onLongPress,
+  });
+
+  final LegendEntry entry;
+  final int count;
+  final bool shown;
+  final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final faded = shown ? 1.0 : 0.45;
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: Padding(
+        // Tall enough to hit with a thumb: this is a control now, not a key.
+        padding: const EdgeInsets.fromLTRB(0, 5, 8, 5),
+        child: Row(
+          children: [
+            Icon(
+              shown ? Icons.check_box : Icons.check_box_outline_blank,
+              size: 20,
+              color: shown ? scheme.primary : scheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 8),
+            Opacity(
+              opacity: faded,
+              child: Container(
+                width: 14,
+                height: 14,
+                decoration: BoxDecoration(
+                  color: entry.color,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.black26),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                entry.label,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: shown ? null : scheme.onSurfaceVariant,
+                  decoration: shown ? null : TextDecoration.lineThrough,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              groupDigits(count),
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
               ),
             ),
           ],

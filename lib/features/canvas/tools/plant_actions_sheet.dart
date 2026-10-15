@@ -8,9 +8,9 @@ import '../canvas_controller.dart';
 
 /// What can be done to a selection of plants.
 ///
-/// Numbering, and the two ways a plant leaves service. There is deliberately no
-/// permanent delete and no trash: a plant you pulled is data, and a plant you
-/// created by mistake is one press of undo.
+/// Numbering, the two ways a plant leaves service, and -- set apart, in red --
+/// deleting a plant that should never have existed. A plant you pulled is
+/// data and is marked removed; delete is for mistakes found too late to undo.
 class PlantActionsSheet extends ConsumerWidget {
   const PlantActionsSheet({
     super.key,
@@ -96,14 +96,24 @@ class PlantActionsSheet extends ConsumerWidget {
               ),
               onTap: () => _replace(context, ref),
             ),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(20, 12, 20, 20),
-            child: Text(
-              'There is no permanent delete. A plant you pulled is data worth '
-              'keeping, and one created by mistake is a press of undo.',
-              style: TextStyle(fontSize: 12),
+          const Divider(height: 1),
+          ListTile(
+            leading: Icon(
+              Icons.delete_forever_outlined,
+              color: Theme.of(context).colorScheme.error,
             ),
+            title: Text(
+              selection.length == 1
+                  ? 'Delete this plant'
+                  : 'Delete these plants',
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+            subtitle: const Text(
+              'Only for a plant created by mistake. Its readings go with it.',
+            ),
+            onTap: () => _delete(context, ref),
           ),
+          const SizedBox(height: 12),
         ],
       ),
     );
@@ -167,6 +177,73 @@ class PlantActionsSheet extends ConsumerWidget {
               await layout.retirePlant(id, change: PlantStatusChange.removed);
             }
           },
+        );
+
+    if (context.mounted) {
+      Navigator.pop(context);
+      ref.read(selectionProvider.notifier).state = const {};
+    }
+  }
+
+  /// Deletes the selection outright, after saying plainly what that costs and
+  /// pointing at "Mark as removed" for the case it is usually confused with.
+  Future<void> _delete(BuildContext context, WidgetRef ref) async {
+    final projectId = ref.read(activeProjectIdProvider);
+    if (projectId == null) return;
+
+    final events = await ref
+        .read(fieldEventsDaoProvider)
+        .countEventsFor(selection);
+    if (!context.mounted) return;
+
+    final n = selection.length;
+    final things = n == 1 ? 'this plant' : '$n plants';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        final scheme = Theme.of(context).colorScheme;
+        return AlertDialog(
+          icon: Icon(Icons.delete_forever_outlined, color: scheme.error),
+          title: Text('Delete $things?'),
+          content: Text(
+            '${n == 1 ? 'It' : 'They'} will disappear from the map, the IDs '
+            'and every record'
+            '${events == 0 ? '' : ', along with $events recorded '
+                      '${events == 1 ? 'reading' : 'readings'}'}.'
+            '\n\nIf a vine died or was pulled, use "Mark as removed" instead: '
+            'that keeps its history.'
+            '\n\nThe delete shows in the change log, and undo brings '
+            '${n == 1 ? 'it' : 'them'} back while it is still in the undo '
+            'history.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: scheme.error,
+                foregroundColor: scheme.onError,
+              ),
+              onPressed: () => Navigator.pop(context, true),
+              child: Text('Delete $things'),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed != true || !context.mounted) return;
+
+    final layout = ref.read(layoutDaoProvider);
+    final ids = {...selection};
+    await ref
+        .read(operationRecorderProvider)
+        .run(
+          projectId: projectId,
+          kind: 'delete_plants',
+          description: n == 1 ? 'Delete a plant' : 'Delete $n plants',
+          body: () => layout.deletePlants(ids),
         );
 
     if (context.mounted) {
