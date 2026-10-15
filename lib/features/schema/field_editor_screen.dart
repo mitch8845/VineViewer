@@ -42,10 +42,7 @@ class FieldListScreen extends ConsumerWidget {
                   ),
                 ),
               )
-            : ListView.builder(
-                itemCount: list.length,
-                itemBuilder: (context, i) => _FieldTile(field: list[i]),
-              ),
+            : _FieldSections(fields: list),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _edit(context, ref, null),
@@ -68,6 +65,112 @@ class FieldListScreen extends ConsumerWidget {
   }
 }
 
+/// Fields in two groups: what is drawn, and what is recorded per plant.
+///
+/// The two behave nothing alike -- one is a shape on the map, the other a
+/// value in the inspector -- and a single mixed list made Row and Health look
+/// like the same kind of thing.
+class _FieldSections extends StatelessWidget {
+  const _FieldSections({required this.fields});
+
+  final List<FieldDef> fields;
+
+  @override
+  Widget build(BuildContext context) {
+    final drawn = [
+      for (final f in fields)
+        if (f.role == FieldRole.object) f,
+    ];
+    final recorded = [
+      for (final f in fields)
+        if (f.role == FieldRole.attribute) f,
+    ];
+    return Align(
+      alignment: Alignment.topCenter,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 820),
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(24, 8, 24, 104),
+          children: [
+            if (recorded.isNotEmpty)
+              _Section(
+                title: 'Recorded per plant',
+                subtitle:
+                    'Shown in the plant panel, and what plants can be '
+                    'coloured by',
+                fields: recorded,
+              ),
+            if (drawn.isNotEmpty)
+              _Section(
+                title: 'Drawn on the map',
+                subtitle: 'Rows, blocks and anything else with a shape',
+                fields: drawn,
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _Section extends StatelessWidget {
+  const _Section({
+    required this.title,
+    required this.subtitle,
+    required this.fields,
+  });
+
+  final String title;
+  final String subtitle;
+  final List<FieldDef> fields;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(4, 8, 4, 2),
+            child: Text(
+              title,
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(4, 0, 4, 10),
+            child: Text(
+              subtitle,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          Card(
+            child: Column(
+              children: [
+                for (final (i, field) in fields.indexed) ...[
+                  if (i > 0)
+                    Divider(
+                      height: 1,
+                      indent: 72,
+                      color: theme.colorScheme.outlineVariant,
+                    ),
+                  _FieldTile(field: field),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _FieldTile extends ConsumerWidget {
   const _FieldTile({required this.field});
 
@@ -76,27 +179,71 @@ class _FieldTile extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final config = ref.read(fieldDefsDaoProvider).configOf(field);
+    final scheme = Theme.of(context).colorScheme;
+    final isObject = field.role == FieldRole.object;
 
     return ListTile(
-      title: Text(field.name),
-      subtitle: Text(
-        [
-          field.type.name,
-          if (field.isStatic) 'static (write-once)',
-          if (config.options.isNotEmpty) '${config.options.length} options',
-        ].join(' · '),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      title: Text(
+        field.name,
+        style: const TextStyle(fontWeight: FontWeight.w600),
       ),
-      leading: _TypeIcon(type: field.type, config: config),
-      trailing: IconButton(
-        icon: const Icon(Icons.edit_outlined),
-        onPressed: () => showModalBottomSheet<void>(
-          context: context,
-          isScrollControlled: true,
-          builder: (context) => _FieldEditorSheet(existing: field),
+      subtitle: Text(
+        isObject
+            ? [
+                switch (field.drawType) {
+                  DrawType.polyline => 'Line',
+                  DrawType.polygon => 'Area',
+                  DrawType.point => 'Point',
+                  null => 'Drawn',
+                },
+                field.isContainer
+                    ? 'plants belong to it'
+                    : 'not related to plants',
+              ].join(' · ')
+            : [
+                _typeName(field.type),
+                if (field.isStatic) 'write-once',
+                if (config.options.isNotEmpty)
+                  '${config.options.length} options',
+              ].join(' · '),
+      ),
+      leading: Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          color: isObject ? scheme.secondaryContainer : scheme.primaryContainer,
+          borderRadius: BorderRadius.circular(12),
         ),
+        alignment: Alignment.center,
+        child: isObject
+            ? Icon(switch (field.drawType) {
+                DrawType.polygon => Icons.pentagon_outlined,
+                DrawType.point => Icons.place_outlined,
+                _ => Icons.timeline,
+              }, color: scheme.onSecondaryContainer)
+            : _TypeIcon(type: field.type, config: config),
+      ),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        builder: (context) => _FieldEditorSheet(existing: field),
       ),
     );
   }
+
+  static String _typeName(FieldType type) => switch (type) {
+    FieldType.text => 'Text',
+    FieldType.integer => 'Whole number',
+    FieldType.decimal => 'Number',
+    FieldType.boolean => 'Yes / no',
+    FieldType.date => 'Date',
+    FieldType.datetime => 'Date and time',
+    FieldType.categorical => 'Choice',
+    FieldType.multiSelect => 'Several choices',
+    FieldType.rating => 'Rating',
+  };
 }
 
 class _TypeIcon extends StatelessWidget {
@@ -107,8 +254,9 @@ class _TypeIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // A categorical field with colours shows them, since that is the whole
-    // point of configuring them -- the map is coloured by these.
+    final scheme = Theme.of(context).colorScheme;
+    // A choice field with colours shows them, since that is the whole point
+    // of configuring them -- the map is coloured by these.
     if (config.optionColors.isNotEmpty) {
       final colours = config.options
           .map((o) => _parseColor(config.optionColors[o]))
@@ -116,15 +264,17 @@ class _TypeIcon extends StatelessWidget {
           .take(4)
           .toList();
       if (colours.isNotEmpty) {
-        return SizedBox(
-          width: 40,
-          height: 40,
-          child: Wrap(
-            children: [
-              for (final c in colours)
-                Container(width: 20, height: 20, color: c),
-            ],
-          ),
+        return Wrap(
+          spacing: 3,
+          runSpacing: 3,
+          children: [
+            for (final c in colours)
+              Container(
+                width: 11,
+                height: 11,
+                decoration: BoxDecoration(color: c, shape: BoxShape.circle),
+              ),
+          ],
         );
       }
     }
@@ -137,7 +287,7 @@ class _TypeIcon extends StatelessWidget {
       FieldType.categorical => Icons.category_outlined,
       FieldType.multiSelect => Icons.checklist,
       FieldType.rating => Icons.star_outline,
-    });
+    }, color: scheme.onPrimaryContainer);
   }
 }
 

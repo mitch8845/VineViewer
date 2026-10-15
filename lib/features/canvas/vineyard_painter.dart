@@ -30,12 +30,15 @@ class VineyardScene {
     required this.objects,
     this.image,
     this.imageTransform = Matrix4.identity,
+    this.imageOpacity = 1,
     this.selection = const <String>{},
     this.colors = const <String, Color>{},
     this.fallbackColor,
     this.retired = const <String, Offset>{},
     this.labels = const <String, String>{},
     this.showLabels = false,
+    this.fieldNames = const <String, String>{},
+    this.selectedObjectId,
     this.marquee,
     this.lasso = const <Offset>[],
   });
@@ -60,6 +63,10 @@ class VineyardScene {
   /// can stay const.
   final Matrix4 Function() imageTransform;
 
+  /// How strongly the aerial shows. Turned down, the layout reads more clearly
+  /// over a busy photo.
+  final double imageOpacity;
+
   final Set<String> selection;
 
   /// Per-plant colour from colour-by-field. Absent means [fallbackColor].
@@ -79,6 +86,12 @@ class VineyardScene {
 
   final Map<String, String> labels;
   final bool showLabels;
+
+  /// Object field names by id, for labelling areas on the map ("Block 2").
+  final Map<String, String> fieldNames;
+
+  /// The drawn object currently selected, drawn highlighted.
+  final String? selectedObjectId;
 }
 
 /// Draws the vineyard.
@@ -86,6 +99,10 @@ class VineyardScene {
 /// One painter for the whole layout. A widget per plant would mean 3,000
 /// RenderObjects laid out and composited every frame, which the plan rules out
 /// explicitly and which the Fire Max 11 would not survive.
+///
+/// Drawn like a map rather than a diagram: everything that sits on the aerial
+/// has a dark casing under it, so it reads on bright gravel and dark canopy
+/// alike, and text is drawn in screen space so it stays crisp at any zoom.
 class VineyardPainter extends CustomPainter {
   VineyardPainter({required this.scene, required this.viewport});
 
@@ -101,12 +118,25 @@ class VineyardPainter extends CustomPainter {
   /// mush and a large text-layout bill.
   static const _labelVisibleScale = 1.2;
 
-  static final _selectionPaint = Paint()
-    ..color = const Color(0xFF5B2C6F)
-    ..strokeWidth = 2
-    ..style = PaintingStyle.stroke;
+  /// Row numbers appear once rows are far enough apart on screen to fit them.
+  static const _rowLabelVisibleScale = 1.1;
 
-  static const _defaultPlantColor = Color(0xFF4CAF50);
+  /// Selection is cyan: nothing in a vineyard aerial is that colour, so it
+  /// cannot be mistaken for foliage, soil, or any of the object colours.
+  static const selectionColor = Color(0xFF22D3EE);
+
+  static const _defaultPlantColor = Color(0xFF8BD450);
+  static const _casing = Color(0x99000000);
+
+  /// A plant's drawn radius, in layout units: roughly a vine's canopy at the
+  /// scale of a typical aerial. Drawn at map scale rather than at a fixed
+  /// screen size, so a row reads as a row of dots with the ground visible
+  /// between them, not as a solid bar -- clamped so it stays tappable-looking
+  /// zoomed out and does not balloon zoomed in.
+  static const _plantRadius = 2.1;
+
+  double get _screenRadius =>
+      (_plantRadius * viewport.scale).clamp(2.0, 8.0).toDouble();
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -120,11 +150,16 @@ class VineyardPainter extends CustomPainter {
     _paintSelectionGesture(canvas);
 
     canvas.restore();
+
+    // Text last, in screen space, so it sits above everything at a size that
+    // does not depend on the zoom.
+    _paintObjectLabels(canvas);
+    _paintPlantLabels(canvas);
   }
 
   void _paintImage(Canvas canvas) {
     final image = scene.image;
-    if (image == null) return;
+    if (image == null || scene.imageOpacity <= 0) return;
 
     canvas.save();
     canvas.transform(scene.imageTransform().storage);
@@ -133,91 +168,142 @@ class VineyardPainter extends CustomPainter {
     canvas.drawImage(
       image,
       Offset.zero,
-      Paint()..filterQuality = FilterQuality.medium,
+      Paint()
+        ..filterQuality = FilterQuality.medium
+        ..color = Color.fromRGBO(0, 0, 0, scene.imageOpacity.clamp(0, 1)),
     );
     canvas.restore();
   }
 
-  /// Palette for object fields, keyed by the order they were created.
-  ///
-  /// Colour per *field*, not per instance, so every Row looks like a Row and
-  /// Blocks are distinguishable from them at a glance. Derived from sort order
-  /// rather than stored, which keeps a colour column out of the schema for
-  /// something the user has not asked to control.
-  static const _objectPalette = [
-    Color(0xFF546E7A), // slate -- rows
-    Color(0xFF6A1B9A), // purple -- blocks
-    Color(0xFF00838F), // teal
-    Color(0xFFEF6C00), // orange
-    Color(0xFF33691E), // olive
+  /// Areas: warm, high-visibility colours that stand out from green and brown.
+  static const _areaPalette = [
+    Color(0xFFFFC94D), // gold
+    Color(0xFFFF8A65), // coral
+    Color(0xFFB39DDB), // lavender
+    Color(0xFF4DD0E1), // aqua
   ];
 
-  Color _objectColour(DrawnObject object) {
-    // Hashing the field id gives a stable colour without needing sort order
-    // threaded through the scene. Stable across restarts, which matters more
-    // than the particular hue.
-    return _objectPalette[object.fieldDefId.hashCode.abs() %
-        _objectPalette.length];
+  /// Lines: pale, so rows read as structure rather than competing with plants.
+  static const _linePalette = [
+    Color(0xFFF5F5F0), // chalk
+    Color(0xFF90CAF9), // sky
+    Color(0xFFFFCC80), // sand
+    Color(0xFFCE93D8), // orchid
+  ];
+
+  static const _pointPalette = [
+    Color(0xFFFF7043),
+    Color(0xFF26C6DA),
+    Color(0xFFFFEE58),
+  ];
+
+  /// Colour per *field*, not per instance, so every Row looks like a Row and
+  /// Blocks are distinguishable from them at a glance. Hashing the field id
+  /// keeps it stable across restarts without storing a colour.
+  static Color colourOf(DrawnObject object) {
+    final palette = switch (object.shape) {
+      PolygonShape() => _areaPalette,
+      PolylineShape() => _linePalette,
+      PointShape() => _pointPalette,
+    };
+    return palette[object.fieldDefId.hashCode.abs() % palette.length];
   }
 
   void _paintObjects(Canvas canvas) {
     if (scene.objects.isEmpty) return;
 
     final visible = viewport.visibleLayoutRect(padding: 50);
-    // Stroke width is in layout units, so it has to shrink as we zoom in or the
-    // lines become thick slabs.
-    final width = 1.5 / viewport.scale;
+    final px = 1 / viewport.scale; // one screen pixel, in layout units
 
-    // Three Paints for the whole pass, recoloured per object rather than
-    // reallocated. Skia copies a Paint's state at draw time, so mutating and
-    // reusing one within a pass is safe -- and the old version allocated three
-    // Paints per object per frame, which at 76 objects is 4,560 a second to draw
-    // exactly the same lines.
-    //
-    // Whether this is where v3's frame regression went is **not** established:
-    // desktop paint timings came out too noisy to attribute (see
-    // `paint_benchmark_test.dart`). It is removed because it is waste, not
-    // because it is proven to be the waste that mattered.
-    final stroke = Paint()
+    // A handful of Paints for the whole pass, recoloured per object rather
+    // than reallocated. Skia copies a Paint's state at draw time, so mutating
+    // and reusing one within a pass is safe -- and allocating per object per
+    // frame is pure waste at 60fps.
+    final casing = Paint()
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
-      ..strokeWidth = width;
+      ..color = _casing;
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
     final fill = Paint();
-    final marker = Paint();
 
-    for (final object in scene.objects) {
+    // Areas under lines under points, so a block never paints over its rows.
+    final ordered = [
+      for (final o in scene.objects)
+        if (o.shape is PolygonShape) o,
+      for (final o in scene.objects)
+        if (o.shape is PolylineShape) o,
+      for (final o in scene.objects)
+        if (o.shape is PointShape) o,
+    ];
+
+    for (final object in ordered) {
       if (!object.shape.bounds.inflate(10).overlaps(visible)) continue;
 
-      final colour = _objectColour(object);
-      stroke.color = colour.withValues(alpha: 0.75);
+      final colour = colourOf(object);
+      final selected = object.id == scene.selectedObjectId;
 
       switch (object.shape) {
         case final PolylineShape line:
-          canvas.drawPath(_pathOf(line.path.points, close: false), stroke);
+          final path = _pathOf(line.path.points, close: false);
+          if (selected) _halo(canvas, path, px);
+          canvas.drawPath(path, casing..strokeWidth = 3.2 * px);
+          canvas.drawPath(
+            path,
+            stroke
+              ..strokeWidth = 1.4 * px
+              ..color = colour.withValues(alpha: 0.85),
+          );
 
         case final PolygonShape polygon:
           final path = _pathOf(polygon.vertices, close: true);
           // Faint fill so the area reads as an area without hiding the aerial
           // underneath it -- the photo is what the user is drawing against.
-          canvas.drawPath(path, fill..color = colour.withValues(alpha: 0.10));
-          canvas.drawPath(path, stroke);
+          canvas.drawPath(
+            path,
+            fill..color = colour.withValues(alpha: selected ? 0.16 : 0.07),
+          );
+          if (selected) _halo(canvas, path, px);
+          canvas.drawPath(path, casing..strokeWidth = 4.5 * px);
+          canvas.drawPath(
+            path,
+            stroke
+              ..strokeWidth = 2.2 * px
+              ..color = colour,
+          );
 
         case final PointShape point:
           // A diamond, deliberately unlike a plant's round dot: a post and a
           // plant must not be confusable at a glance.
-          final r = (6 / viewport.scale).clamp(0.5, 40.0);
-          canvas.drawPath(
-            Path()
-              ..moveTo(point.at.dx, point.at.dy - r)
-              ..lineTo(point.at.dx + r, point.at.dy)
-              ..lineTo(point.at.dx, point.at.dy + r)
-              ..lineTo(point.at.dx - r, point.at.dy)
-              ..close(),
-            marker..color = colour,
-          );
+          final r = 7 * px;
+          final diamond = Path()
+            ..moveTo(point.at.dx, point.at.dy - r)
+            ..lineTo(point.at.dx + r, point.at.dy)
+            ..lineTo(point.at.dx, point.at.dy + r)
+            ..lineTo(point.at.dx - r, point.at.dy)
+            ..close();
+          if (selected) _halo(canvas, diamond, px);
+          canvas.drawPath(diamond, fill..color = colour);
+          canvas.drawPath(diamond, casing..strokeWidth = 1.5 * px);
       }
     }
+  }
+
+  /// The selected object's highlight: a wide translucent band in the
+  /// selection colour, under the object's own strokes.
+  void _halo(Canvas canvas, Path path, double px) {
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..strokeWidth = 10 * px
+        ..color = selectionColor.withValues(alpha: 0.55),
+    );
   }
 
   Path _pathOf(List<Offset> points, {required bool close}) {
@@ -234,22 +320,29 @@ class VineyardPainter extends CustomPainter {
   /// Drawn last, over everything: it is transient feedback about a gesture, not
   /// part of the vineyard.
   void _paintSelectionGesture(Canvas canvas) {
-    final width = 1.5 / viewport.scale;
+    final px = 1 / viewport.scale;
     final paint = Paint()
-      ..color = _selectionPaint.color
+      ..color = selectionColor
       ..style = PaintingStyle.stroke
-      ..strokeWidth = width;
+      ..strokeJoin = StrokeJoin.round
+      ..strokeWidth = 2 * px;
 
     final marquee = scene.marquee;
     if (marquee != null) {
       canvas.drawRect(
         marquee,
-        Paint()..color = _selectionPaint.color.withValues(alpha: 0.12),
+        Paint()..color = selectionColor.withValues(alpha: 0.14),
       );
       canvas.drawRect(marquee, paint);
     }
 
     if (scene.lasso.length >= 2) {
+      canvas.drawPath(
+        _pathOf(scene.lasso, close: false),
+        Paint()
+          ..color = selectionColor.withValues(alpha: 0.14)
+          ..style = PaintingStyle.fill,
+      );
       canvas.drawPath(_pathOf(scene.lasso, close: false), paint);
     }
   }
@@ -263,11 +356,10 @@ class VineyardPainter extends CustomPainter {
     // is on screen instead of walking 3,000 plants and rejecting most of them.
     final visible = viewport.visibleLayoutRect(padding: 20);
     final onScreen = scene.index.inRect(visible);
+    if (onScreen.isEmpty) return;
 
-    // Constant on-screen size, so markers do not balloon as you zoom in.
-    final radius = (5 / viewport.scale).clamp(0.5, 40.0);
-    final selectionWidth = 2 / viewport.scale;
-    final drawLabels = scene.showLabels && viewport.scale >= _labelVisibleScale;
+    final px = 1 / viewport.scale;
+    final radius = _screenRadius * px;
 
     // Grouped by colour and drawn with one call per colour.
     //
@@ -278,12 +370,25 @@ class VineyardPainter extends CustomPainter {
     // fraction of it. Round stroke caps make each point render as a dot of
     // diameter strokeWidth.
     final fallback = scene.fallbackColor ?? _defaultPlantColor;
+    final all = <Offset>[];
     final byColour = <Color, List<Offset>>{};
     for (final point in onScreen) {
+      all.add(point.position);
       (byColour[scene.colors[point.id] ?? fallback] ??= <Offset>[]).add(
         point.position,
       );
     }
+
+    // One dark disc under every plant -- the casing that makes a green dot
+    // visible on green grass. One extra call, not one per plant.
+    canvas.drawPoints(
+      ui.PointMode.points,
+      all,
+      Paint()
+        ..color = const Color(0xB3000000)
+        ..strokeWidth = (radius + px) * 2
+        ..strokeCap = StrokeCap.round,
+    );
 
     for (final entry in byColour.entries) {
       canvas.drawPoints(
@@ -296,23 +401,27 @@ class VineyardPainter extends CustomPainter {
       );
     }
 
-    // Selection and labels stay per-plant: both are bounded by what a person
-    // can select or read, not by the size of the vineyard.
-    if (scene.selection.isNotEmpty || drawLabels) {
+    // Selection stays per-plant: it is bounded by what a person can select,
+    // not by the size of the vineyard.
+    if (scene.selection.isNotEmpty) {
+      final outer = Paint()
+        ..color = const Color(0xCC000000)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4 * px;
+      final ring = Paint()
+        ..color = selectionColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.2 * px;
+      final ringRadius = radius + 3.5 * px;
       for (final point in onScreen) {
-        if (scene.selection.contains(point.id)) {
-          canvas.drawCircle(
-            point.position,
-            radius * 1.8,
-            _selectionPaint..strokeWidth = selectionWidth,
-          );
-        }
-        if (drawLabels) _paintLabel(canvas, point, radius);
+        if (!scene.selection.contains(point.id)) continue;
+        canvas.drawCircle(point.position, ringRadius, outer);
+        canvas.drawCircle(point.position, ringRadius, ring);
       }
     }
   }
 
-  /// Empty slots: a thin grey ring where a plant used to be.
+  /// Empty slots: a thin pale ring where a plant used to be.
   ///
   /// Per-plant calls, unlike living plants, because there are few of them --
   /// a vineyard losing a tenth of its vines in a season would be a disaster
@@ -320,47 +429,194 @@ class VineyardPainter extends CustomPainter {
   void _paintRetired(Canvas canvas) {
     if (scene.retired.isEmpty) return;
     final visible = viewport.visibleLayoutRect(padding: 20);
-    final radius = (5 / viewport.scale).clamp(0.5, 40.0);
+    final px = 1 / viewport.scale;
+    final radius = _screenRadius * px;
+    final casing = Paint()
+      ..color = _casing
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3 * px;
     final ring = Paint()
-      ..color = const Color(0xFF8D8D8D)
+      ..color = const Color(0xFFE0E0E0)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5 / viewport.scale;
+      ..strokeWidth = 1.4 * px;
     final selected = Paint()
-      ..color = _selectionPaint.color
+      ..color = selectionColor
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2 / viewport.scale;
+      ..strokeWidth = 2.2 * px;
 
     for (final entry in scene.retired.entries) {
       if (!visible.contains(entry.value)) continue;
-      canvas.drawCircle(entry.value, radius * 0.8, ring);
+      canvas.drawCircle(entry.value, radius, casing);
+      canvas.drawCircle(entry.value, radius, ring);
       if (scene.selection.contains(entry.key)) {
-        canvas.drawCircle(entry.value, radius * 1.8, selected);
+        canvas.drawCircle(entry.value, radius + 3.5 * px, selected);
       }
     }
   }
 
-  void _paintLabel(Canvas canvas, IndexedPoint point, double radius) {
-    final text = scene.labels[point.id];
-    if (text == null) return;
+  // ------------------------------------------------------------------ text
 
-    // Laid out per label per frame. Only runs when zoomed past the label
-    // threshold, where few plants are on screen -- at 3,000 visible this would
-    // dominate the frame.
+  /// Laid-out labels, reused across frames.
+  ///
+  /// Text is drawn in screen space at a fixed size, so a label's layout does
+  /// not change as you pan and zoom. The old painter laid every visible label
+  /// out again every frame at a zoom-dependent size -- the most expensive
+  /// thing it did when IDs were on.
+  static final _textCache = <String, TextPainter>{};
+  static const _textCacheLimit = 600;
+
+  static TextPainter _text(
+    String text, {
+    required bool bold,
+    double size = 11,
+  }) {
+    final key = '$bold|$size|$text';
+    final hit = _textCache.remove(key);
+    if (hit != null) {
+      _textCache[key] = hit; // most recently used
+      return hit;
+    }
     final painter = TextPainter(
       text: TextSpan(
         text: text,
         style: TextStyle(
-          color: const Color(0xDD000000),
-          fontSize: 10 / viewport.scale,
+          // Named rather than inherited: a painter has no theme to inherit
+          // from, and Roboto is what the rest of the app is set in.
+          fontFamily: 'Roboto',
+          color: Colors.white,
+          fontSize: size,
+          fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
+          height: 1.1,
         ),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
+    _textCache[key] = painter;
+    if (_textCache.length > _textCacheLimit) {
+      _textCache.remove(_textCache.keys.first);
+    }
+    return painter;
+  }
 
-    painter.paint(
-      canvas,
-      point.position + Offset(radius * 1.5, -painter.height / 2),
+  /// Draws [painter] centred on [at] inside a dark rounded pill.
+  void _pill(
+    Canvas canvas,
+    TextPainter painter,
+    Offset at, {
+    Color? accent,
+    Alignment anchor = Alignment.center,
+  }) {
+    const padH = 6.0, padV = 3.0;
+    final w = painter.width + padH * 2;
+    final h = painter.height + padV * 2;
+    final topLeft = at - Offset(w * (anchor.x + 1) / 2, h * (anchor.y + 1) / 2);
+    final rect = RRect.fromRectAndRadius(
+      topLeft & Size(w, h),
+      Radius.circular(h / 2),
     );
+    canvas.drawRRect(rect, Paint()..color = const Color(0xD91D221E));
+    if (accent != null) {
+      canvas.drawRRect(
+        rect,
+        Paint()
+          ..color = accent
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5,
+      );
+    }
+    painter.paint(canvas, topLeft + const Offset(padH, padV));
+  }
+
+  /// Area names at their centres, and row numbers at their starts.
+  void _paintObjectLabels(Canvas canvas) {
+    if (scene.objects.isEmpty) return;
+    final screen = viewport.size;
+
+    for (final object in scene.objects) {
+      if (object.label.isEmpty) continue;
+      final bounds = object.shape.bounds;
+      final topLeft = viewport.toScreen(bounds.topLeft);
+      final bottomRight = viewport.toScreen(bounds.bottomRight);
+      final onScreen = Rect.fromPoints(topLeft, bottomRight);
+      if (!onScreen.inflate(40).overlaps(screen)) continue;
+
+      final selected = object.id == scene.selectedObjectId;
+      final accent = selected ? selectionColor : colourOf(object);
+      switch (object.shape) {
+        case PolygonShape():
+          // Only once the area is big enough on screen for its name not to
+          // cover it.
+          if (onScreen.width < 90 || onScreen.height < 50) continue;
+          final name = scene.fieldNames[object.fieldDefId];
+          _pill(
+            canvas,
+            _text(
+              name == null ? object.label : '$name ${object.label}',
+              bold: true,
+              size: 13,
+            ),
+            _visibleCentre(onScreen, screen),
+            accent: accent,
+          );
+
+        case final PolylineShape line:
+          if (viewport.scale < _rowLabelVisibleScale && !selected) continue;
+          final points = line.path.points;
+          final start = viewport.toScreen(points.first);
+          final next = viewport.toScreen(points[1]);
+          // Just past the start, pushed back along the line so it sits
+          // beyond the first plant rather than on top of it.
+          final dir = next - start;
+          final unit = dir.distance == 0 ? Offset.zero : dir / dir.distance;
+          _pill(
+            canvas,
+            _text(object.label, bold: true, size: 10),
+            start - unit * 16,
+            accent: selected ? selectionColor : null,
+          );
+
+        case final PointShape point:
+          if (viewport.scale < _rowLabelVisibleScale && !selected) continue;
+          _pill(
+            canvas,
+            _text(object.label, bold: false, size: 10),
+            viewport.toScreen(point.at) + const Offset(0, -12),
+            anchor: Alignment.bottomCenter,
+          );
+      }
+    }
+  }
+
+  /// The centre of [rect], pulled inside [screen] so a label for an area that
+  /// runs off the edge stays visible.
+  Offset _visibleCentre(Rect rect, Rect screen) {
+    final clipped = rect.intersect(screen.deflate(24));
+    if (clipped.isEmpty) return rect.center;
+    return clipped.center;
+  }
+
+  void _paintPlantLabels(Canvas canvas) {
+    if (!scene.showLabels || viewport.scale < _labelVisibleScale) return;
+    final visible = viewport.visibleLayoutRect(padding: 20);
+    final offset = Offset(_screenRadius + 3, 0);
+
+    for (final point in scene.index.inRect(visible)) {
+      final text = scene.labels[point.id];
+      if (text == null) continue;
+      final painter = _text(text, bold: false, size: 10);
+      final at = viewport.toScreen(point.position) + offset;
+      final rect = Rect.fromLTWH(
+        at.dx - 2,
+        at.dy - painter.height / 2 - 1,
+        painter.width + 4,
+        painter.height + 2,
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect, const Radius.circular(3)),
+        Paint()..color = const Color(0xB31D221E),
+      );
+      painter.paint(canvas, Offset(at.dx, at.dy - painter.height / 2));
+    }
   }
 
   @override

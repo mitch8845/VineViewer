@@ -1,6 +1,6 @@
 # VineViewer — feature and test checklist
 
-Everything the app does as of **0.7.0**, written to be walked through with a
+Everything the app does as of **0.8.0**, written to be walked through with a
 tablet in hand. Tick, strike out, and write in the margins.
 
 Notation: `[ ]` to do · `[x]` works · `[!]` broken · `[?]` unclear what should
@@ -15,7 +15,7 @@ hunting for a feature that isn't there.
 
 ## 1. Install and first run
 
-- [ ] Sideload `VineViewer-v0.7.0.apk` from the releases page
+- [ ] Install 0.8.0 through **Check for updates** (0.7.0 onwards updates itself)
 - [ ] Home-screen icon label reads **VineViewer**
 - [ ] Title bar reads **VineViewer** (0.6.0/0.6.1 wrongly said "PlantViewer")
 - [ ] App opens to the project list without a crash on a fresh install
@@ -42,7 +42,10 @@ Notes:
       the highest plant number) rather than trusting the label.
 - [ ] The seed button shows progress and **cannot be tapped twice** (a double tap
       used to build two vineyards)
-- [ ] ⋮ menu on a project → **Rename**. The new name shows in the list and, if
+- [ ] Vineyards show as **cards** with the aerial as a thumbnail (a green
+      placeholder reading "No aerial image" otherwise), the plant count and the
+      last-edited date
+- [ ] ⋮ menu on a card → **Rename**. The new name shows in the list and, if
       the map is open, in its title bar
 - [ ] ⋮ → **Delete** asks once, removes it from the list, and offers **Undo** in
       a snackbar
@@ -187,14 +190,16 @@ Notes:
 
 ## 7. Aerial image
 
-- [ ] Project list → image icon on the row → sheet with two options
+- [ ] Project list → ⋮ on the card → **Aerial image** → sheet with two options
 - [ ] **"Five Sisters aerial"** installs the bundled photo, no file browsing
 - [ ] **"Choose a photo"** opens the Android picker
 - [ ] ⚠ This was broken in 0.6.0/0.6.1 (`MissingPluginException`). Specifically
       test it on 0.6.2.
 - [ ] Subtitle changes to `Image WxH` afterwards
 - [ ] Image appears under the layout on the canvas
-- [ ] "Fit to layout" frames it
+- [ ] The fit button (bottom right, under + and −) frames it
+- [ ] **Layers → Aerial photo** slider fades the photo; at 0% only the layout
+      draws
 - [ ] Choosing an image again **replaces** the existing one
 - [ ] ⚠ Open a project, go back, set a new image, reopen the project: the new
       image shows **immediately** (it used to need a restart)
@@ -213,6 +218,37 @@ Notes:
 
 ---
 
+## 7a. The map screen (0.8.0 layout)
+
+- [ ] The map fills the screen; everything else floats over it
+- [ ] **Top bar** (top left): back, vineyard name, "N plants · N Rows · N
+      Blocks", undo / redo, **Layers**, ⋮ (Fields, Plant ID format)
+- [ ] **Tool rail** (left): grouped Select / Plant / Draw / Edit, active tool
+      highlighted. Every tool reachable without scrolling in landscape.
+- [ ] Choosing a tool shows a **dark banner** at the top saying what it wants
+      (Plant, Insert, Move, Reshape, Split, Draw, Run, Space)
+- [ ] **Blocks** are outlined with a dark casing and named at their centre
+      ("Block 2"); the name stays visible when the block runs off screen
+- [ ] **Row numbers** appear at the start of each row once zoomed in a little
+- [ ] Plants are dots with a dark outline, sized with the map — rows read as
+      rows of dots with ground between, not as solid bars
+- [ ] The **selected object** has a cyan halo; selected plants a cyan ring
+- [ ] Selecting several plants → bar at the bottom: count, **Set value**,
+      **More**, ✕
+- [ ] Selecting an object → bar at the bottom: its name, **Actions**, ✕
+- [ ] **One-tap entry** in the plant panel: rating scores, yes/no and choice
+      fields with up to six options are buttons right in the panel. Tap one
+      and it saves; the current value is highlighted.
+- [ ] ⚠ One-tap entry goes through the **same gates** as the editor: a
+      write-once field with a value still asks before overwriting, and an ID
+      part still counts and confirms
+- [ ] Tapping a field's name still opens the full editor (Clear lives there)
+- [ ] Dark mode (tablet set to dark): panels go dark, the map is unchanged
+
+Notes:
+
+---
+
 ## 8. Canvas navigation
 
 - [ ] Two-finger pinch zooms; two-finger drag pans
@@ -224,11 +260,12 @@ Notes:
       the edit — nothing is written, the shape snaps back. (It used to commit the
       move wherever the two fingers met.)
 - [ ] The point under your fingers stays put while zooming
-- [ ] "Fit to layout" frames everything including objects, not just plants
+- [ ] **+ / −** buttons (bottom right) zoom about the centre of the view
+- [ ] The fit button frames everything including objects, not just plants
 - [ ] Fit happens automatically once on opening a project with content
 - [ ] ⚠ Zoom out far: below 0.25 scale individual plant markers **stop drawing
       entirely**. Intended — that is what makes a whole-vineyard overview cheap.
-- [ ] ⚠ Zoom in past 1.2 scale with "Show IDs" on: labels appear. Below it they
+- [ ] ⚠ Zoom in past 1.2 scale with **Layers → Plant IDs** on: labels appear. Below it they
       do not, however much you want them.
 - [ ] Markers stay a constant size on screen as you zoom (they do not balloon)
 - [ ] ⚠ Tap tolerance is constant **on screen** at any zoom — a finger-sized
@@ -252,7 +289,7 @@ Notes:
 - [ ] ⚠ A **tap** with the lasso tool is treated as a plain select, not an
       empty lasso
 
-### Sticky select (the toggle in the app bar)
+### Sticky select (**Add**, under Lasso in the tool rail)
 
 - [ ] Icon highlights when on
 - [ ] With it on, tapping plants **adds** them one by one
@@ -359,7 +396,7 @@ Notes:
 
 ---
 
-## 12. Object actions (tap an object → "Actions")
+## 12. Object actions (tap an object → bar at the bottom → "Actions")
 
 - [ ] "Select its plants"
 - [ ] "Rename"
@@ -552,7 +589,7 @@ Notes:
 
 ## 16. Numbering tool
 
-Select 2+ plants → "Actions" → "Number them".
+Select 2+ plants → "More" → "Number them".
 
 - [ ] Start-at is settable
 - [ ] Four orders: left→right, right→left, top→bottom, bottom→top
@@ -573,7 +610,8 @@ Notes:
 
 Select exactly one plant.
 
-- [ ] Panel appears bottom-left, **over** the canvas — the plant stays visible
+- [ ] Panel docks on the **right** in landscape, along the **bottom** in
+      portrait — the plant stays visible, and zoom controls move clear of it
 - [ ] Shows the rendered identifier large
 - [ ] Shows which containers hold it ("Row 12 · Block 1") or "Not inside anything"
 - [ ] ⚠ Container values are **shown, not editable**. They come from geometry, so
@@ -581,7 +619,7 @@ Select exactly one plant.
 - [ ] Lists every **value** field with its current value; `--` when unset
 - [ ] ⚠ Drawn-object fields (Row, Block, roads) are **not** listed as editable
       rows — they are in the subtitle, derived from the map
-- [ ] **⋮ Actions** button opens the plant actions (set a value, number, mark as
+- [ ] **⋯ Actions** button (panel header) opens the plant actions (set a value, number, mark as
       removed, replace). Single plants could not reach these before.
 - [ ] A retired plant's subtitle starts with **"Removed YYYY-MM-DD"** in red
 - [ ] Categorical colour swatch appears next to the value
@@ -630,7 +668,7 @@ Notes:
 
 Select 2+ plants (or an object → "Select its plants").
 
-- [ ] Bar shows **"Set value"** directly, as well as under Actions
+- [ ] Bar shows **"Set value"** directly, as well as under "More"
 - [ ] Field picker lists value fields only; write-once ones are marked
 - [ ] The value editor is the same one the inspector uses, titled
       "Set Health on 40 plants"
@@ -655,7 +693,8 @@ Notes:
 
 ## 17b. Colour by field
 
-- [ ] Palette icon in the map's app bar → pick a value field, or "Nothing"
+- [ ] **Layers** (top bar) → "Colour plants by" → pick a value field, or
+      "Nothing"
 - [ ] Legend appears top-right with the field name and what each colour means;
       ✕ on it turns colouring off
 - [ ] Categorical: uses the **colours chosen** for each option in the field editor
@@ -735,7 +774,7 @@ Notes:
 
 ## 20. Plant lifecycle
 
-Select plants → "Actions", or one plant → inspector **⋮**.
+Select plants → "More", or one plant → inspector **⋯**.
 
 - [ ] "Mark as removed" — confirmation names the **recorded observation count**
       ("47 recorded observations will be kept")
@@ -743,7 +782,7 @@ Select plants → "Actions", or one plant → inspector **⋮**.
 - [ ] ⚠ History is kept and the **position stays on the map as an empty slot**,
       ready for a replant
 - [ ] "Replace with a new plant" (single selection only — now reachable from the
-      inspector's ⋮)
+      inspector's ⋯)
 - [ ] ⚠ Select an **empty slot**: "Mark as removed" is not offered, and the
       action reads **"Replant this slot"**
 - [ ] Replace offers a checklist of **write-once** fields to carry forward
@@ -794,7 +833,7 @@ Notes:
 
 ## 22. Performance (the 4,000-plant gate)
 
-- [ ] Toggle the frame-stats overlay (speedometer icon)
+- [ ] **Layers → Frame stats** toggles the overlay (top right)
 - [ ] Shows fps, average ms, build ms, raster ms, jank %
 - [ ] Tap the overlay to reset the counters
 - [ ] Seed the 4,000-plant vineyard and record: **fps ___ avg ___ build ___
@@ -808,7 +847,10 @@ Notes:
       in). Does it stall? Roughly how long? ___
 - [ ] Time a **small boundary nudge** — should be much cheaper than a big sweep
 - [ ] Select 500+ plants and pan — selection rings are drawn one at a time
-- [ ] Turn "Show IDs" on while zoomed in on a dense area
+- [ ] Turn **Plant IDs** on while zoomed in on a dense area
+- [ ] ⚠ 0.8.0 draws more per plant (an outline under every dot) and labels
+      rows and blocks. Record fps here and compare with 0.7.x before blaming
+      anything else.
 - [ ] Zoom out fully — should get *cheaper*, not more expensive
 
 Notes:

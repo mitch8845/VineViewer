@@ -15,12 +15,13 @@ import '../canvas/tools/plant_actions_sheet.dart';
 import 'bulk_edit.dart';
 import '../schema/field_editor_screen.dart';
 import 'value_editor_sheet.dart';
+import '../canvas/map_chrome.dart';
 
 /// Panel for the selected plant: its address and every field, editable.
 ///
-/// Sits over the canvas rather than replacing it, so the plant stays visible
-/// while its values are being read or changed -- in the field you are looking
-/// at the plant and the screen at the same time.
+/// Docked at the side of the map rather than replacing it, so the plant stays
+/// visible while its values are being read or changed -- in the field you are
+/// looking at the plant and the screen at the same time.
 class PlantInspector extends ConsumerWidget {
   const PlantInspector({super.key, required this.plantId});
 
@@ -29,8 +30,8 @@ class PlantInspector extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     // Attributes only. A container's value is derived from geometry and shown
-    // in the subtitle; a non-container object has nothing to do with plants.
-    // Listing Row here offered an edit that wrote an event nothing reads.
+    // as a chip; a non-container object has nothing to do with plants. Listing
+    // Row here offered an edit that wrote an event nothing reads.
     final fields = [
       for (final f in ref.watch(fieldDefsProvider).valueOrNull ?? const [])
         if (f.role == FieldRole.attribute) f,
@@ -41,109 +42,213 @@ class PlantInspector extends ConsumerWidget {
     final values = ref.watch(_valuesProvider(plantId)).valueOrNull ?? const {};
     final plant = ref.watch(_plantProvider(plantId)).valueOrNull;
     final retired = plant != null && plant.status != PlantStatus.active;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
 
-    return Card(
-      margin: const EdgeInsets.all(8),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxHeight: 420, maxWidth: 420),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            ListTile(
-              title: Text(
-                identifier?.text ?? '...',
-                style: const TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              // Container values are worked out from where the plant sits, so
-              // they are shown rather than offered: the way to change one is to
-              // move the plant or the boundary.
-              subtitle: Text(
-                [
-                  // Said first and plainly: a slot looks like a plant in this
-                  // panel otherwise, and recording a reading against the dead
-                  // one is an easy mistake.
-                  if (retired)
-                    'Removed${plant.endedAt == null ? '' : ' ${_LabelHistorySheet._date(plant.endedAt!)}'}',
-                  if (containers.isEmpty)
-                    'Not inside anything'
-                  else
-                    for (final e in containers.entries) '${e.key} ${e.value}',
-                ].join(' · '),
-                style: retired
-                    ? TextStyle(color: Theme.of(context).colorScheme.error)
-                    : null,
-              ),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Retire and replace live in the plant actions sheet, which
-                  // was only reachable from the multi-plant bar -- so the one
-                  // case "Replace with a new plant" exists for, a single
-                  // plant, could never get to it.
-                  IconButton(
-                    tooltip: 'Actions',
-                    icon: const Icon(Icons.more_vert),
-                    onPressed: () async {
-                      final action = await showModalBottomSheet<String>(
-                        context: context,
-                        isScrollControlled: true,
-                        builder: (context) => PlantActionsSheet(
-                          selection: {plantId},
-                          retired: retired,
+    return MapPanel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 8, 0),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'PLANT',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                          letterSpacing: 1.4,
                         ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        identifier?.text ?? '...',
+                        style: theme.textTheme.headlineMedium?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'ID history',
+                  icon: const Icon(Icons.history),
+                  onPressed: () => showModalBottomSheet<void>(
+                    context: context,
+                    builder: (context) => _LabelHistorySheet(plantId: plantId),
+                  ),
+                ),
+                // Retire and replace live in the plant actions sheet, which
+                // was only reachable from the multi-plant bar -- so the one
+                // case "Replace with a new plant" exists for, a single plant,
+                // could never get to it.
+                IconButton(
+                  tooltip: 'Actions',
+                  icon: const Icon(Icons.more_horiz),
+                  onPressed: () async {
+                    final action = await showModalBottomSheet<String>(
+                      context: context,
+                      isScrollControlled: true,
+                      builder: (context) => PlantActionsSheet(
+                        selection: {plantId},
+                        retired: retired,
+                      ),
+                    );
+                    if (action == PlantActionsSheet.setValue &&
+                        context.mounted) {
+                      await bulkSetValue(context, {plantId});
+                    }
+                  },
+                ),
+                IconButton(
+                  tooltip: 'Close',
+                  icon: const Icon(Icons.close),
+                  onPressed: () =>
+                      ref.read(selectionProvider.notifier).state = const {},
+                ),
+              ],
+            ),
+          ),
+          // Container values are worked out from where the plant sits, so
+          // they are shown rather than offered: the way to change one is to
+          // move the plant or the boundary.
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 14),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                // Said first and plainly: a slot looks like a plant in this
+                // panel otherwise, and recording a reading against the dead
+                // one is an easy mistake.
+                if (retired)
+                  _Tag(
+                    icon: Icons.remove_circle_outline,
+                    text:
+                        'Removed${plant.endedAt == null ? '' : ' ${_LabelHistorySheet._date(plant.endedAt!)}'}',
+                    background: scheme.errorContainer,
+                    foreground: scheme.onErrorContainer,
+                  ),
+                if (containers.isEmpty)
+                  _Tag(
+                    text: 'Not inside anything',
+                    background: scheme.surfaceContainerHighest,
+                    foreground: scheme.onSurfaceVariant,
+                  )
+                else
+                  for (final e in containers.entries)
+                    _Tag(
+                      text: '${e.key} ${e.value}',
+                      background: scheme.secondaryContainer,
+                      foreground: scheme.onSecondaryContainer,
+                    ),
+              ],
+            ),
+          ),
+          Divider(height: 1, color: scheme.outlineVariant),
+          Expanded(
+            child: fields.isEmpty
+                ? _NoFields()
+                : ListView.separated(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    itemCount: fields.length,
+                    separatorBuilder: (_, _) => Divider(
+                      height: 1,
+                      indent: 20,
+                      endIndent: 20,
+                      color: scheme.outlineVariant.withValues(alpha: 0.5),
+                    ),
+                    itemBuilder: (context, i) {
+                      final field = fields[i];
+                      return _FieldRow(
+                        plantId: plantId,
+                        field: field,
+                        event: values[field.id],
                       );
-                      if (action == PlantActionsSheet.setValue &&
-                          context.mounted) {
-                        await bulkSetValue(context, {plantId});
-                      }
                     },
                   ),
-                  IconButton(
-                    tooltip: 'ID history',
-                    icon: const Icon(Icons.history),
-                    onPressed: () => showModalBottomSheet<void>(
-                      context: context,
-                      builder: (context) =>
-                          _LabelHistorySheet(plantId: plantId),
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close),
-                    onPressed: () =>
-                        ref.read(selectionProvider.notifier).state = const {},
-                  ),
-                ],
-              ),
-            ),
-            const Divider(height: 1),
-            Flexible(
-              child: fields.isEmpty
-                  ? const Padding(
-                      padding: EdgeInsets.all(24),
-                      child: Text(
-                        'No fields defined yet. Add one to start recording '
-                        'observations about this plant.',
-                      ),
-                    )
-                  : ListView.builder(
-                      shrinkWrap: true,
-                      itemCount: fields.length,
-                      itemBuilder: (context, i) {
-                        final field = fields[i];
-                        return _FieldRow(
-                          plantId: plantId,
-                          field: field,
-                          event: values[field.id],
-                        );
-                      },
-                    ),
-            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Tag extends StatelessWidget {
+  const _Tag({
+    required this.text,
+    required this.background,
+    required this.foreground,
+    this.icon,
+  });
+
+  final String text;
+  final Color background;
+  final Color foreground;
+  final IconData? icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon != null) ...[
+            Icon(icon, size: 15, color: foreground),
+            const SizedBox(width: 4),
           ],
-        ),
+          Text(
+            text,
+            style: Theme.of(
+              context,
+            ).textTheme.labelLarge?.copyWith(color: foreground),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NoFields extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.edit_note,
+            size: 40,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'No fields defined yet. Add one to start recording observations '
+            'about this plant.',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 12),
+          FilledButton.tonalIcon(
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const FieldListScreen()),
+            ),
+            icon: const Icon(Icons.add),
+            label: const Text('Add a field'),
+          ),
+        ],
       ),
     );
   }
@@ -286,38 +391,166 @@ class _FieldRow extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final config = ref.read(fieldDefsDaoProvider).configOf(field);
+    final current = event?.value;
     final display = FieldValueCodec.display(
       type: field.type,
-      stored: event?.value,
+      stored: current,
       config: config,
     );
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final locked = field.isStatic && current != null;
 
-    final swatch = config.optionColors[event?.value];
+    final swatch = config.optionColors[current];
     final colour = swatch == null ? null : _parseHex(swatch);
 
-    return ListTile(
-      dense: true,
-      leading: colour == null
-          ? null
-          : Container(
-              width: 16,
-              height: 16,
-              decoration: BoxDecoration(color: colour, shape: BoxShape.circle),
+    final quick = _quickChoices(config);
+
+    return InkWell(
+      // The full editor is always one tap away, quick buttons or not: it is
+      // where Clear lives, and where anything off the quick list is entered.
+      onTap: () => _edit(context, ref, config),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    field.name,
+                    style: theme.textTheme.labelLarge?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                if (locked)
+                  // Signals write-once before the user taps and gets refused.
+                  Tooltip(
+                    message: 'Write-once',
+                    child: Icon(
+                      Icons.lock_outline,
+                      size: 16,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                const SizedBox(width: 4),
+                Icon(
+                  Icons.chevron_right,
+                  size: 20,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ],
             ),
-      title: Text(field.name),
-      subtitle: Text(
-        display ?? '--',
-        style: TextStyle(
-          fontWeight: display == null ? FontWeight.normal : FontWeight.bold,
-          color: display == null ? Colors.grey : null,
+            const SizedBox(height: 4),
+            if (quick == null)
+              Row(
+                children: [
+                  if (colour != null) ...[
+                    Container(
+                      width: 12,
+                      height: 12,
+                      decoration: BoxDecoration(
+                        color: colour,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  Expanded(
+                    child: Text(
+                      display ?? 'Not recorded',
+                      style: display == null
+                          ? theme.textTheme.bodyLarge?.copyWith(
+                              color: scheme.onSurfaceVariant.withValues(
+                                alpha: 0.7,
+                              ),
+                              fontStyle: FontStyle.italic,
+                            )
+                          : theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                    ),
+                  ),
+                ],
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.only(top: 4, right: 8),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final choice in quick)
+                      _QuickChoice(
+                        label: choice.label,
+                        colour: choice.colour,
+                        selected: choice.stored == current,
+                        onTap: choice.stored == current
+                            ? null
+                            : () => _commit(context, ref, choice.input),
+                      ),
+                  ],
+                ),
+              ),
+          ],
         ),
       ),
-      trailing: field.isStatic && event?.value != null
-          // Signals write-once before the user taps and gets refused.
-          ? const Icon(Icons.lock_outline, size: 18)
-          : const Icon(Icons.edit_outlined, size: 18),
-      onTap: () => _edit(context, ref, config),
     );
+  }
+
+  /// One-tap answers for fields whose whole range fits on screen.
+  ///
+  /// A health survey is tap the plant, tap a score, next plant. Going through
+  /// a sheet for every one of three thousand plants is two taps and a slide
+  /// animation each, which is the difference between a morning and a day.
+  /// Null for fields that need the full editor.
+  List<({String label, String stored, Object input, Color? colour})>?
+  _quickChoices(FieldConfig config) {
+    switch (field.type) {
+      case FieldType.rating:
+        final lo = config.effectiveScaleMin;
+        final hi = config.effectiveScaleMax;
+        if (hi - lo > 9) return null;
+        return [
+          for (var v = lo; v <= hi; v++)
+            (label: '$v', stored: '$v', input: v, colour: null),
+        ];
+      case FieldType.boolean:
+        return [
+          (
+            label: config.trueLabel ?? 'Yes',
+            stored: '1',
+            input: true,
+            colour: null,
+          ),
+          (
+            label: config.falseLabel ?? 'No',
+            stored: '0',
+            input: false,
+            colour: null,
+          ),
+        ];
+      case FieldType.categorical:
+        if (config.options.isEmpty || config.options.length > 6) return null;
+        return [
+          for (final o in config.options)
+            (
+              label: o,
+              stored: o,
+              input: o,
+              colour: _parseHex(config.optionColors[o] ?? ''),
+            ),
+        ];
+      case FieldType.text:
+      case FieldType.integer:
+      case FieldType.decimal:
+      case FieldType.date:
+      case FieldType.datetime:
+      case FieldType.multiSelect:
+        return null;
+    }
   }
 
   Future<void> _edit(
@@ -335,8 +568,17 @@ class _FieldRow extends ConsumerWidget {
     // Null is a dismissal -- Cancel, a swipe, a tap outside. A deliberate
     // clear comes back as an edit holding null.
     if (edit == null || !context.mounted) return;
+    await _commit(context, ref, edit.value);
+  }
 
-    final resolved = edit.value;
+  /// Gates and writes one value -- the single path for both the full editor
+  /// and the quick buttons, so neither can skip the identifier check or the
+  /// write-once lock.
+  Future<void> _commit(
+    BuildContext context,
+    WidgetRef ref,
+    Object? resolved,
+  ) async {
     final projectId = ref.read(activeProjectIdProvider);
     if (projectId == null) return;
 
@@ -502,4 +744,72 @@ Color? _parseHex(String hex) {
   if (cleaned.length != 6) return null;
   final value = int.tryParse(cleaned, radix: 16);
   return value == null ? null : Color(0xFF000000 | value);
+}
+
+/// One quick-entry answer: big enough to hit with a gloved thumb.
+class _QuickChoice extends StatelessWidget {
+  const _QuickChoice({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.colour,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback? onTap;
+  final Color? colour;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final short = label.length <= 2;
+    return Material(
+      color: selected ? scheme.primary : scheme.surfaceContainerHighest,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: selected
+            ? BorderSide.none
+            : BorderSide(color: scheme.outlineVariant),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minWidth: short ? 48 : 64, minHeight: 44),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (colour != null) ...[
+                  Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      color: colour,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: selected ? scheme.onPrimary : Colors.transparent,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                ],
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: short ? 17 : 14,
+                    fontWeight: FontWeight.w600,
+                    color: selected ? scheme.onPrimary : scheme.onSurface,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

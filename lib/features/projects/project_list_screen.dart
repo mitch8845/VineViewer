@@ -1,10 +1,13 @@
+import 'dart:io' show File;
 import 'dart:math' as math;
 
+import 'package:drift/drift.dart' show Variable;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/db/daos/field_defs_dao.dart';
 import '../../core/db/database.dart';
+import '../../core/format.dart';
 import '../../core/geometry/polyline.dart';
 import '../../core/geometry/shapes.dart';
 import '../../core/models/enums.dart';
@@ -26,7 +29,31 @@ class ProjectListScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('VineViewer'),
+        toolbarHeight: 76,
+        titleSpacing: 24,
+        title: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primary,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(
+                Icons.grass,
+                color: Theme.of(context).colorScheme.onPrimary,
+              ),
+            ),
+            const SizedBox(width: 14),
+            Text(
+              'VineViewer',
+              style: Theme.of(
+                context,
+              ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
         actions: [
           IconButton(
             tooltip: 'Deleted vineyards',
@@ -60,56 +87,62 @@ class ProjectListScreen extends ConsumerWidget {
         error: (e, _) => Center(child: Text('Could not load projects: $e')),
         data: (list) => list.isEmpty
             ? const _EmptyState()
-            : ListView.builder(
-                itemCount: list.length,
-                itemBuilder: (context, i) {
-                  final project = list[i];
-                  return ListTile(
-                    leading: const Icon(Icons.grass),
-                    title: Text(project.name),
-                    subtitle: Text(
-                      project.imagePath == null
-                          ? 'No aerial image'
-                          : 'Image ${project.imageWidth}x${project.imageHeight}',
+            : CustomScrollView(
+                slivers: [
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
+                    sliver: SliverToBoxAdapter(
+                      child: Text(
+                        list.length == 1
+                            ? '1 vineyard'
+                            : '${list.length} vineyards',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
                     ),
-                    trailing: PopupMenuButton<_ProjectAction>(
-                      tooltip: 'More',
-                      onSelected: (action) => switch (action) {
-                        _ProjectAction.image => _chooseAerial(
-                          context,
-                          ref,
-                          project.id,
-                        ),
-                        _ProjectAction.rename => _rename(context, ref, project),
-                        _ProjectAction.delete => _delete(context, ref, project),
-                      },
-                      itemBuilder: (context) => const [
-                        PopupMenuItem(
-                          value: _ProjectAction.image,
-                          child: ListTile(
-                            leading: Icon(Icons.image_outlined),
-                            title: Text('Aerial image'),
+                  ),
+                  SliverPadding(
+                    // Bottom padding clears the floating button.
+                    padding: const EdgeInsets.fromLTRB(24, 12, 24, 104),
+                    sliver: SliverGrid(
+                      gridDelegate:
+                          const SliverGridDelegateWithMaxCrossAxisExtent(
+                            maxCrossAxisExtent: 380,
+                            mainAxisSpacing: 20,
+                            crossAxisSpacing: 20,
+                            childAspectRatio: 1.08,
                           ),
-                        ),
-                        PopupMenuItem(
-                          value: _ProjectAction.rename,
-                          child: ListTile(
-                            leading: Icon(Icons.drive_file_rename_outline),
-                            title: Text('Rename'),
-                          ),
-                        ),
-                        PopupMenuItem(
-                          value: _ProjectAction.delete,
-                          child: ListTile(
-                            leading: Icon(Icons.delete_outline),
-                            title: Text('Delete'),
-                          ),
-                        ),
-                      ],
+                      delegate: SliverChildBuilderDelegate(
+                        childCount: list.length,
+                        (context, i) {
+                          final project = list[i];
+                          return _ProjectCard(
+                            project: project,
+                            onOpen: () => _open(context, ref, project.id),
+                            onAction: (action) => switch (action) {
+                              _ProjectAction.image => _chooseAerial(
+                                context,
+                                ref,
+                                project.id,
+                              ),
+                              _ProjectAction.rename => _rename(
+                                context,
+                                ref,
+                                project,
+                              ),
+                              _ProjectAction.delete => _delete(
+                                context,
+                                ref,
+                                project,
+                              ),
+                            },
+                          );
+                        },
+                      ),
                     ),
-                    onTap: () => _open(context, ref, project.id),
-                  );
-                },
+                  ),
+                ],
               ),
       ),
       floatingActionButton: FloatingActionButton.extended(
@@ -489,6 +522,181 @@ class _NameDialogState extends State<_NameDialog> {
 }
 
 enum _ProjectAction { image, rename, delete }
+
+/// Living plants in a project, live.
+///
+/// Fails quietly to null: the card is still useful without a count, and the
+/// shell tests render this screen with no database behind it.
+final _plantCountProvider = StreamProvider.autoDispose.family<int?, String>((
+  ref,
+  projectId,
+) {
+  try {
+    final db = ref.watch(databaseProvider);
+    return db
+        .customSelect(
+          "SELECT COUNT(*) AS n FROM plants WHERE project_id = ? "
+          "AND deleted_at IS NULL AND status = 'active'",
+          variables: [Variable<String>(projectId)],
+          readsFrom: {db.plants},
+        )
+        .watchSingle()
+        .map<int?>((row) => row.read<int>('n'));
+  } catch (_) {
+    return Stream.value(null);
+  }
+});
+
+/// One vineyard: its aerial, its name, how big it is.
+///
+/// The photo is the fastest way to tell vineyards apart -- faster than
+/// reading names -- so it is the largest thing on the card.
+class _ProjectCard extends ConsumerWidget {
+  const _ProjectCard({
+    required this.project,
+    required this.onOpen,
+    required this.onAction,
+  });
+
+  final Project project;
+  final VoidCallback onOpen;
+  final ValueChanged<_ProjectAction> onAction;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final count = ref.watch(_plantCountProvider(project.id)).valueOrNull;
+    final path = project.imagePath;
+
+    final when = isoDate(project.updatedAt);
+
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onOpen,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (path != null)
+                    Image.file(
+                      File(path),
+                      fit: BoxFit.cover,
+                      // A thumbnail, not the full aerial: decoding a 4,000px
+                      // photo per card would cost tens of megabytes each.
+                      cacheWidth: 720,
+                      errorBuilder: (_, _, _) => _NoImage(scheme: scheme),
+                    )
+                  else
+                    _NoImage(scheme: scheme),
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: Material(
+                      color: scheme.surface.withValues(alpha: 0.92),
+                      shape: const CircleBorder(),
+                      child: PopupMenuButton<_ProjectAction>(
+                        tooltip: 'More',
+                        icon: const Icon(Icons.more_vert),
+                        onSelected: onAction,
+                        itemBuilder: (context) => const [
+                          PopupMenuItem(
+                            value: _ProjectAction.image,
+                            child: ListTile(
+                              leading: Icon(Icons.image_outlined),
+                              title: Text('Aerial image'),
+                            ),
+                          ),
+                          PopupMenuItem(
+                            value: _ProjectAction.rename,
+                            child: ListTile(
+                              leading: Icon(Icons.drive_file_rename_outline),
+                              title: Text('Rename'),
+                            ),
+                          ),
+                          PopupMenuItem(
+                            value: _ProjectAction.delete,
+                            child: ListTile(
+                              leading: Icon(Icons.delete_outline),
+                              title: Text('Delete'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    project.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    [
+                      if (count != null)
+                        count == 1 ? '1 plant' : '${groupDigits(count)} plants',
+                      'Edited $when',
+                    ].join(' · '),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _NoImage extends StatelessWidget {
+  const _NoImage({required this.scheme});
+
+  final ColorScheme scheme;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [scheme.primaryContainer, scheme.secondaryContainer],
+        ),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.grass, size: 44, color: scheme.onPrimaryContainer),
+          const SizedBox(height: 8),
+          Text(
+            'No aerial image',
+            style: TextStyle(color: scheme.onPrimaryContainer),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 /// Deleted vineyards: restore, or remove for good.
 ///

@@ -160,6 +160,21 @@ class VineyardCanvasState extends State<VineyardCanvas> {
     widget.onViewportChanged?.call(viewport);
   }
 
+  /// Zooms by [factor] about the centre of the view, for the on-screen zoom
+  /// buttons -- pinching is the main way, but not the only one, and a gloved
+  /// hand or one holding the tablet does not always have two fingers free.
+  void zoomBy(double factor) {
+    if (_size.isEmpty) return;
+    final centre = Offset(_size.width / 2, _size.height / 2);
+    final newScale = (_scale * factor).clamp(widget.minScale, widget.maxScale);
+    final focalLayout = (centre - _translation) / _scale;
+    setState(() {
+      _scale = newScale;
+      _translation = centre - focalLayout * newScale;
+    });
+    widget.onViewportChanged?.call(viewport);
+  }
+
   void _onScaleStart(ScaleStartDetails details) {
     _scaleAtGestureStart = _scale;
     _translationAtGestureStart = _translation;

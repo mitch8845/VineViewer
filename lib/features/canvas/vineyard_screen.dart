@@ -3,7 +3,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/db/database.dart';
 import '../../core/geometry/polyline.dart';
 import '../../core/geometry/shapes.dart';
 import '../../core/models/enums.dart';
@@ -13,7 +12,10 @@ import '../data_entry/plant_inspector.dart';
 import '../schema/field_editor_screen.dart';
 import '../schema/identifier_template_editor.dart';
 import 'canvas_controller.dart';
+import '../../app_theme.dart';
+import '../../core/format.dart';
 import 'frame_stats_overlay.dart';
+import 'map_chrome.dart';
 import 'plant_colouring.dart';
 import 'tools/array_sheet.dart';
 import 'tools/identifier_change_prompt.dart';
@@ -38,7 +40,6 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
   final _canvasKey = GlobalKey<VineyardCanvasState>();
   CanvasViewport _viewport = CanvasViewport.identity;
   bool _fittedOnce = false;
-  bool _showStats = false;
 
   /// Where a drag started, in layout units.
   ui.Offset? _dragOrigin;
@@ -988,11 +989,18 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     final labels = ref.watch(labelsProvider).valueOrNull ?? const {};
     final showLabels = ref.watch(showLabelsProvider);
     final image = ref.watch(backgroundImageProvider).valueOrNull;
+    final opacity = ref.watch(aerialOpacityProvider);
     final pending = ref.watch(pendingShapeProvider);
     final activeField = ref.watch(activeObjectFieldProvider);
     final draft = ref.watch(reshapeDraftProvider);
     final selectedObject = ref.watch(selectedObjectProvider);
     final colouring = ref.watch(plantColouringProvider).valueOrNull;
+    final showStats = ref.watch(showFrameStatsProvider);
+    final fields = ref.watch(fieldDefsProvider).valueOrNull ?? const [];
+    final fieldNames = {
+      for (final f in fields)
+        if (f.role == FieldRole.object) f.id: f.name,
+    };
 
     // Fit the view once the layout has something in it.
     if (!_fittedOnce && !snapshot.bounds.isEmpty) {
@@ -1002,194 +1010,199 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
       });
     }
 
+    final inspecting = selection.length == 1;
+    // Side panel on a landscape tablet; bottom panel in portrait, where a
+    // 384-wide column would leave a sliver of map.
+    final screen = MediaQuery.sizeOf(context);
+    final wide = screen.width >= 1000;
+    const panelWidth = 384.0;
+    final panelHeight = (screen.height * 0.42).clamp(280.0, 460.0);
+    const gap = 12.0;
+    // The panel's footprint, so everything on its side moves clear of it
+    // rather than hiding underneath.
+    final rightInset = inspecting && wide ? panelWidth + gap * 2 : gap;
+    final bottomInset = inspecting && !wide ? panelHeight + gap * 2 : gap;
+    const railInset = 62 + 12 + gap * 2; // rail width + padding + gaps
+
+    final selectedDrawn = selectedObject == null
+        ? null
+        : snapshot.objects.where((o) => o.id == selectedObject).firstOrNull;
+
+    final banner = _banner(tool, pending, activeField, draft);
+
     return Scaffold(
-      appBar: AppBar(
-        title: Text(ref.watch(activeProjectProvider).valueOrNull?.name ?? ''),
-        actions: [
-          const UndoControls(),
-          IconButton(
-            tooltip: 'Colour plants by a field',
-            icon: Icon(
-              colouring == null ? Icons.palette_outlined : Icons.palette,
-            ),
-            color: colouring == null
-                ? null
-                : Theme.of(context).colorScheme.primary,
-            onPressed: _chooseColourField,
-          ),
-          IconButton(
-            tooltip: 'Plant ID format',
-            icon: const Icon(Icons.tag),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => const IdentifierTemplateEditor(),
-              ),
-            ),
-          ),
-          IconButton(
-            tooltip: 'Fields',
-            icon: const Icon(Icons.list_alt),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const FieldListScreen()),
-            ),
-          ),
-          IconButton(
-            tooltip: _showStats ? 'Hide frame stats' : 'Show frame stats',
-            icon: Icon(_showStats ? Icons.speed : Icons.speed_outlined),
-            onPressed: () => setState(() => _showStats = !_showStats),
-          ),
-          IconButton(
-            tooltip: ref.watch(stickySelectProvider)
-                ? 'Adding to selection -- tap to go back to replacing it'
-                : 'Add to selection instead of replacing it',
-            icon: Icon(
-              ref.watch(stickySelectProvider)
-                  ? Icons.library_add_check
-                  : Icons.library_add_check_outlined,
-            ),
-            color: ref.watch(stickySelectProvider)
-                ? Theme.of(context).colorScheme.primary
-                : null,
-            onPressed: () =>
-                ref.read(stickySelectProvider.notifier).update((v) => !v),
-          ),
-          IconButton(
-            tooltip: showLabels ? 'Hide IDs' : 'Show IDs',
-            icon: Icon(showLabels ? Icons.label : Icons.label_outline),
-            onPressed: () =>
-                ref.read(showLabelsProvider.notifier).update((v) => !v),
-          ),
-          IconButton(
-            tooltip: 'Fit to layout',
-            icon: const Icon(Icons.fit_screen),
-            onPressed: () => _canvasKey.currentState?.fitTo(snapshot.bounds),
-          ),
-        ],
-      ),
+      backgroundColor: AppTheme.mapGround,
       body: Stack(
         children: [
-          VineyardCanvas(
-            key: _canvasKey,
-            scene: VineyardScene(
-              plants: snapshot.positions,
-              index: snapshot.index,
-              objects: [
-                // A vertex being dragged is shown by substituting the object,
-                // so the painter needs to know nothing about reshaping.
-                for (final object in snapshot.objects)
-                  draft?.objectId == object.id
-                      ? (
-                          id: object.id,
-                          fieldDefId: object.fieldDefId,
-                          label: object.label,
-                          shape: draft!.shape,
-                          isContainer: object.isContainer,
-                        )
-                      : object,
-                // The shape being drawn, previewed live.
-                // The Space tool's guide belongs to no field, and needs
-                // drawing all the same -- it used to be invisible while tapped
-                // out, with only a counter changing.
-                ?_previewOf(
-                  pending,
-                  tool == CanvasTool.pointArray ? '__guide' : activeField,
-                ),
-              ],
-              retired: snapshot.retired,
-              colors: colouring?.colors ?? const {},
-              fallbackColor: colouring == null ? null : PlantColouring.noValue,
-              image: image,
-              selection: selection,
-              labels: labels,
-              showLabels: showLabels,
-              marquee: ref.watch(marqueeProvider),
-              lasso: ref.watch(lassoProvider),
-            ),
-            tool: tool,
-            onTapLayout: _onTap,
-            onDragStart: _onDragStart,
-            onDragUpdate: _onDragUpdate,
-            onDragEnd: _onDragEnd,
-            onDragCancel: _onDragCancel,
-            onViewportChanged: (v) => _viewport = v,
-          ),
-          if (tool == CanvasTool.drawObject ||
-              tool == CanvasTool.array ||
-              tool == CanvasTool.pointArray)
-            _drawBanner(tool, pending, activeField),
-          if (tool == CanvasTool.split)
-            _hint(
-              'Tap a line where you want it cut. The near half keeps its name; '
-              'you name the far half.',
-            ),
-          if (tool == CanvasTool.reshape)
-            _hint(
-              draft == null
-                  ? 'Drag a corner to reshape. Two fingers still pan and zoom.'
-                  : 'Let go to place it. Anything it would rename is counted '
-                        'first.',
-            ),
-          if (_showStats)
-            const Positioned(top: 8, right: 8, child: FrameStatsOverlay()),
-          if (colouring != null && !_showStats)
-            Positioned(top: 8, right: 8, child: _Legend(colouring: colouring)),
-          // Anchored bottom-left, clear of the toolbar, so the selected plant
-          // stays visible while its values are read or changed -- in the field
-          // you are looking at the plant and the screen at the same time.
-          if (selection.length == 1)
-            Positioned(
-              left: 0,
-              bottom: 90,
-              child: PlantInspector(plantId: selection.first),
-            ),
-          if (selection.length > 1)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 90,
-              child: _BulkBar(selection: selection),
-            ),
-          // Only when no plants are selected. With sticky on the two can
-          // coexist, and two cards in the same corner is worse than one.
-          if (selectedObject != null && selection.isEmpty)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 90,
-              child: _ObjectBar(
-                object: snapshot.objects
-                    .where((o) => o.id == selectedObject)
-                    .firstOrNull,
+          Positioned.fill(
+            child: VineyardCanvas(
+              key: _canvasKey,
+              scene: VineyardScene(
+                plants: snapshot.positions,
+                index: snapshot.index,
+                objects: [
+                  // A vertex being dragged is shown by substituting the
+                  // object, so the painter needs to know nothing about
+                  // reshaping.
+                  for (final object in snapshot.objects)
+                    draft?.objectId == object.id
+                        ? (
+                            id: object.id,
+                            fieldDefId: object.fieldDefId,
+                            label: object.label,
+                            shape: draft!.shape,
+                            isContainer: object.isContainer,
+                          )
+                        : object,
+                  // The shape being drawn, previewed live. The Space tool's
+                  // guide belongs to no field, and needs drawing all the same
+                  // -- it used to be invisible while tapped out, with only a
+                  // counter changing.
+                  ?_previewOf(
+                    pending,
+                    tool == CanvasTool.pointArray ? '__guide' : activeField,
+                  ),
+                ],
+                retired: snapshot.retired,
+                colors: colouring?.colors ?? const {},
+                fallbackColor: colouring == null
+                    ? null
+                    : PlantColouring.noValue,
+                image: image,
+                imageOpacity: opacity,
+                selection: selection,
+                labels: labels,
+                showLabels: showLabels,
+                fieldNames: fieldNames,
+                selectedObjectId: selectedObject,
+                marquee: ref.watch(marqueeProvider),
+                lasso: ref.watch(lassoProvider),
               ),
+              tool: tool,
+              onTapLayout: _onTap,
+              onDragStart: _onDragStart,
+              onDragUpdate: _onDragUpdate,
+              onDragEnd: _onDragEnd,
+              onDragCancel: _onDragCancel,
+              onViewportChanged: (v) => _viewport = v,
             ),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: _Toolbar(
-              active: tool,
-              onChanged: (t) async {
-                // Abandon half-finished gesture state when switching away,
-                // rather than leaving something invisible that reappears later.
-                if (t != CanvasTool.drawObject &&
-                    t != CanvasTool.array &&
-                    t != CanvasTool.pointArray) {
-                  ref.read(pendingShapeProvider.notifier).state = const [];
-                }
-                if (t != CanvasTool.reshape) {
-                  ref.read(reshapeDraftProvider.notifier).state = null;
-                  _reshapingObject = null;
-                  _shapeBeforeReshape = null;
-                }
-                ref.read(activeToolProvider.notifier).state = t;
-                // The point array asks in its own sheet, because Plant belongs
-                // in that list and Plant is not an object field.
-                if (t == CanvasTool.drawObject) {
-                  await _chooseObjectField();
-                } else if (t == CanvasTool.array) {
-                  await _chooseObjectField(linesOnly: true);
-                }
-              },
+          ),
+          SafeArea(
+            child: Stack(
+              children: [
+                Positioned(
+                  top: gap,
+                  left: gap,
+                  right: rightInset,
+                  child: Align(
+                    alignment: Alignment.topLeft,
+                    child: MapTopBar(
+                      title:
+                          ref.watch(activeProjectProvider).valueOrNull?.name ??
+                          '',
+                      subtitle: _summary(snapshot, fieldNames),
+                      undo: const UndoControls(),
+                      layersActive:
+                          colouring != null || showLabels || opacity < 1,
+                      onLayers: () => showModalBottomSheet<void>(
+                        context: context,
+                        isScrollControlled: true,
+                        builder: (_) => LayersSheet(hasImage: image != null),
+                      ),
+                      menu: _menu(),
+                    ),
+                  ),
+                ),
+                if (banner != null)
+                  Positioned(
+                    top: 76,
+                    left: railInset,
+                    right: rightInset,
+                    child: Center(child: banner),
+                  ),
+                Positioned(
+                  left: gap,
+                  top: 76,
+                  bottom: bottomInset,
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: ToolRail(
+                      active: tool,
+                      sticky: ref.watch(stickySelectProvider),
+                      onToggleSticky: () => ref
+                          .read(stickySelectProvider.notifier)
+                          .update((v) => !v),
+                      onChanged: _selectTool,
+                    ),
+                  ),
+                ),
+                if (showStats)
+                  Positioned(
+                    top: gap,
+                    right: rightInset,
+                    child: const FrameStatsOverlay(),
+                  ),
+                if (colouring != null)
+                  Positioned(
+                    left: railInset,
+                    bottom: bottomInset,
+                    child: MapLegend(
+                      colouring: colouring,
+                      onClose: () =>
+                          ref.read(colorByFieldProvider.notifier).state = null,
+                    ),
+                  ),
+                Positioned(
+                  right: rightInset,
+                  bottom: bottomInset,
+                  child: MapControls(
+                    onZoomIn: () => _canvasKey.currentState?.zoomBy(1.5),
+                    onZoomOut: () => _canvasKey.currentState?.zoomBy(1 / 1.5),
+                    onFit: () =>
+                        _canvasKey.currentState?.fitTo(snapshot.bounds),
+                  ),
+                ),
+                if (selection.length > 1)
+                  Positioned(
+                    left: railInset,
+                    right: rightInset + 64,
+                    bottom: gap,
+                    child: Center(child: _BulkBar(selection: selection)),
+                  ),
+                // Only when no plants are selected. With sticky on the two can
+                // coexist, and two bars in the same place is worse than one.
+                if (selectedDrawn != null && selection.isEmpty)
+                  Positioned(
+                    left: railInset,
+                    right: rightInset + 64,
+                    bottom: gap,
+                    child: Center(
+                      child: _ObjectBar(
+                        object: selectedDrawn,
+                        fieldName: fieldNames[selectedDrawn.fieldDefId],
+                      ),
+                    ),
+                  ),
+                // Docked right, full height, so the selected plant stays in
+                // view while its values are read or changed -- in the field
+                // you are looking at the plant and the screen at once.
+                if (inspecting && wide)
+                  Positioned(
+                    top: gap,
+                    right: gap,
+                    bottom: gap,
+                    width: panelWidth,
+                    child: PlantInspector(plantId: selection.first),
+                  ),
+                if (inspecting && !wide)
+                  Positioned(
+                    left: railInset,
+                    right: gap,
+                    bottom: gap,
+                    height: panelHeight,
+                    child: PlantInspector(plantId: selection.first),
+                  ),
+              ],
             ),
           ),
         ],
@@ -1197,61 +1210,76 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     );
   }
 
-  /// Picks the attribute that colours the plants, or turns colouring off.
-  Future<void> _chooseColourField() async {
-    final projectId = _projectId;
-    if (projectId == null) return;
-    final fields = [
-      for (final f
-          in await ref.read(fieldDefsDaoProvider).forProject(projectId))
-        if (f.role == FieldRole.attribute) f,
-    ];
-    if (!mounted) return;
-    if (fields.isEmpty) {
-      _say('There are no fields to colour by yet. Add one under Fields.');
-      return;
-    }
+  /// "1,976 plants · 46 Rows · 2 Blocks" -- what this vineyard is, at a glance.
+  String _summary(LayoutSnapshot snapshot, Map<String, String> fieldNames) {
+    String count(int n) => groupDigits(n);
 
-    final current = ref.read(colorByFieldProvider);
-    // A record so "turn it off" is distinguishable from dismissing the sheet.
-    final chosen = await showModalBottomSheet<({String? id})>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => SafeArea(
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxHeight: MediaQuery.of(context).size.height * 0.7,
-          ),
-          child: ListView(
-            shrinkWrap: true,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
-                child: Text(
-                  'Colour plants by',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-              ),
-              ListTile(
-                leading: const Icon(Icons.format_color_reset),
-                title: const Text('Nothing -- plain green'),
-                selected: current == null,
-                onTap: () => Navigator.pop(context, (id: null)),
-              ),
-              for (final field in fields)
-                ListTile(
-                  leading: const Icon(Icons.palette_outlined),
-                  title: Text(field.name),
-                  selected: field.id == current,
-                  onTap: () => Navigator.pop(context, (id: field.id)),
-                ),
-            ],
-          ),
+    final perField = <String, int>{};
+    for (final o in snapshot.objects) {
+      final name = fieldNames[o.fieldDefId];
+      if (name != null) perField[name] = (perField[name] ?? 0) + 1;
+    }
+    final plants = snapshot.positions.length;
+    return [
+      '${count(plants)} ${plants == 1 ? 'plant' : 'plants'}',
+      for (final e in perField.entries)
+        '${count(e.value)} ${e.value == 1 ? e.key : '${e.key}s'}',
+    ].join(' · ');
+  }
+
+  /// Things you set up rather than do: the fields and the ID format.
+  Widget _menu() {
+    return PopupMenuButton<String>(
+      tooltip: 'More',
+      icon: const Icon(Icons.more_vert),
+      onSelected: (choice) => Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => choice == 'fields'
+              ? const FieldListScreen()
+              : const IdentifierTemplateEditor(),
         ),
       ),
+      itemBuilder: (context) => const [
+        PopupMenuItem(
+          value: 'fields',
+          child: ListTile(
+            leading: Icon(Icons.list_alt),
+            title: Text('Fields'),
+            subtitle: Text('What you record and draw'),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'template',
+          child: ListTile(
+            leading: Icon(Icons.tag),
+            title: Text('Plant ID format'),
+            subtitle: Text('How plants are named'),
+          ),
+        ),
+      ],
     );
-    if (chosen != null) {
-      ref.read(colorByFieldProvider.notifier).state = chosen.id;
+  }
+
+  Future<void> _selectTool(CanvasTool t) async {
+    // Abandon half-finished gesture state when switching away, rather than
+    // leaving something invisible that reappears later.
+    if (t != CanvasTool.drawObject &&
+        t != CanvasTool.array &&
+        t != CanvasTool.pointArray) {
+      ref.read(pendingShapeProvider.notifier).state = const [];
+    }
+    if (t != CanvasTool.reshape) {
+      ref.read(reshapeDraftProvider.notifier).state = null;
+      _reshapingObject = null;
+      _shapeBeforeReshape = null;
+    }
+    ref.read(activeToolProvider.notifier).state = t;
+    // The point array asks in its own sheet, because Plant belongs in that
+    // list and Plant is not an object field.
+    if (t == CanvasTool.drawObject) {
+      await _chooseObjectField();
+    } else if (t == CanvasTool.array) {
+      await _chooseObjectField(linesOnly: true);
     }
   }
 
@@ -1270,244 +1298,154 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     );
   }
 
-  /// A one-line banner explaining what the current tool wants.
+  /// What the current tool wants, or null when it explains itself.
   ///
-  /// The tools that create data need saying out loud. A reshape drag that grabs
-  /// nothing looks identical to a broken tool otherwise.
-  Widget _hint(String text) {
-    return Positioned(
-      top: 8,
-      left: 8,
-      right: 8,
-      child: Card(
-        color: Theme.of(context).colorScheme.secondaryContainer,
-        child: Padding(padding: const EdgeInsets.all(12), child: Text(text)),
-      ),
-    );
-  }
-
-  /// The banner for the three point-collecting tools.
-  ///
-  /// One widget for all three because the gesture is identical -- tap out a
-  /// shape, undo a point, press Done -- and only the wording and what Done calls
-  /// differ.
-  Widget _drawBanner(
+  /// The three point-collecting tools share one banner because the gesture is
+  /// identical -- tap out a shape, undo a point, press Done -- and only the
+  /// wording and what Done calls differ.
+  Widget? _banner(
     CanvasTool tool,
     List<ui.Offset> pending,
     String? fieldId,
+    ReshapeDraft? draft,
   ) {
-    // Only the point array works without a chosen field: it asks in its own
-    // sheet, since Plant belongs in that list and Plant is not an object field.
-    final needsField = tool != CanvasTool.pointArray;
-
-    final message = needsField && fieldId == null
-        ? 'Pick what you are drawing first.'
-        : pending.isEmpty
-        ? switch (tool) {
-            CanvasTool.pointArray =>
-              'Draw a guide line for them to sit along. It is not saved.',
-            CanvasTool.array => 'Draw the first line of the run.',
-            _ => 'Tap to place the first point.',
-          }
-        : '${pending.length} placed. Lines and areas turn at hard angles, so '
-              'add a point at each corner.';
-
-    return Positioned(
-      top: 8,
-      left: 8,
-      right: 8,
-      child: Card(
-        color: Theme.of(context).colorScheme.secondaryContainer,
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Row(
-            children: [
-              Expanded(child: Text(message)),
-              if (pending.isNotEmpty)
-                TextButton(
-                  onPressed: () => ref
-                      .read(pendingShapeProvider.notifier)
-                      .update((p) => p.sublist(0, p.length - 1)),
-                  child: const Text('Undo point'),
-                ),
-              FilledButton(
-                onPressed: pending.isEmpty
-                    ? null
-                    : switch (tool) {
-                        CanvasTool.array => _finishArray,
-                        CanvasTool.pointArray => _finishPointArray,
-                        _ => _finishObject,
-                      },
-                child: const Text('Done'),
+    switch (tool) {
+      case CanvasTool.drawObject:
+      case CanvasTool.array:
+      case CanvasTool.pointArray:
+        // Only the point array works without a chosen field: it asks in its
+        // own sheet, since Plant belongs in that list and Plant is not an
+        // object field.
+        final needsField = tool != CanvasTool.pointArray;
+        final message = needsField && fieldId == null
+            ? 'Pick what you are drawing first.'
+            : pending.isEmpty
+            ? switch (tool) {
+                CanvasTool.pointArray =>
+                  'Draw a guide line for them to sit along. It is not saved.',
+                CanvasTool.array => 'Draw the first line of the run.',
+                _ => 'Tap to place the first point.',
+              }
+            : '${pending.length} placed. Add a point at each corner.';
+        return MapBanner(
+          icon: switch (tool) {
+            CanvasTool.array => Icons.view_week_outlined,
+            CanvasTool.pointArray => Icons.more_horiz,
+            _ => Icons.polyline_outlined,
+          },
+          text: message,
+          actions: [
+            if (pending.isNotEmpty)
+              TextButton(
+                onPressed: () => ref
+                    .read(pendingShapeProvider.notifier)
+                    .update((p) => p.sublist(0, p.length - 1)),
+                child: const Text('Undo point'),
               ),
-            ],
-          ),
-        ),
-      ),
-    );
+            if (needsField && fieldId == null)
+              TextButton(
+                onPressed: () =>
+                    _chooseObjectField(linesOnly: tool == CanvasTool.array),
+                child: const Text('Choose'),
+              ),
+            FilledButton(
+              onPressed: pending.isEmpty
+                  ? null
+                  : switch (tool) {
+                      CanvasTool.array => _finishArray,
+                      CanvasTool.pointArray => _finishPointArray,
+                      _ => _finishObject,
+                    },
+              child: const Text('Done'),
+            ),
+          ],
+        );
+      case CanvasTool.split:
+        return const MapBanner(
+          icon: Icons.content_cut,
+          text:
+              'Tap a line where you want it cut. The near half keeps its '
+              'name; you name the far half.',
+        );
+      case CanvasTool.reshape:
+        return MapBanner(
+          icon: Icons.format_shapes,
+          text: draft == null
+              ? 'Drag a corner to reshape. Two fingers still pan and zoom.'
+              : 'Let go to place it. Anything it would rename is counted '
+                    'first.',
+        );
+      case CanvasTool.move:
+        return const MapBanner(
+          icon: Icons.open_with,
+          text: 'Drag a plant, or a line or area, to move it.',
+        );
+      case CanvasTool.placePlant:
+        return const MapBanner(
+          icon: Icons.add_circle_outline,
+          text: 'Tap to place a plant. One press of undo takes it back.',
+        );
+      case CanvasTool.insertPlant:
+        return const MapBanner(
+          icon: Icons.playlist_add,
+          text: 'Tap beside a plant on a line to insert a new one after it.',
+        );
+      case CanvasTool.select:
+      case CanvasTool.lasso:
+        return null;
+    }
   }
 }
 
 /// The selected drawn object, and the way into what can be done to it.
 class _ObjectBar extends ConsumerWidget {
-  const _ObjectBar({required this.object});
+  const _ObjectBar({required this.object, required this.fieldName});
 
-  /// Null when the selected object has vanished underneath us -- undone,
-  /// deleted, or its geometry made unreadable. Nothing to show rather than a
-  /// crash.
-  final DrawnObject? object;
+  final DrawnObject object;
+  final String? fieldName;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final object = this.object;
-    if (object == null) return const SizedBox.shrink();
-
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 12),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Row(
-          children: [
-            Expanded(
-              child: Consumer(
-                builder: (context, ref, _) {
-                  final field = ref
-                      .watch(_objectFieldProvider(object.fieldDefId))
-                      .valueOrNull;
-                  return Text(
-                    field == null
-                        ? object.label
-                        : '${field.name} ${object.label}',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                    overflow: TextOverflow.ellipsis,
-                  );
-                },
-              ),
-            ),
-            TextButton(
-              onPressed: () async {
-                final field = await ref
-                    .read(fieldDefsDaoProvider)
-                    .byId(object.fieldDefId);
-                if (field == null || !context.mounted) return;
-                await showModalBottomSheet<void>(
-                  context: context,
-                  isScrollControlled: true,
-                  builder: (context) => ObjectActionsSheet(
-                    objectId: object.id,
-                    label: object.label,
-                    fieldName: field.name,
-                    isLine: object.shape is PolylineShape,
-                  ),
-                );
-              },
-              child: const Text('Actions'),
-            ),
-            IconButton(
-              tooltip: 'Deselect',
-              icon: const Icon(Icons.close),
-              onPressed: () =>
-                  ref.read(selectedObjectProvider.notifier).state = null,
-            ),
-          ],
-        ),
+    final name = fieldName == null
+        ? object.label
+        : '$fieldName ${object.label}';
+    return SelectionBar(
+      leading: SelectionBadge(
+        icon: switch (object.shape) {
+          PolygonShape() => Icons.pentagon_outlined,
+          PolylineShape() => Icons.timeline,
+          PointShape() => Icons.place_outlined,
+        },
+        color: VineyardPainter.colourOf(object),
       ),
+      title: name,
+      subtitle: object.isContainer ? 'Plants belong to it' : 'Drawn on the map',
+      actions: [
+        FilledButton.tonalIcon(
+          onPressed: () async {
+            final field = await ref
+                .read(fieldDefsDaoProvider)
+                .byId(object.fieldDefId);
+            if (field == null || !context.mounted) return;
+            await showModalBottomSheet<void>(
+              context: context,
+              isScrollControlled: true,
+              builder: (context) => ObjectActionsSheet(
+                objectId: object.id,
+                label: object.label,
+                fieldName: field.name,
+                isLine: object.shape is PolylineShape,
+              ),
+            );
+          },
+          icon: const Icon(Icons.tune),
+          label: const Text('Actions'),
+        ),
+      ],
+      onClose: () => ref.read(selectedObjectProvider.notifier).state = null,
     );
   }
 }
-
-/// Explains what the plant colours mean.
-///
-/// Top-right, opposite the inspector, so both can be read at once -- colouring
-/// by health and then tapping the red ones is the whole workflow.
-class _Legend extends ConsumerWidget {
-  const _Legend({required this.colouring});
-
-  final PlantColouring colouring;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final entries = colouring.legend;
-    return Card(
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxWidth: 220,
-          maxHeight: MediaQuery.of(context).size.height * 0.45,
-        ),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 4, 4, 8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      colouring.fieldName,
-                      style: const TextStyle(fontWeight: FontWeight.bold),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: 'Stop colouring',
-                    visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.close, size: 18),
-                    onPressed: () =>
-                        ref.read(colorByFieldProvider.notifier).state = null,
-                  ),
-                ],
-              ),
-              if (entries.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.only(right: 8),
-                  child: Text('Nothing recorded yet.'),
-                ),
-              Flexible(
-                child: SingleChildScrollView(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      for (final entry in entries)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 2),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Container(
-                                width: 14,
-                                height: 14,
-                                decoration: BoxDecoration(
-                                  color: entry.color,
-                                  shape: BoxShape.circle,
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Flexible(
-                                child: Text(
-                                  entry.label,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// One field definition by id, for naming a selected object.
-final _objectFieldProvider = FutureProvider.family<FieldDef?, String>(
-  (ref, fieldDefId) => ref.watch(fieldDefsDaoProvider).byId(fieldDefId),
-);
 
 /// Actions available on a multi-plant selection.
 class _BulkBar extends ConsumerWidget {
@@ -1517,126 +1455,33 @@ class _BulkBar extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 12),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Row(
-          children: [
-            Text(
-              '${selection.length} plants',
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const Spacer(),
-            // The most common thing to do to a row's worth of plants, so it
-            // gets its own button rather than living one sheet down.
-            TextButton.icon(
-              onPressed: () => bulkSetValue(context, selection),
-              icon: const Icon(Icons.edit_note),
-              label: const Text('Set value'),
-            ),
-            TextButton(
-              onPressed: () async {
-                final action = await showModalBottomSheet<String>(
-                  context: context,
-                  isScrollControlled: true,
-                  builder: (context) => PlantActionsSheet(selection: selection),
-                );
-                if (action == PlantActionsSheet.setValue && context.mounted) {
-                  await bulkSetValue(context, selection);
-                }
-              },
-              child: const Text('Actions'),
-            ),
-            IconButton(
-              tooltip: 'Clear selection',
-              icon: const Icon(Icons.close),
-              onPressed: () =>
-                  ref.read(selectionProvider.notifier).state = const {},
-            ),
-          ],
+    return SelectionBar(
+      leading: SelectionBadge(text: '${selection.length}'),
+      title: 'plants selected',
+      actions: [
+        // The most common thing to do to a row's worth of plants, so it gets
+        // its own button rather than living one sheet down.
+        FilledButton.icon(
+          onPressed: () => bulkSetValue(context, selection),
+          icon: const Icon(Icons.edit_note),
+          label: const Text('Set value'),
         ),
-      ),
-    );
-  }
-}
-
-class _Toolbar extends StatelessWidget {
-  const _Toolbar({required this.active, required this.onChanged});
-
-  final CanvasTool active;
-  final ValueChanged<CanvasTool> onChanged;
-
-  static const _tools = [
-    (CanvasTool.select, Icons.touch_app, 'Select'),
-    (CanvasTool.lasso, Icons.gesture, 'Lasso'),
-    (CanvasTool.placePlant, Icons.add_circle_outline, 'Plant'),
-    (CanvasTool.insertPlant, Icons.playlist_add, 'Insert'),
-    (CanvasTool.drawObject, Icons.timeline, 'Draw'),
-    (CanvasTool.array, Icons.dns_outlined, 'Run'),
-    (CanvasTool.pointArray, Icons.more_horiz, 'Space'),
-    (CanvasTool.move, Icons.open_with, 'Move'),
-    (CanvasTool.reshape, Icons.transform, 'Reshape'),
-    (CanvasTool.split, Icons.content_cut, 'Split'),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: Card(
-        margin: const EdgeInsets.all(12),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          // Scrollable rather than squeezed. Ten tools fit across the Fire Max
-          // 11 in landscape and do not in portrait, and shrinking the targets to
-          // make them fit would be the wrong trade outdoors.
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                for (final (tool, icon, label) in _tools)
-                  // Large targets: this gets used outdoors, possibly with gloves,
-                  // and a mis-tap in a drawing tool creates data.
-                  InkWell(
-                    onTap: () => onChanged(tool),
-                    borderRadius: BorderRadius.circular(12),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 10,
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            icon,
-                            color: tool == active
-                                ? Theme.of(context).colorScheme.primary
-                                : null,
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            label,
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: tool == active
-                                  ? FontWeight.bold
-                                  : FontWeight.normal,
-                              color: tool == active
-                                  ? Theme.of(context).colorScheme.primary
-                                  : null,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
+        const SizedBox(width: 8),
+        OutlinedButton(
+          onPressed: () async {
+            final action = await showModalBottomSheet<String>(
+              context: context,
+              isScrollControlled: true,
+              builder: (context) => PlantActionsSheet(selection: selection),
+            );
+            if (action == PlantActionsSheet.setValue && context.mounted) {
+              await bulkSetValue(context, selection);
+            }
+          },
+          child: const Text('More'),
         ),
-      ),
+      ],
+      onClose: () => ref.read(selectionProvider.notifier).state = const {},
     );
   }
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'app_theme.dart';
 import 'features/projects/project_list_screen.dart';
 
 void main() {
@@ -15,9 +16,11 @@ class VineViewerApp extends StatelessWidget {
     return MaterialApp(
       title: 'VineViewer',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF5B2C6F)),
-      ),
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
+      // Light unless the tablet itself is set to dark: a vineyard at noon is
+      // the normal case, and a light UI reads better in sun.
+      themeMode: ThemeMode.system,
       home: const ProjectListScreen(),
     );
   }

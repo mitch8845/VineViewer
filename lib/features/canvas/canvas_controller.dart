@@ -52,6 +52,12 @@ final reshapeDraftProvider = StateProvider<ReshapeDraft?>((ref) => null);
 /// Whether to draw `block.row.plant` labels.
 final showLabelsProvider = StateProvider<bool>((ref) => false);
 
+/// How strongly the aerial photo shows, 0 to 1.
+final aerialOpacityProvider = StateProvider<double>((ref) => 1);
+
+/// Whether the frame-timing readout is on.
+final showFrameStatsProvider = StateProvider<bool>((ref) => false);
+
 /// Which object field the draw tool creates instances of.
 ///
 /// Null until the user picks one, which matters because a project may define no
