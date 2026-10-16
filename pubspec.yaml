@@ -20,7 +20,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 0.10.0+17
+version: 0.11.0+18
 
 environment:
   sdk: ^3.12.2
@@ -100,6 +100,10 @@ flutter:
     # the documents directory on use, because every other image path in the app
     # is a real file on disk and the canvas decoder expects one.
     - assets/aerial/five_sisters_aerial.jpg
+    # Five Sisters as it stood on the tablet on 2026-10-15, for starting a
+    # vineyard on another device without redrawing it. Built by
+    # tool/make_seed.py; loaded by SeedService.
+    - assets/seeds/five_sisters.json.gz
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

@@ -168,6 +168,7 @@ class _EntryTile extends StatelessWidget {
     'delete_project' => Icons.delete_outline,
     'restore_project' => Icons.restore_from_trash_outlined,
     'seed_demo' => Icons.science_outlined,
+    'load_seed' => Icons.copy_all_outlined,
     _ => Icons.history,
   };
 

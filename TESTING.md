@@ -59,6 +59,34 @@ Notes:
       project B: **nothing carries over** — no selection, Select tool active, no
       draw field chosen. (Used to leak, and edits landed on A's plant.)
 
+### Start from Five Sisters (0.11.0)
+
+A copy of Five Sisters exactly as it was exported from the Fire tablet on
+2026-10-15 ships inside the app. It is frozen — later edits on the tablet do not
+reach it.
+
+- [ ] "New vineyard" now asks **Blank vineyard** or **Start from Five Sisters**;
+      Blank goes to the setup wizard as before
+- [ ] The empty list has a **Start from Five Sisters** button too
+- [ ] The name defaults to "Five Sisters" and can be changed; empty is refused
+- [ ] A "Copying Five Sisters…" dialog shows, can't be dismissed, then the map
+      opens on the new vineyard
+- [ ] **3,025 plants**, 78 drawn objects, the aerial lined up, and the fields
+      Row, Block, Variety, Clone, Health, Last Sprayed
+- [ ] Plant **1.12.7** shows Variety **Pinot Noir**; colour-by and the calendar
+      show the same history as the tablet
+- [ ] ⚠ On the **tablet itself**, start a copy and edit it — the original Five
+      Sisters must be untouched
+- [ ] Two copies on one device are independent (each has its own ids)
+- [ ] Change log of the copy starts with **"Start from the Five Sisters seed"**;
+      undoing it empties the vineyard (one undo step)
+- [ ] What is **not** copied: the original's change log / undo history, and
+      anything deleted (one row, one plant, two values were in the trash)
+
+To refresh the seed from a newer export: pull the database off the tablet and
+run `python -I tool/make_seed.py <vineviewer.sqlite> <project id>
+assets/seeds/five_sisters.json.gz`.
+
 Notes:
 
 ---
@@ -1021,7 +1049,9 @@ Not built at all:
 - **Photo attachment per plant.**
 - **Fill** (deliberately dropped — you draw and assign, the app does not guess).
 - **Transfer data between plants** (deliberately dropped; the code was deleted).
-- **Sync between devices.**
+- **Sync between devices.** Starting from the bundled Five Sisters seed (§2)
+  is a one-time copy, not sync; there is no in-app export of a seed either —
+  a new one is built with `tool/make_seed.py` from a pulled database.
 - **Sub-blocks as a feature** — superseded: define another container field.
 
 Known gaps in what *is* built:
@@ -1070,5 +1100,7 @@ If you only have time for a handful, these are the ones most likely to be broken
 - [ ] Place a free plant right next to a planted row — no duplicate ID
 - [ ] Bulk-set a write-once field with "only the ones without one"
 - [ ] Draw a block with no plants — appears immediately
+- [ ] Start from Five Sisters **twice** on the tablet — two independent copies,
+      and the original untouched
 
 Notes:

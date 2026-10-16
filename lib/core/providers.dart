@@ -5,6 +5,7 @@ import 'data/label_service.dart';
 import 'data/membership_service.dart';
 import 'data/numbering_service.dart';
 import 'data/operation_recorder.dart';
+import 'data/seed_service.dart';
 import 'data/undo_service.dart';
 import 'data/plant_data_service.dart';
 import 'db/daos/field_defs_dao.dart';
@@ -87,6 +88,11 @@ final importServiceProvider = Provider(
 /// where a gesture begins or ends.
 final operationRecorderProvider = Provider(
   (ref) => OperationRecorder(ref.watch(databaseProvider)),
+);
+
+/// Starts new vineyards from a bundled project seed.
+final seedServiceProvider = Provider(
+  (ref) => SeedService(ref.watch(databaseProvider)),
 );
 
 final undoServiceProvider = Provider(

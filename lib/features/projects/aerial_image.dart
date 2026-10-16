@@ -149,11 +149,22 @@ Future<void> installSampleAerial(WidgetRef ref, String projectId) async {
 /// overwrites the old one. It used to: and then undoing the change pointed
 /// the project back at a file that already held the new photo.
 Future<void> _install(WidgetRef ref, String projectId, Uint8List bytes) async {
+  await setProjectImage(ref, projectId, await _write(projectId, bytes));
+}
+
+/// Copies a bundled image out to this project's aerial file and returns the
+/// path, without recording it -- for callers that set the image as part of a
+/// larger write, as loading a seed does.
+Future<String> writeBundledAerial(String projectId, String asset) async {
+  final bytes = await rootBundle.load(asset);
+  return _write(projectId, bytes.buffer.asUint8List());
+}
+
+Future<String> _write(String projectId, Uint8List bytes) async {
   final directory = await getApplicationDocumentsDirectory();
   final stamp = DateTime.now().millisecondsSinceEpoch;
   final file = File('${directory.path}/aerials/$projectId-$stamp.img');
   await file.parent.create(recursive: true);
   await file.writeAsBytes(bytes, flush: true);
-
-  await setProjectImage(ref, projectId, file.path);
+  return file.path;
 }

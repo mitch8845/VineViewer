@@ -3,8 +3,10 @@ import 'dart:math' as math;
 
 import 'package:drift/drift.dart' show Variable;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/data/seed_service.dart';
 import '../../core/db/daos/field_defs_dao.dart';
 import '../../core/db/database.dart';
 import '../../core/format.dart';
@@ -146,19 +148,48 @@ class ProjectListScreen extends ConsumerWidget {
               ),
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _createProject(context, ref),
+        onPressed: () => _newVineyard(context, ref),
         icon: const Icon(Icons.add),
         label: const Text('New vineyard'),
       ),
     );
   }
 
-  void _open(BuildContext context, WidgetRef ref, String id) {
-    resetProjectScopedState(ref);
-    ref.read(activeProjectIdProvider.notifier).state = id;
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute<void>(builder: (_) => const VineyardScreen()));
+  void _open(BuildContext context, WidgetRef ref, String id) =>
+      _openVineyard(context, ref, id);
+
+  /// Blank, or a copy of Five Sisters.
+  Future<void> _newVineyard(BuildContext context, WidgetRef ref) async {
+    final fromSeed = await showModalBottomSheet<bool>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.add),
+              title: const Text('Blank vineyard'),
+              subtitle: const Text('Draw it from scratch'),
+              onTap: () => Navigator.pop(context, false),
+            ),
+            ListTile(
+              leading: const Icon(Icons.copy_all_outlined),
+              title: const Text('Start from Five Sisters'),
+              subtitle: const Text(
+                'Every row, plant and value as exported from the tablet',
+              ),
+              onTap: () => Navigator.pop(context, true),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (fromSeed == null || !context.mounted) return;
+    if (fromSeed) {
+      await _startFromSeed(context, ref);
+    } else {
+      await _createProject(context, ref);
+    }
   }
 
   Future<void> _rename(
@@ -359,6 +390,12 @@ class _EmptyStateState extends ConsumerState<_EmptyState> {
           const SizedBox(height: 12),
           const Text('No vineyards yet.'),
           const SizedBox(height: 24),
+          FilledButton.icon(
+            onPressed: _seeding ? null : () => _startFromSeed(context, ref),
+            icon: const Icon(Icons.copy_all_outlined),
+            label: const Text('Start from Five Sisters'),
+          ),
+          const SizedBox(height: 12),
           // The performance gate needs a layout at realistic scale long before
           // anyone has drawn one by hand, so seeding is a first-class action
           // rather than a hidden debug flag.
@@ -491,6 +528,92 @@ class _EmptyStateState extends ConsumerState<_EmptyState> {
       );
     }
   }
+}
+
+void _openVineyard(BuildContext context, WidgetRef ref, String id) {
+  resetProjectScopedState(ref);
+  ref.read(activeProjectIdProvider.notifier).state = id;
+  Navigator.of(
+    context,
+  ).push(MaterialPageRoute<void>(builder: (_) => const VineyardScreen()));
+}
+
+/// Five Sisters as it stood on the tablet, and the aerial its coordinates are
+/// drawn against. The seed is frozen: it does not follow later edits on the
+/// tablet, and a vineyard started from it is independent of both.
+const _fiveSistersSeed = (
+  asset: 'assets/seeds/five_sisters.json.gz',
+  aerial: sampleAerialAsset,
+);
+
+/// Asks for a name, then builds a new vineyard from the Five Sisters seed and
+/// opens it.
+///
+/// The load is one operation, so it is one entry in the change log and one
+/// press of undo. If it fails partway the vineyard is removed outright rather
+/// than left half-built in the list.
+Future<void> _startFromSeed(BuildContext context, WidgetRef ref) async {
+  final name = await showDialog<String>(
+    context: context,
+    builder: (context) => const _NameDialog(
+      title: 'New vineyard from Five Sisters',
+      initial: 'Five Sisters',
+    ),
+  );
+  if (name == null || name.trim().isEmpty || !context.mounted) return;
+
+  final navigator = Navigator.of(context);
+  final messenger = ScaffoldMessenger.of(context);
+  // Several seconds on the tablet: 3,000 plants and 13,000 values, every one
+  // captured for undo. Not dismissible, or a second tap builds a second copy.
+  showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    builder: (context) => const PopScope(
+      canPop: false,
+      child: AlertDialog(
+        content: Row(
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(width: 24),
+            Expanded(child: Text('Copying Five Sisters...')),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  final projects = ref.read(projectsDaoProvider);
+  String? id;
+  try {
+    final bytes = await rootBundle.load(_fiveSistersSeed.asset);
+    final seed = ProjectSeed.decode(
+      bytes.buffer.asUint8List(),
+      schemaVersion: ref.read(databaseProvider).schemaVersion,
+    );
+    final projectId = id = await projects.create(name: name.trim());
+    final image = await writeBundledAerial(projectId, _fiveSistersSeed.aerial);
+    await ref
+        .read(operationRecorderProvider)
+        .run(
+          projectId: projectId,
+          kind: 'load_seed',
+          description: 'Start from the ${seed.name} seed',
+          body: () => ref
+              .read(seedServiceProvider)
+              .load(projectId, seed, imagePath: image),
+        );
+  } catch (e) {
+    if (id != null) await projects.purge(id);
+    navigator.pop();
+    messenger.showSnackBar(
+      SnackBar(content: Text('Could not copy Five Sisters: $e')),
+    );
+    return;
+  }
+
+  navigator.pop();
+  if (context.mounted) _openVineyard(context, ref, id);
 }
 
 class _NameDialog extends StatefulWidget {
