@@ -157,7 +157,7 @@ class _WalkSetupScreenState extends ConsumerState<WalkSetupScreen> {
                         : () => _start(setup, bookmark: null),
                     icon: const Icon(Icons.directions_walk),
                     label: Text(
-                      setup.bookmark == null
+                      _bookmarkOf(setup) == null
                           ? 'Start walking'
                           : 'Start a new walk',
                     ),
@@ -356,8 +356,41 @@ class _WalkSetupScreenState extends ConsumerState<WalkSetupScreen> {
     );
   }
 
+  /// Set once the unfinished walk has been discarded, to drop its card.
+  bool _discarded = false;
+
+  WalkBookmark? _bookmarkOf(_Setup setup) => _discarded ? null : setup.bookmark;
+
+  /// Forgets the unfinished walk -- only the place in it. Every value
+  /// entered on it is an ordinary saved value, and stays.
+  Future<void> _discard() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Discard the unfinished walk?'),
+        content: const Text(
+          'Only your place in it is forgotten. Every value you entered on it '
+          'stays.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Discard'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await ref.read(walkBookmarksProvider).clear(widget.projectId);
+    if (mounted) setState(() => _discarded = true);
+  }
+
   Widget? _resumeCard(_Setup setup) {
-    final bookmark = setup.bookmark;
+    final bookmark = _bookmarkOf(setup);
     if (bookmark == null) return null;
     final names = {for (final f in setup.fields) f.id: f.name};
     final fields = [
@@ -398,6 +431,11 @@ class _WalkSetupScreenState extends ConsumerState<WalkSetupScreen> {
                 ],
               ),
             ),
+            TextButton(
+              onPressed: _starting ? null : _discard,
+              child: const Text('Discard'),
+            ),
+            const SizedBox(width: 8),
             FilledButton(
               onPressed: _starting
                   ? null

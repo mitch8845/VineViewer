@@ -14,6 +14,7 @@ import '../../core/format.dart';
 import '../../core/models/enums.dart';
 import '../schema/field_editor_screen.dart';
 import 'canvas_controller.dart';
+import 'heatmap.dart';
 import 'plant_colouring.dart';
 import 'vineyard_canvas.dart';
 
@@ -605,10 +606,27 @@ class MapLegend extends StatelessWidget {
     this.onToggle,
     this.onOnly,
     this.onShowAll,
+    this.heatmap = false,
+    this.onHeatmap,
+    this.spread = 6,
+    this.onSpread,
+    this.timeOpen = false,
+    this.onTime,
   });
 
   final PlantColouring colouring;
   final VoidCallback onClose;
+
+  /// Showing where the ticked values are concentrated, instead of dots.
+  final bool heatmap;
+  final VoidCallback? onHeatmap;
+
+  /// The heatmap's reach, in vine spacings.
+  final double spread;
+  final ValueChanged<double>? onSpread;
+
+  final bool timeOpen;
+  final VoidCallback? onTime;
 
   /// Legend entries the filter is hiding, by label.
   final Set<String> hidden;
@@ -660,6 +678,27 @@ class MapLegend extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
+                if (onTime != null)
+                  IconButton(
+                    tooltip: 'Look back in time',
+                    visualDensity: VisualDensity.compact,
+                    isSelected: timeOpen,
+                    color: timeOpen ? scheme.primary : null,
+                    icon: const Icon(Icons.history, size: 20),
+                    onPressed: onTime,
+                  ),
+                if (onHeatmap != null)
+                  IconButton(
+                    tooltip: heatmap ? 'Show plants' : 'Heatmap',
+                    visualDensity: VisualDensity.compact,
+                    isSelected: heatmap,
+                    color: heatmap ? scheme.primary : null,
+                    icon: Icon(
+                      heatmap ? Icons.local_fire_department : Icons.blur_on,
+                      size: 20,
+                    ),
+                    onPressed: onHeatmap,
+                  ),
                 IconButton(
                   tooltip: 'Stop colouring',
                   visualDensity: VisualDensity.compact,
@@ -719,7 +758,11 @@ class MapLegend extends StatelessWidget {
                 ),
               ),
             ),
-            if (onToggle != null && hidden.isEmpty && entries.length > 1)
+            if (heatmap) ..._heatKey(context),
+            if (onToggle != null &&
+                hidden.isEmpty &&
+                entries.length > 1 &&
+                !heatmap)
               Padding(
                 padding: const EdgeInsets.only(top: 4, right: 10),
                 child: Text(
@@ -733,6 +776,69 @@ class MapLegend extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// Under a heatmap: what its colours mean, and how far it spreads.
+  List<Widget> _heatKey(BuildContext context) {
+    final theme = Theme.of(context);
+    final small = theme.textTheme.labelSmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+    );
+    return [
+      const SizedBox(height: 6),
+      Padding(
+        padding: const EdgeInsets.only(right: 10),
+        child: Text(
+          hidden.isEmpty
+              ? 'Where values are recorded. Untick values to map only the '
+                    'rest — hold one to map only it.'
+              : 'Where the ticked values are concentrated.',
+          style: small,
+        ),
+      ),
+      const SizedBox(height: 6),
+      Padding(
+        padding: const EdgeInsets.only(right: 10),
+        child: Container(
+          height: 10,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(5),
+            gradient: LinearGradient(
+              colors: [
+                for (final s in const [0.0, 0.4, 0.75, 1.0])
+                  Color(HeatDensity.colorAt(s)),
+              ],
+            ),
+          ),
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.only(right: 10, top: 2),
+        child: Row(
+          children: [
+            Text('A few', style: small),
+            const Spacer(),
+            Text('Most vines', style: small),
+          ],
+        ),
+      ),
+      if (onSpread != null)
+        Row(
+          children: [
+            Text('Spread', style: small),
+            Expanded(
+              child: Slider(
+                value: spread,
+                min: 2,
+                max: 20,
+                divisions: 18,
+                label: '${spread.round()} vines',
+                onChanged: onSpread,
+              ),
+            ),
+          ],
+        ),
+    ];
   }
 }
 
@@ -907,6 +1013,30 @@ class LayersSheet extends ConsumerWidget {
                 padding: EdgeInsets.fromLTRB(16, 8, 16, 0),
                 child: Text('Add a field to colour plants by it.'),
               ),
+            if (colourBy != null) ...[
+              const SizedBox(height: 8),
+              SwitchListTile(
+                secondary: const Icon(Icons.local_fire_department_outlined),
+                title: const Text('Heatmap'),
+                subtitle: const Text(
+                  'Where values are concentrated, instead of plant dots',
+                ),
+                value: ref.watch(heatmapProvider),
+                onChanged: (v) => ref.read(heatmapProvider.notifier).state = v,
+              ),
+              SwitchListTile(
+                secondary: const Icon(Icons.history),
+                title: const Text('Look back in time'),
+                subtitle: const Text(
+                  'A slider to see the values as they were on any day',
+                ),
+                value: ref.watch(timeSliderProvider),
+                onChanged: (v) {
+                  ref.read(timeSliderProvider.notifier).state = v;
+                  if (!v) ref.read(asOfDayProvider.notifier).state = null;
+                },
+              ),
+            ],
             const Divider(height: 32),
             SwitchListTile(
               secondary: const Icon(Icons.speed_outlined),

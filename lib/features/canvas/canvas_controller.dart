@@ -11,6 +11,7 @@ import '../../core/geometry/shapes.dart';
 import '../../core/geometry/spatial_index.dart';
 import '../../core/models/enums.dart';
 import '../../core/providers.dart';
+import 'heatmap.dart';
 import 'plant_colouring.dart';
 import 'vineyard_canvas.dart';
 import 'vineyard_painter.dart';
@@ -316,6 +317,37 @@ final activeProjectProvider = StreamProvider<Project?>((ref) {
 /// Which attribute field colours the plants, or null for plain green.
 final colorByFieldProvider = StateProvider<String?>((ref) => null);
 
+/// The day the map is showing values as of, or null for now.
+///
+/// A local calendar day: the map shows each plant's value as it stood at the
+/// end of it. Only colour-by, its legend and filter, and the heatmap follow
+/// it -- the plant panel always shows and edits the present.
+final asOfDayProvider = StateProvider<DateTime?>((ref) => null);
+
+/// Whether the time slider is open.
+final timeSliderProvider = StateProvider<bool>((ref) => false);
+
+/// The last instant of [day], local time: what "as of" a day means.
+DateTime endOfDay(DateTime day) => DateTime(
+  day.year,
+  day.month,
+  day.day + 1,
+).subtract(const Duration(milliseconds: 1));
+
+/// The days the colour-by field has anything recorded on, oldest first: the
+/// time slider's stops.
+final colourDaysProvider = StreamProvider<List<DateTime>>((ref) {
+  final fieldId = ref.watch(colorByFieldProvider);
+  if (fieldId == null) return Stream.value(const []);
+  final db = ref.watch(databaseProvider);
+  final events = ref.watch(fieldEventsDaoProvider);
+  return rebuildOn(
+    ref,
+    db.tableUpdates(TableUpdateQuery.onAllTables([db.fieldEvents])),
+    () => events.daysRecorded(fieldId),
+  );
+});
+
 /// Per-plant colours and a legend for [colorByFieldProvider].
 ///
 /// Live on the event log, so recording a health score recolours that plant
@@ -323,6 +355,7 @@ final colorByFieldProvider = StateProvider<String?>((ref) => null);
 final plantColouringProvider = StreamProvider<PlantColouring?>((ref) {
   final fieldId = ref.watch(colorByFieldProvider);
   if (fieldId == null) return Stream.value(null);
+  final asOfDay = ref.watch(asOfDayProvider);
 
   final db = ref.watch(databaseProvider);
   final fieldDefs = ref.watch(fieldDefsDaoProvider);
@@ -341,7 +374,10 @@ final plantColouringProvider = StreamProvider<PlantColouring?>((ref) {
     () async {
       final field = await fieldDefs.byId(fieldId);
       if (field == null || field.deletedAt != null) return null;
-      final current = await events.currentValuesForField(fieldId);
+      final current = await events.currentValuesForField(
+        fieldId,
+        asOf: asOfDay == null ? null : endOfDay(asOfDay),
+      );
       return PlantColouring.build(
         field: field,
         config: fieldDefs.configOf(field),
@@ -441,6 +477,51 @@ final visiblePlantsProvider = Provider<Set<String>?>((ref) {
   return colouring.visible(filter.hidden);
 });
 
+/// Whether the map shows the colour-by field as a heatmap instead of dots.
+final heatmapProvider = StateProvider<bool>((ref) => false);
+
+/// How far each plant's weight reaches in the heatmap, in vine spacings.
+final heatmapSpreadProvider = StateProvider<double>((ref) => 6);
+
+/// The heatmap, ready to paint: an image and the layout area it covers.
+typedef HeatLayer = ({ui.Image image, ui.Rect rect});
+
+/// The plants a heatmap concentrates on: the legend entries left ticked.
+///
+/// With nothing filtered, every plant with a value -- "Not recorded" is a
+/// gap in the survey, not a concentration of anything. Once entries are
+/// being picked, whatever is ticked counts, "Not recorded" included, so the
+/// gaps themselves can be mapped.
+Set<String> heatPlants(PlantColouring colouring, Set<String> hidden) => {
+  for (final e in colouring.keyOf.entries)
+    if (hidden.isEmpty
+        ? e.value != PlantColouring.notRecorded
+        : !hidden.contains(e.value))
+      e.key,
+};
+
+final heatLayerProvider = FutureProvider<HeatLayer?>((ref) async {
+  if (!ref.watch(heatmapProvider)) return null;
+  final colouring = ref.watch(plantColouringProvider).valueOrNull;
+  if (colouring == null) return null;
+  final snapshot = ref.watch(layoutSnapshotProvider).valueOrNull;
+  if (snapshot == null || snapshot.positions.isEmpty) return null;
+  final filter = ref.watch(legendFilterProvider);
+  final spread = ref.watch(heatmapSpreadProvider);
+  final hidden = filter != null && filter.fieldId == colouring.fieldId
+      ? filter.hidden
+      : const <String>{};
+
+  final density = HeatDensity.compute(
+    all: snapshot.positions,
+    hot: heatPlants(colouring, hidden),
+    radius: spread * typicalSpacing(snapshot.positions, snapshot.index),
+  );
+  // Not disposed when replaced: the painter may draw the old one for one
+  // more frame, and a disposed image there is a crash. They are small.
+  return (image: await density.toImage(), rect: density.rect);
+});
+
 /// The layout as the map shows it: filtered plants taken out entirely.
 ///
 /// Out of the index as well as out of the picture, so a marquee or lasso over
@@ -488,6 +569,9 @@ void resetProjectScopedState(WidgetRef ref) {
   ref.read(lassoProvider.notifier).state = const [];
   ref.read(colorByFieldProvider.notifier).state = null;
   ref.read(legendFilterProvider.notifier).state = null;
+  ref.read(asOfDayProvider.notifier).state = null;
+  ref.read(timeSliderProvider.notifier).state = false;
+  ref.read(heatmapProvider.notifier).state = false;
 }
 
 /// The active project's scale calibration, or uncalibrated.

@@ -20,6 +20,7 @@ import '../../core/format.dart';
 import 'frame_stats_overlay.dart';
 import 'map_chrome.dart';
 import 'plant_colouring.dart';
+import 'time_bar.dart';
 import 'tools/array_sheet.dart';
 import 'tools/identifier_change_prompt.dart';
 import 'tools/new_object_sheet.dart';
@@ -997,6 +998,9 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
         ? legendFilter!.hidden
         : const <String>{};
     final showStats = ref.watch(showFrameStatsProvider);
+    final heatOn = colouring != null && ref.watch(heatmapProvider);
+    final heat = heatOn ? ref.watch(heatLayerProvider).valueOrNull : null;
+    final timeOpen = colouring != null && ref.watch(timeSliderProvider);
     final fields = ref.watch(fieldDefsProvider).valueOrNull ?? const [];
     final fieldNames = {
       for (final f in fields)
@@ -1078,6 +1082,9 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                 selectedObjectId: selectedObject,
                 marquee: ref.watch(marqueeProvider),
                 lasso: ref.watch(lassoProvider),
+                heat: heat?.image,
+                heatRect: heat?.rect ?? Rect.zero,
+                showPlants: !heatOn,
               ),
               tool: tool,
               onTapLayout: _onTap,
@@ -1130,6 +1137,18 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                     ),
                   ),
                 ),
+                // Along the bottom, between the legend and the zoom buttons:
+                // over the top it hid the far end of the vineyard. Above the
+                // bulk bar when that is showing.
+                if (timeOpen)
+                  Positioned(
+                    left: railInset + 280,
+                    right: rightInset + 72,
+                    bottom: bottomInset + (selection.length > 1 ? 72 : 0),
+                    child: Center(
+                      child: TimeBar(fieldName: colouring.fieldName),
+                    ),
+                  ),
                 if (banner != null)
                   Positioned(
                     top: 76,
@@ -1177,9 +1196,26 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                           if (l.label != label) l.label,
                       }),
                       onShowAll: () => _setFilter(colouring, const {}),
+                      heatmap: heatOn,
+                      onHeatmap: () =>
+                          ref.read(heatmapProvider.notifier).update((v) => !v),
+                      spread: ref.watch(heatmapSpreadProvider),
+                      onSpread: (v) =>
+                          ref.read(heatmapSpreadProvider.notifier).state = v,
+                      timeOpen: timeOpen,
+                      onTime: () {
+                        final open = !ref.read(timeSliderProvider);
+                        ref.read(timeSliderProvider.notifier).state = open;
+                        if (!open) {
+                          ref.read(asOfDayProvider.notifier).state = null;
+                        }
+                      },
                       onClose: () {
                         ref.read(colorByFieldProvider.notifier).state = null;
                         ref.read(legendFilterProvider.notifier).state = null;
+                        ref.read(asOfDayProvider.notifier).state = null;
+                        ref.read(timeSliderProvider.notifier).state = false;
+                        ref.read(heatmapProvider.notifier).state = false;
                       },
                     ),
                   ),

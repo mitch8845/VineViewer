@@ -261,6 +261,30 @@ class FieldEventsDao {
     };
   }
 
+  /// The local days on which anything was recorded for one field, oldest
+  /// first, each as local midnight. The stops on the map's time slider:
+  /// between them nothing about the field changed.
+  Future<List<DateTime>> daysRecorded(String fieldDefId) async {
+    final rows = await _db
+        .customSelect(
+          'SELECT DISTINCT observed_at FROM field_events '
+          'WHERE field_def_id = ?1 AND deleted_at IS NULL',
+          variables: [Variable<String>(fieldDefId)],
+          readsFrom: {_db.fieldEvents},
+        )
+        .get();
+    final days = <DateTime>{
+      for (final r in rows)
+        () {
+          final at = DateTime.fromMillisecondsSinceEpoch(
+            r.read<int>('observed_at'),
+          );
+          return DateTime(at.year, at.month, at.day);
+        }(),
+    };
+    return days.toList()..sort();
+  }
+
   // ----------------------------------------------------------- calendar
 
   /// Observations per local day and field, between two instants.

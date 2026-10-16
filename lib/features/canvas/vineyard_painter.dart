@@ -41,6 +41,9 @@ class VineyardScene {
     this.selectedObjectId,
     this.marquee,
     this.lasso = const <Offset>[],
+    this.heat,
+    this.heatRect = Rect.zero,
+    this.showPlants = true,
   });
 
   /// Positions by id. The index holds the same points for spatial queries.
@@ -92,6 +95,14 @@ class VineyardScene {
 
   /// The drawn object currently selected, drawn highlighted.
   final String? selectedObjectId;
+
+  /// The heatmap, stretched over [heatRect] in layout coordinates, or null.
+  final ui.Image? heat;
+  final Rect heatRect;
+
+  /// False under a heatmap: the dots would hide the very areas it shows.
+  /// Selection rings still draw, so a selected plant can be found.
+  final bool showPlants;
 }
 
 /// Draws the vineyard.
@@ -146,6 +157,7 @@ class VineyardPainter extends CustomPainter {
 
     _paintImage(canvas);
     _paintObjects(canvas);
+    _paintHeat(canvas);
     _paintPlants(canvas);
     _paintSelectionGesture(canvas);
 
@@ -173,6 +185,19 @@ class VineyardPainter extends CustomPainter {
         ..color = Color.fromRGBO(0, 0, 0, scene.imageOpacity.clamp(0, 1)),
     );
     canvas.restore();
+  }
+
+  void _paintHeat(Canvas canvas) {
+    final heat = scene.heat;
+    if (heat == null) return;
+    // Scaled up with filtering, which is what smooths a few hundred cells
+    // into a continuous surface. One draw call at any zoom.
+    canvas.drawImageRect(
+      heat,
+      Offset.zero & Size(heat.width.toDouble(), heat.height.toDouble()),
+      scene.heatRect,
+      Paint()..filterQuality = FilterQuality.medium,
+    );
   }
 
   /// Areas: warm, high-visibility colours that stand out from green and brown.
@@ -349,7 +374,7 @@ class VineyardPainter extends CustomPainter {
 
   void _paintPlants(Canvas canvas) {
     if (viewport.scale < _markerVisibleScale) return;
-    _paintRetired(canvas);
+    if (scene.showPlants) _paintRetired(canvas);
     if (scene.plants.isEmpty) return;
 
     // The culling that makes the whole thing viable: query the index for what
@@ -370,6 +395,35 @@ class VineyardPainter extends CustomPainter {
     // fraction of it. Round stroke caps make each point render as a dot of
     // diameter strokeWidth.
     final fallback = scene.fallbackColor ?? _defaultPlantColor;
+    if (scene.showPlants) _paintDots(canvas, onScreen, fallback, radius, px);
+
+    // Selection stays per-plant: it is bounded by what a person can select,
+    // not by the size of the vineyard.
+    if (scene.selection.isNotEmpty) {
+      final outer = Paint()
+        ..color = const Color(0xCC000000)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4 * px;
+      final ring = Paint()
+        ..color = selectionColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.2 * px;
+      final ringRadius = radius + 3.5 * px;
+      for (final point in onScreen) {
+        if (!scene.selection.contains(point.id)) continue;
+        canvas.drawCircle(point.position, ringRadius, outer);
+        canvas.drawCircle(point.position, ringRadius, ring);
+      }
+    }
+  }
+
+  void _paintDots(
+    Canvas canvas,
+    List<IndexedPoint> onScreen,
+    Color fallback,
+    double radius,
+    double px,
+  ) {
     final all = <Offset>[];
     final byColour = <Color, List<Offset>>{};
     for (final point in onScreen) {
@@ -399,25 +453,6 @@ class VineyardPainter extends CustomPainter {
           ..strokeWidth = radius * 2
           ..strokeCap = StrokeCap.round,
       );
-    }
-
-    // Selection stays per-plant: it is bounded by what a person can select,
-    // not by the size of the vineyard.
-    if (scene.selection.isNotEmpty) {
-      final outer = Paint()
-        ..color = const Color(0xCC000000)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 4 * px;
-      final ring = Paint()
-        ..color = selectionColor
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.2 * px;
-      final ringRadius = radius + 3.5 * px;
-      for (final point in onScreen) {
-        if (!scene.selection.contains(point.id)) continue;
-        canvas.drawCircle(point.position, ringRadius, outer);
-        canvas.drawCircle(point.position, ringRadius, ring);
-      }
     }
   }
 

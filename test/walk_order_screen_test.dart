@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vine_viewer/core/data/label_service.dart';
 import 'package:vine_viewer/core/data/seed_service.dart';
 import 'package:vine_viewer/core/data/walk_plan.dart';
+import 'package:vine_viewer/core/db/daos/field_defs_dao.dart';
 import 'package:vine_viewer/core/db/daos/projects_dao.dart';
 import 'package:vine_viewer/core/db/daos/walk_orders_dao.dart';
 import 'package:vine_viewer/core/db/database.dart';
@@ -302,6 +303,32 @@ void main() {
         await tester.tap(find.text('Start walking'));
         await settle(tester);
         expect(find.text('1.2.43'), findsOneWidget);
+        await finish(tester);
+      });
+    });
+
+    testWidgets('an unfinished walk can be discarded', (tester) async {
+      await tester.runAsync(() async {
+        final health = (await FieldDefsDao(
+          db,
+        ).forProject(projectId)).firstWhere((f) => f.name == 'Health');
+        await bookmarks.save(
+          projectId,
+          WalkBookmark(fieldIds: [health.id], plantId: null, index: 40),
+        );
+        await openSetup(tester);
+        expect(find.textContaining('Unfinished walk'), findsOneWidget);
+        expect(find.text('Start a new walk'), findsOneWidget);
+
+        await tester.tap(find.text('Discard'));
+        await settle(tester);
+        expect(find.text('Discard the unfinished walk?'), findsOneWidget);
+        await tester.tap(find.widgetWithText(FilledButton, 'Discard'));
+        await settle(tester);
+
+        expect(find.textContaining('Unfinished walk'), findsNothing);
+        expect(find.text('Start walking'), findsOneWidget);
+        expect(await bookmarks.load(projectId), isNull);
         await finish(tester);
       });
     });

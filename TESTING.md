@@ -945,6 +945,48 @@ can be used for a Health walk and a Vigour walk. Walk setup → **Order**.
       carries on along it even if a different order is picked below
 - [ ] Add a plant after arranging: it appears beside its neighbour, not at the
       end
+- [ ] (0.14.0) The Resume card has **Discard**: asks once, then the card is gone
+      and the button reads **Start walking**. Values entered on that walk stay
+
+Notes:
+
+---
+
+## 17h. Heatmap and looking back in time (0.14.0)
+
+Colour the map by Health first (Layers → Colour plants by). Both live on the
+legend's header (the dotted heatmap icon, 🔥 once on, and 🕘) and in the
+Layers sheet.
+
+Heatmap:
+
+- [ ] 🔥 swaps the plant dots for a heatmap over the aerial; tap again for the
+      dots. Rows and blocks stay drawn; selected plants keep their cyan ring
+- [ ] Nothing filtered: it shows where values are recorded at all ("Not
+      recorded" left out)
+- [ ] Hold **1** in the legend, then tick **2**: only where poor vines are
+      **concentrated** lights up. On Five Sisters, patches in Block 3 go deep
+      red; scattered poor vines in Blocks 1–2 stay faint yellow or nothing
+- [ ] Legend shows the colour key ("A few" → "Most vines") and a **Spread**
+      slider: small = tight patches, large = broad trends. Redraws within a
+      moment of letting go
+- [ ] Pan and zoom stay smooth with the heatmap on (frame stats, §22)
+- [ ] ⚠ Tapping the map still selects plants under the heatmap
+
+Looking back in time:
+
+- [ ] 🕘 opens a bar along the bottom: date, ‹ ›, a slider, "3 / 12", ✕
+- [ ] Its stops are the **days something was recorded** for the field, then
+      **Now**. Five Sisters starts with one day (2026-10-15)
+- [ ] Moving back: colours, legend counts and the filter all show values as
+      they were at the end of that day; the bar turns a different colour so you
+      know you're in the past. Plants not yet recorded then are grey
+- [ ] ▶ steps through each day on its own (from the start if at Now) and stops
+      at Now
+- [ ] Heatmap + time together: the heatmap follows the date
+- [ ] The plant panel always shows **today's** values and edits today, even
+      while the map shows the past
+- [ ] ✕ on the bar, or closing the legend, goes back to Now
 
 Notes:
 
@@ -1120,11 +1162,13 @@ Notes:
 Built in the data layer with **no UI**:
 
 - **Rolling back a bulk edit by batch** (other than with undo, which works).
-- **`asOf` historical queries** — "what was this value in 2025" works in the data
-  layer, with no UI.
 
 Not built at all:
 
+- **Change since a date** — a heatmap of where a value got worse (or better)
+  between two days. The time slider shows one day at a time.
+- **The plant panel as of a date** — it always shows today, whatever the time
+  slider is set to.
 - **Screen stays awake during a walk** — it doesn't; the tablet's own sleep
   timeout applies.
 
@@ -1195,6 +1239,10 @@ If you only have time for a handful, these are the ones most likely to be broken
       names the plant you reach next
 - [ ] Delete the walk order an unfinished walk is following, then Resume — it
       carries on in plant ID order
+- [ ] Heatmap on, then ▶ on the time slider across many days: no stutter, and
+      it ends on Now with today's colours
+- [ ] Time slider in the past, then edit a plant in the panel: the map stays on
+      the past date (the edit shows once you go back to Now)
 - [ ] Start from Five Sisters **twice** on the tablet — two independent copies,
       and the original untouched
 
