@@ -56,32 +56,44 @@ class ProjectListScreen extends ConsumerWidget {
             ),
           ],
         ),
+        // Labelled: two bare icons side by side were easy to miss and easy
+        // to mistake for each other. Narrower than that, words in a menu instead.
         actions: [
-          IconButton(
-            tooltip: 'Deleted vineyards',
-            icon: const Icon(Icons.delete_outline),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const _TrashScreen()),
+          if (MediaQuery.sizeOf(context).width >= 840) ...[
+            TextButton.icon(
+              icon: const Icon(Icons.delete_outline),
+              label: const Text('Deleted vineyards'),
+              onPressed: () => _openTrash(context),
             ),
-          ),
-          IconButton(
-            tooltip: 'Check for updates',
-            icon: const Icon(Icons.system_update),
-            onPressed: () => showDialog<void>(
-              context: context,
-              builder: (context) => const AlertDialog(
-                content: SizedBox(
-                  width: 320,
-                  child: Center(
-                    child: Padding(
-                      padding: EdgeInsets.symmetric(vertical: 24),
-                      child: UpdateButton(),
-                    ),
+            TextButton.icon(
+              icon: const Icon(Icons.system_update),
+              label: const Text('Check for updates'),
+              onPressed: () => _checkForUpdates(context),
+            ),
+            const SizedBox(width: 12),
+          ] else
+            PopupMenuButton<String>(
+              tooltip: 'More',
+              onSelected: (v) => v == 'trash'
+                  ? _openTrash(context)
+                  : _checkForUpdates(context),
+              itemBuilder: (context) => const [
+                PopupMenuItem(
+                  value: 'update',
+                  child: ListTile(
+                    leading: Icon(Icons.system_update),
+                    title: Text('Check for updates'),
                   ),
                 ),
-              ),
+                PopupMenuItem(
+                  value: 'trash',
+                  child: ListTile(
+                    leading: Icon(Icons.delete_outline),
+                    title: Text('Deleted vineyards'),
+                  ),
+                ),
+              ],
             ),
-          ),
         ],
       ),
       body: projects.when(
@@ -988,3 +1000,22 @@ class _PurgeDialogState extends State<_PurgeDialog> {
     );
   }
 }
+
+void _openTrash(BuildContext context) => Navigator.of(
+  context,
+).push(MaterialPageRoute<void>(builder: (_) => const _TrashScreen()));
+
+void _checkForUpdates(BuildContext context) => showDialog<void>(
+  context: context,
+  builder: (context) => const AlertDialog(
+    content: SizedBox(
+      width: 320,
+      child: Center(
+        child: Padding(
+          padding: EdgeInsets.symmetric(vertical: 24),
+          child: UpdateButton(),
+        ),
+      ),
+    ),
+  ),
+);

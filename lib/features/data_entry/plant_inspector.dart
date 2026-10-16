@@ -59,14 +59,6 @@ class PlantInspector extends ConsumerWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'PLANT',
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: scheme.onSurfaceVariant,
-                          letterSpacing: 1.4,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
                         identifier?.text ?? '...',
                         style: theme.textTheme.headlineMedium?.copyWith(
                           fontWeight: FontWeight.w700,

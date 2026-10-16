@@ -90,25 +90,30 @@ class _TimeBarState extends ConsumerState<TimeBar> {
     final at = _position(days, asOf);
     final past = asOf != null;
 
+    // On a phone the step counter goes and the date takes less room, so the
+    // slider keeps enough width to be dragged.
+    final narrow = MediaQuery.sizeOf(context).width < 600;
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 680),
       child: MapSurface(
         color: past ? scheme.tertiaryContainer : null,
-        padding: const EdgeInsets.fromLTRB(8, 4, 4, 4),
+        padding: EdgeInsets.fromLTRB(narrow ? 2 : 8, 4, narrow ? 0 : 4, 4),
         child: Row(
           children: [
             IconButton(
+              visualDensity: narrow ? VisualDensity.compact : null,
               tooltip: _playing == null ? 'Play' : 'Pause',
               icon: Icon(_playing == null ? Icons.play_arrow : Icons.pause),
               onPressed: days.isEmpty ? null : () => _togglePlay(days),
             ),
             IconButton(
+              visualDensity: narrow ? VisualDensity.compact : null,
               tooltip: 'Earlier',
               icon: const Icon(Icons.chevron_left),
               onPressed: at > 0 ? () => _goTo(days, at - 1) : null,
             ),
             SizedBox(
-              width: 132,
+              width: narrow ? 100 : 132,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -127,6 +132,7 @@ class _TimeBarState extends ConsumerState<TimeBar> {
               ),
             ),
             IconButton(
+              visualDensity: narrow ? VisualDensity.compact : null,
               tooltip: 'Later',
               icon: const Icon(Icons.chevron_right),
               onPressed: at < days.length ? () => _goTo(days, at + 1) : null,
@@ -145,7 +151,7 @@ class _TimeBarState extends ConsumerState<TimeBar> {
                       onChanged: (v) => _goTo(days, v.round()),
                     ),
             ),
-            if (days.isNotEmpty)
+            if (days.isNotEmpty && !narrow)
               Padding(
                 padding: const EdgeInsets.only(right: 4),
                 child: Text(
@@ -155,6 +161,7 @@ class _TimeBarState extends ConsumerState<TimeBar> {
                 ),
               ),
             IconButton(
+              visualDensity: narrow ? VisualDensity.compact : null,
               tooltip: 'Back to now',
               icon: const Icon(Icons.close),
               onPressed: _close,

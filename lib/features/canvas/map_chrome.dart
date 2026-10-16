@@ -73,7 +73,11 @@ class MapTopBar extends StatelessWidget {
     required this.layersActive,
     required this.menu,
     this.actions = const [],
+    this.compact = false,
   });
+
+  /// A phone: no dividers, and the title gives way first.
+  final bool compact;
 
   final String title;
   final String subtitle;
@@ -102,35 +106,39 @@ class MapTopBar extends StatelessWidget {
             onPressed: () => Navigator.of(context).maybePop(),
           ),
           const SizedBox(width: 4),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 260),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
+          // Gives way before any button does: on a phone the name is cut
+          // short rather than undo or the menu falling off the edge.
+          Flexible(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 260),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
-                ),
-                Text(
-                  subtitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
-          const SizedBox(width: 12),
-          _VerticalRule(color: scheme.outlineVariant),
+          SizedBox(width: compact ? 4 : 12),
+          if (!compact) _VerticalRule(color: scheme.outlineVariant),
           undo,
-          _VerticalRule(color: scheme.outlineVariant),
+          if (!compact) _VerticalRule(color: scheme.outlineVariant),
           ...actions,
           IconButton(
             tooltip: 'Map layers',
@@ -164,6 +172,48 @@ class _VerticalRule extends StatelessWidget {
 typedef _ToolSpec = ({CanvasTool tool, IconData icon, String label});
 
 /// The tools, grouped by what they are for.
+const List<({String title, List<_ToolSpec> tools})> _toolGroups = [
+  (
+    title: 'Select',
+    tools: [
+      (tool: CanvasTool.select, icon: Icons.near_me_outlined, label: 'Select'),
+      (tool: CanvasTool.lasso, icon: Icons.gesture, label: 'Lasso'),
+    ],
+  ),
+  (
+    title: 'Plant',
+    tools: [
+      (
+        tool: CanvasTool.placePlant,
+        icon: Icons.add_circle_outline,
+        label: 'Plant',
+      ),
+      (tool: CanvasTool.insertPlant, icon: Icons.playlist_add, label: 'Insert'),
+      (tool: CanvasTool.pointArray, icon: Icons.more_horiz, label: 'Space'),
+    ],
+  ),
+  (
+    title: 'Draw',
+    tools: [
+      (
+        tool: CanvasTool.drawObject,
+        icon: Icons.polyline_outlined,
+        label: 'Draw',
+      ),
+      (tool: CanvasTool.array, icon: Icons.view_week_outlined, label: 'Run'),
+      (tool: CanvasTool.split, icon: Icons.content_cut, label: 'Split'),
+    ],
+  ),
+  (
+    title: 'Edit',
+    tools: [
+      (tool: CanvasTool.move, icon: Icons.open_with, label: 'Move'),
+      (tool: CanvasTool.reshape, icon: Icons.format_shapes, label: 'Reshape'),
+    ],
+  ),
+];
+
+/// The tools, grouped by what they are for.
 ///
 /// Vertical down the left edge, where a thumb holding the tablet already is,
 /// and where it costs the map width rather than height -- a landscape tablet
@@ -183,59 +233,9 @@ class ToolRail extends StatelessWidget {
   final bool sticky;
   final VoidCallback onToggleSticky;
 
-  static const List<({String title, List<_ToolSpec> tools})> _groups = [
-    (
-      title: 'Select',
-      tools: [
-        (
-          tool: CanvasTool.select,
-          icon: Icons.near_me_outlined,
-          label: 'Select',
-        ),
-        (tool: CanvasTool.lasso, icon: Icons.gesture, label: 'Lasso'),
-      ],
-    ),
-    (
-      title: 'Plant',
-      tools: [
-        (
-          tool: CanvasTool.placePlant,
-          icon: Icons.add_circle_outline,
-          label: 'Plant',
-        ),
-        (
-          tool: CanvasTool.insertPlant,
-          icon: Icons.playlist_add,
-          label: 'Insert',
-        ),
-        (tool: CanvasTool.pointArray, icon: Icons.more_horiz, label: 'Space'),
-      ],
-    ),
-    (
-      title: 'Draw',
-      tools: [
-        (
-          tool: CanvasTool.drawObject,
-          icon: Icons.polyline_outlined,
-          label: 'Draw',
-        ),
-        (tool: CanvasTool.array, icon: Icons.view_week_outlined, label: 'Run'),
-        (tool: CanvasTool.split, icon: Icons.content_cut, label: 'Split'),
-      ],
-    ),
-    (
-      title: 'Edit',
-      tools: [
-        (tool: CanvasTool.move, icon: Icons.open_with, label: 'Move'),
-        (tool: CanvasTool.reshape, icon: Icons.format_shapes, label: 'Reshape'),
-      ],
-    ),
-  ];
-
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
+    final scheme = Theme.of(context).colorScheme;
     return MapSurface(
       radius: 20,
       padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
@@ -243,7 +243,10 @@ class ToolRail extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            for (final (i, group) in _groups.indexed) ...[
+            // Divided into groups without headings: every tool is labelled,
+            // and the headings were a fifth of the rail's height spent on
+            // words that said little more than the dividers do.
+            for (final (i, group) in _toolGroups.indexed) ...[
               if (i > 0)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 6),
@@ -252,17 +255,6 @@ class ToolRail extends StatelessWidget {
                     child: Divider(height: 1, color: scheme.outlineVariant),
                   ),
                 ),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 2, top: 2),
-                child: Text(
-                  group.title.toUpperCase(),
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    fontSize: 9.5,
-                    letterSpacing: 1.1,
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
               for (final spec in group.tools)
                 _ToolButton(
                   spec: spec,
@@ -299,6 +291,106 @@ class ToolRail extends StatelessWidget {
   }
 }
 
+/// The tools where a rail does not fit -- a phone, or a tablet held so the
+/// rail would run off the bottom: one button showing the tool in use, which
+/// opens all of them as a sheet.
+///
+/// Every tool is still one tap away from the sheet, and the one in use is
+/// always on screen, so it is never a mystery what a tap on the map will do.
+class ToolPicker extends StatelessWidget {
+  const ToolPicker({
+    super.key,
+    required this.active,
+    required this.onChanged,
+    required this.sticky,
+    required this.onToggleSticky,
+  });
+
+  final CanvasTool active;
+  final ValueChanged<CanvasTool> onChanged;
+  final bool sticky;
+  final VoidCallback onToggleSticky;
+
+  static _ToolSpec _specOf(CanvasTool tool) => [
+    for (final g in _toolGroups) ...g.tools,
+  ].firstWhere((t) => t.tool == tool);
+
+  Future<void> _open(BuildContext context) async {
+    final chosen = await showModalBottomSheet<CanvasTool>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        final theme = Theme.of(context);
+        return SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final group in _toolGroups) ...[
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8, bottom: 4),
+                    child: Text(group.title, style: theme.textTheme.titleSmall),
+                  ),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final spec in group.tools)
+                        _ToolButton(
+                          spec: spec,
+                          active: spec.tool == active,
+                          wide: true,
+                          onTap: () => Navigator.pop(context, spec.tool),
+                        ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (chosen != null) onChanged(chosen);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final selecting = active == CanvasTool.select || active == CanvasTool.lasso;
+    return MapSurface(
+      radius: 20,
+      padding: const EdgeInsets.all(6),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Tooltip(
+            message: 'Tools',
+            child: _ToolButton(
+              spec: _specOf(active),
+              active: true,
+              more: true,
+              onTap: () => _open(context),
+            ),
+          ),
+          if (selecting)
+            _ToolButton(
+              spec: (
+                tool: CanvasTool.select,
+                icon: Icons.library_add_outlined,
+                label: 'Add',
+              ),
+              active: sticky,
+              compact: true,
+              accent: true,
+              onTap: onToggleSticky,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _ToolButton extends StatelessWidget {
   const _ToolButton({
     required this.spec,
@@ -306,12 +398,20 @@ class _ToolButton extends StatelessWidget {
     required this.onTap,
     this.compact = false,
     this.accent = false,
+    this.wide = false,
+    this.more = false,
   });
 
   final _ToolSpec spec;
   final bool active;
   final VoidCallback onTap;
   final bool compact;
+
+  /// In the tool sheet, where there is room for whole words.
+  final bool wide;
+
+  /// Opens the other tools: marked with a small arrow.
+  final bool more;
 
   /// A toggle rather than a tool: shown in the secondary colour when on.
   final bool accent;
@@ -341,12 +441,19 @@ class _ToolButton extends StatelessWidget {
           // Large targets: this gets used outdoors, possibly with gloves, and
           // a mis-tap in a drawing tool creates data.
           child: SizedBox(
-            width: 62,
-            height: compact ? 46 : 54,
+            width: wide ? 84 : 62,
+            height: compact ? 46 : (wide ? 64 : 54),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(spec.icon, size: compact ? 20 : 23, color: foreground),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(spec.icon, size: compact ? 20 : 23, color: foreground),
+                    if (more)
+                      Icon(Icons.arrow_drop_down, size: 16, color: foreground),
+                  ],
+                ),
                 const SizedBox(height: 2),
                 Text(
                   spec.label,
@@ -375,11 +482,16 @@ class MapControls extends StatelessWidget {
     required this.onZoomIn,
     required this.onZoomOut,
     required this.onFit,
+    this.fitOnly = false,
   });
 
   final VoidCallback onZoomIn;
   final VoidCallback onZoomOut;
   final VoidCallback onFit;
+
+  /// A phone, where pinching is how anyone zooms: just the way back to the
+  /// whole vineyard.
+  final bool fitOnly;
 
   @override
   Widget build(BuildContext context) {
@@ -389,24 +501,26 @@ class MapControls extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          IconButton(
-            tooltip: 'Zoom in',
-            icon: const Icon(Icons.add),
-            onPressed: onZoomIn,
-          ),
-          SizedBox(
-            width: 32,
-            child: Divider(height: 1, color: scheme.outlineVariant),
-          ),
-          IconButton(
-            tooltip: 'Zoom out',
-            icon: const Icon(Icons.remove),
-            onPressed: onZoomOut,
-          ),
-          SizedBox(
-            width: 32,
-            child: Divider(height: 1, color: scheme.outlineVariant),
-          ),
+          if (!fitOnly) ...[
+            IconButton(
+              tooltip: 'Zoom in',
+              icon: const Icon(Icons.add),
+              onPressed: onZoomIn,
+            ),
+            SizedBox(
+              width: 32,
+              child: Divider(height: 1, color: scheme.outlineVariant),
+            ),
+            IconButton(
+              tooltip: 'Zoom out',
+              icon: const Icon(Icons.remove),
+              onPressed: onZoomOut,
+            ),
+            SizedBox(
+              width: 32,
+              child: Divider(height: 1, color: scheme.outlineVariant),
+            ),
+          ],
           IconButton(
             tooltip: 'Fit the whole vineyard',
             icon: const Icon(Icons.fit_screen_outlined),
@@ -612,7 +726,20 @@ class MapLegend extends StatelessWidget {
     this.onSpread,
     this.timeOpen = false,
     this.onTime,
+    this.collapsed = false,
+    this.onCollapse,
+    this.maxWidth = 260,
+    this.showHint = true,
   });
+
+  /// "Tap to hide a value": until the filter has been used once, after which
+  /// it is just words in the way.
+  final bool showHint;
+
+  /// Folded down to its heading, to give the map back.
+  final bool collapsed;
+  final VoidCallback? onCollapse;
+  final double maxWidth;
 
   final PlantColouring colouring;
   final VoidCallback onClose;
@@ -649,7 +776,7 @@ class MapLegend extends StatelessWidget {
 
     return ConstrainedBox(
       constraints: BoxConstraints(
-        maxWidth: 260,
+        maxWidth: maxWidth,
         maxHeight: MediaQuery.of(context).size.height * 0.5,
       ),
       child: MapSurface(
@@ -670,14 +797,27 @@ class MapLegend extends StatelessWidget {
                 ),
                 const SizedBox(width: 6),
                 Flexible(
-                  child: Text(
-                    colouring.fieldName,
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
+                  child: GestureDetector(
+                    onTap: onCollapse,
+                    child: Text(
+                      colouring.fieldName,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
+                if (onCollapse != null)
+                  IconButton(
+                    tooltip: collapsed ? 'Show the legend' : 'Fold the legend',
+                    visualDensity: VisualDensity.compact,
+                    icon: Icon(
+                      collapsed ? Icons.expand_less : Icons.expand_more,
+                      size: 20,
+                    ),
+                    onPressed: onCollapse,
+                  ),
                 if (onTime != null)
                   IconButton(
                     tooltip: 'Look back in time',
@@ -707,7 +847,7 @@ class MapLegend extends StatelessWidget {
                 ),
               ],
             ),
-            if (hidden.isNotEmpty)
+            if (hidden.isNotEmpty && !collapsed)
               Padding(
                 padding: const EdgeInsets.only(right: 6, bottom: 4),
                 child: Row(
@@ -732,37 +872,40 @@ class MapLegend extends StatelessWidget {
                   ],
                 ),
               ),
-            if (entries.isEmpty)
+            if (entries.isEmpty && !collapsed)
               const Padding(
                 padding: EdgeInsets.only(right: 10),
                 child: Text('Nothing recorded yet.'),
               ),
-            Flexible(
-              child: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    for (final entry in entries)
-                      _LegendRow(
-                        entry: entry,
-                        count: colouring.counts[entry.label] ?? 0,
-                        shown: !hidden.contains(entry.label),
-                        onTap: onToggle == null
-                            ? null
-                            : () => onToggle!(entry.label),
-                        onLongPress: onOnly == null
-                            ? null
-                            : () => onOnly!(entry.label),
-                      ),
-                  ],
+            if (!collapsed)
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final entry in entries)
+                        _LegendRow(
+                          entry: entry,
+                          count: colouring.counts[entry.label] ?? 0,
+                          shown: !hidden.contains(entry.label),
+                          onTap: onToggle == null
+                              ? null
+                              : () => onToggle!(entry.label),
+                          onLongPress: onOnly == null
+                              ? null
+                              : () => onOnly!(entry.label),
+                        ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            if (heatmap) ..._heatKey(context),
+            if (heatmap && !collapsed) ..._heatKey(context),
             if (onToggle != null &&
+                showHint &&
                 hidden.isEmpty &&
                 entries.length > 1 &&
-                !heatmap)
+                !heatmap &&
+                !collapsed)
               Padding(
                 padding: const EdgeInsets.only(top: 4, right: 10),
                 child: Text(

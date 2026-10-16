@@ -1,9 +1,10 @@
 import 'dart:async';
-import 'dart:io' show File;
+import 'dart:io' show Directory, File;
 import 'dart:ui' as ui;
 
 import 'package:drift/drift.dart' show TableUpdateQuery;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../../core/db/database.dart';
 import '../../core/geometry/row_generation.dart';
@@ -476,6 +477,48 @@ final visiblePlantsProvider = Provider<Set<String>?>((ref) {
   }
   return colouring.visible(filter.hidden);
 });
+
+/// Whether the legend's filter has ever been used on this device, which
+/// retires its "tap to hide a value" hint. Kept in a small file so it stays
+/// retired; any failure just shows the hint again.
+class LegendHintSeen extends StateNotifier<bool> {
+  LegendHintSeen({Future<Directory> Function()? directory})
+    : _directory = directory ?? getApplicationDocumentsDirectory,
+      super(false) {
+    _load();
+  }
+
+  final Future<Directory> Function() _directory;
+
+  Future<File> get _file async =>
+      File('${(await _directory()).path}/ui/legend_hint_seen');
+
+  Future<void> _load() async {
+    try {
+      if ((await _file).existsSync() && mounted) state = true;
+    } catch (_) {}
+  }
+
+  /// Retires the hint. The returned future is the write to disk, which
+  /// nothing on screen needs to wait for.
+  Future<void> seen() async {
+    if (state) return;
+    state = true;
+    try {
+      final file = await _file;
+      await file.parent.create(recursive: true);
+      await file.writeAsString('1');
+    } catch (_) {}
+  }
+}
+
+final legendHintSeenProvider = StateNotifierProvider<LegendHintSeen, bool>(
+  (ref) => LegendHintSeen(),
+);
+
+/// Whether the legend is folded to its heading; null until the user says,
+/// which folds it on a phone and opens it on a tablet.
+final legendCollapsedProvider = StateProvider<bool?>((ref) => null);
 
 /// Whether the map shows the colour-by field as a heatmap instead of dots.
 final heatmapProvider = StateProvider<bool>((ref) => false);

@@ -253,8 +253,9 @@ Notes:
 - [ ] The map fills the screen; everything else floats over it
 - [ ] **Top bar** (top left): back, vineyard name, "N plants · N Rows · N
       Blocks", undo / redo, **Layers**, ⋮ (Fields, Plant ID format)
-- [ ] **Tool rail** (left): grouped Select / Plant / Draw / Edit, active tool
-      highlighted. Every tool reachable without scrolling in landscape.
+- [ ] **Tool rail** (left): tools in four groups split by dividers (no
+      headings since 0.15.0), active tool highlighted. Every tool reachable
+      without scrolling in landscape.
 - [ ] Choosing a tool shows a **dark banner** at the top saying what it wants
       (Plant, Insert, Move, Reshape, Split, Draw, Run, Space)
 - [ ] **Blocks** are outlined with a dark casing and named at their centre
@@ -274,6 +275,50 @@ Notes:
       part still counts and confirms
 - [ ] Tapping a field's name still opens the full editor (Clear lives there)
 - [ ] Dark mode (tablet set to dark): panels go dark, the map is unchanged
+
+Notes:
+
+---
+
+## 7b. Phones and other screen sizes (0.15.0)
+
+The map adapts to the room it has. Try a phone upright and on its side, and the
+tablet both ways.
+
+Phone upright:
+
+- [ ] ⚠ **Top bar fits**: back, name (cut short with …), undo, redo, Layers, ⋮.
+      Nothing runs off the right edge. Calendar is in ⋮ instead
+- [ ] Tools are **one button** (top left) showing the tool in use, with ▾.
+      Tap it: every tool in a sheet, grouped. Pick one: the button shows it.
+      **Add** (sticky select) sits under it while Select or Lasso is in use
+- [ ] Colour by Health: the legend starts **folded** to its heading; ▴/▾ or
+      the field name opens and folds it
+- [ ] Legend, time bar and a selection bar stack from the bottom up and never
+      overlap; zoom buttons sit above them on the right
+- [ ] Select a plant: the plant panel takes the bottom of the screen, edge to
+      edge; legend, time bar and zoom buttons step aside until it closes
+- [ ] Select a row: "Plants" and "More" buttons fit beside its name
+- [ ] Walk: the title is just the field names, and Undo fits
+- [ ] Zoom buttons are just **fit** (⛶) — pinch to zoom
+- [ ] Vineyard list: ⋮ at the top right holds **Check for updates** and
+      **Deleted vineyards** (on the tablet they are labelled buttons)
+
+Phone on its side:
+
+- [ ] Tool button rather than the rail; legend folded
+- [ ] Plant panel docks on the **right** (not the bottom), map still usable
+
+Everywhere:
+
+- [ ] The plant panel shows the plant ID with no "PLANT" label above it
+- [ ] Legend's "Tap to hide a value · hold to show only it" shows until you
+      first use the filter, then never again (also after restarting the app)
+
+Tablet:
+
+- [ ] Landscape: rail as before, legend open, plant panel on the right
+- [ ] Portrait: rail fits above the plant panel; nothing overlaps
 
 Notes:
 

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:drift/native.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -202,5 +204,22 @@ void main() {
     expect(colouring.read().value!.keyOf.values.toSet(), {
       PlantColouring.notRecorded,
     });
+  });
+
+  test('the legend hint stays retired once the filter is used', () async {
+    final dir = Directory.systemTemp.createTempSync('hint');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final first = LegendHintSeen(directory: () async => dir);
+    await pumpEventQueue();
+    expect(first.state, isFalse);
+    final written = first.seen();
+    expect(first.state, isTrue);
+    await written;
+
+    final later = LegendHintSeen(directory: () async => dir);
+    for (var i = 0; i < 20 && !later.state; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(later.state, isTrue);
   });
 }

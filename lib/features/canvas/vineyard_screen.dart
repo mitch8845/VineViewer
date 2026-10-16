@@ -1016,24 +1016,59 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
     }
 
     final inspecting = selection.length == 1;
-    // Side panel on a landscape tablet; bottom panel in portrait, where a
-    // 384-wide column would leave a sliver of map.
     final screen = MediaQuery.sizeOf(context);
-    final wide = screen.width >= 1000;
-    const panelWidth = 384.0;
-    final panelHeight = (screen.height * 0.42).clamp(280.0, 460.0);
     const gap = 12.0;
+
+    // One layout from a phone to a landscape tablet, decided by the room
+    // there is rather than by device:
+    //
+    // * compact -- narrower than a small tablet: a phone held upright. The
+    //   bars span the width and stack up from the bottom, and the plant panel
+    //   takes the bottom of the screen on its own.
+    // * short -- a phone on its side: too little height for a bottom panel,
+    //   so the plant panel docks at the side as on a tablet.
+    // * the tool rail only where its full height fits; otherwise one button
+    //   that opens the tools as a sheet.
+    final compact = screen.width < 600;
+    final short = screen.height < 560;
+    final useRail = !compact && screen.height >= 720;
+    final side = screen.width >= 1000 || (short && screen.width >= 720);
+    final panelWidth = screen.width >= 1000 ? 384.0 : 340.0;
+    final panelHeight = (screen.height * (compact ? 0.48 : 0.42)).clamp(
+      260.0,
+      460.0,
+    );
     // The panel's footprint, so everything on its side moves clear of it
     // rather than hiding underneath.
-    final rightInset = inspecting && wide ? panelWidth + gap * 2 : gap;
-    final bottomInset = inspecting && !wide ? panelHeight + gap * 2 : gap;
-    const railInset = 62 + 12 + gap * 2; // rail width + padding + gaps
+    final rightInset = inspecting && side ? panelWidth + gap * 2 : gap;
+    final bottomInset = inspecting && !side ? panelHeight + gap * 2 : gap;
+    // Left edge of what sits beside the tools.
+    final railInset = useRail ? 62.0 + 12 + gap * 2 : gap;
+    // A phone's plant panel covers the bottom; the legend, time bar and zoom
+    // buttons stand aside until it closes rather than squeeze above it.
+    final bottomCrowded = inspecting && compact;
 
     final selectedDrawn = selectedObject == null
         ? null
         : snapshot.objects.where((o) => o.id == selectedObject).firstOrNull;
 
     final banner = _banner(tool, pending, activeField, draft);
+
+    // What stacks up from the bottom edge, lowest first: a selection bar,
+    // then the time bar, then the legend beside the zoom buttons. Each sits
+    // on the one below, so nothing lands on top of anything else at any
+    // width.
+    final showBar =
+        selection.length > 1 || (selectedDrawn != null && selection.isEmpty);
+    final barRight = compact ? gap : rightInset + 64;
+    var stack = bottomInset;
+    if (showBar) stack = gap + 76;
+    final timeBottom = stack;
+    if (timeOpen && !bottomCrowded) stack += 68;
+    final legendBottom = stack;
+    final zoomBottom = compact ? stack : bottomInset;
+    final legendCollapsed =
+        ref.watch(legendCollapsedProvider) ?? (compact || short);
 
     return Scaffold(
       backgroundColor: AppTheme.mapGround,
@@ -1117,34 +1152,35 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                         isScrollControlled: true,
                         builder: (_) => LayersSheet(hasImage: image != null),
                       ),
-                      menu: _menu(),
+                      compact: compact,
+                      menu: _menu(withCalendar: compact),
                       actions: [
-                        IconButton(
-                          tooltip: 'Calendar and history',
-                          icon: const Icon(Icons.calendar_month_outlined),
-                          onPressed: () {
-                            final projectId = _projectId;
-                            if (projectId == null) return;
-                            Navigator.of(context).push(
-                              MaterialPageRoute<void>(
-                                builder: (_) =>
-                                    CalendarScreen(projectId: projectId),
-                              ),
-                            );
-                          },
-                        ),
+                        if (!compact)
+                          IconButton(
+                            tooltip: 'Calendar and history',
+                            icon: const Icon(Icons.calendar_month_outlined),
+                            onPressed: () {
+                              final projectId = _projectId;
+                              if (projectId == null) return;
+                              Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) =>
+                                      CalendarScreen(projectId: projectId),
+                                ),
+                              );
+                            },
+                          ),
                       ],
                     ),
                   ),
                 ),
                 // Along the bottom, between the legend and the zoom buttons:
-                // over the top it hid the far end of the vineyard. Above the
-                // bulk bar when that is showing.
-                if (timeOpen)
+                // over the top it hid the far end of the vineyard.
+                if (timeOpen && !bottomCrowded)
                   Positioned(
-                    left: railInset + 280,
-                    right: rightInset + 72,
-                    bottom: bottomInset + (selection.length > 1 ? 72 : 0),
+                    left: railInset,
+                    right: compact ? gap : rightInset + 72,
+                    bottom: timeBottom,
                     child: Center(
                       child: TimeBar(fieldName: colouring.fieldName),
                     ),
@@ -1152,17 +1188,32 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                 if (banner != null)
                   Positioned(
                     top: 76,
-                    left: railInset,
+                    left: useRail ? railInset : 62 + 12 + gap * 2,
                     right: rightInset,
                     child: Center(child: banner),
                   ),
-                Positioned(
-                  left: gap,
-                  top: 76,
-                  bottom: bottomInset,
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: ToolRail(
+                if (useRail)
+                  Positioned(
+                    left: gap,
+                    top: 76,
+                    bottom: bottomInset,
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: ToolRail(
+                        active: tool,
+                        sticky: ref.watch(stickySelectProvider),
+                        onToggleSticky: () => ref
+                            .read(stickySelectProvider.notifier)
+                            .update((v) => !v),
+                        onChanged: _selectTool,
+                      ),
+                    ),
+                  )
+                else
+                  Positioned(
+                    left: gap,
+                    top: 76,
+                    child: ToolPicker(
                       active: tool,
                       sticky: ref.watch(stickySelectProvider),
                       onToggleSticky: () => ref
@@ -1171,20 +1222,28 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                       onChanged: _selectTool,
                     ),
                   ),
-                ),
                 if (showStats)
                   Positioned(
                     top: gap,
                     right: rightInset,
                     child: const FrameStatsOverlay(),
                   ),
-                if (colouring != null)
+                if (colouring != null && !bottomCrowded)
                   Positioned(
                     left: railInset,
-                    bottom: bottomInset,
+                    bottom: legendBottom,
                     child: MapLegend(
                       colouring: colouring,
                       hidden: hidden,
+                      collapsed: legendCollapsed,
+                      showHint: !ref.watch(legendHintSeenProvider),
+                      onCollapse: () =>
+                          ref.read(legendCollapsedProvider.notifier).state =
+                              !legendCollapsed,
+                      // Clear of the zoom buttons on a phone.
+                      maxWidth: compact
+                          ? screen.width - railInset - gap * 2 - 64
+                          : 260,
                       onToggle: (label) => _setFilter(
                         colouring,
                         hidden.contains(label)
@@ -1219,20 +1278,22 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                       },
                     ),
                   ),
-                Positioned(
-                  right: rightInset,
-                  bottom: bottomInset,
-                  child: MapControls(
-                    onZoomIn: () => _canvasKey.currentState?.zoomBy(1.5),
-                    onZoomOut: () => _canvasKey.currentState?.zoomBy(1 / 1.5),
-                    onFit: () =>
-                        _canvasKey.currentState?.fitTo(snapshot.bounds),
+                if (!bottomCrowded)
+                  Positioned(
+                    right: rightInset,
+                    bottom: zoomBottom,
+                    child: MapControls(
+                      fitOnly: compact,
+                      onZoomIn: () => _canvasKey.currentState?.zoomBy(1.5),
+                      onZoomOut: () => _canvasKey.currentState?.zoomBy(1 / 1.5),
+                      onFit: () =>
+                          _canvasKey.currentState?.fitTo(snapshot.bounds),
+                    ),
                   ),
-                ),
                 if (selection.length > 1)
                   Positioned(
                     left: railInset,
-                    right: rightInset + 64,
+                    right: barRight,
                     bottom: gap,
                     child: Center(child: _BulkBar(selection: selection)),
                   ),
@@ -1241,19 +1302,20 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                 if (selectedDrawn != null && selection.isEmpty)
                   Positioned(
                     left: railInset,
-                    right: rightInset + 64,
+                    right: barRight,
                     bottom: gap,
                     child: Center(
                       child: _ObjectBar(
                         object: selectedDrawn,
                         fieldName: fieldNames[selectedDrawn.fieldDefId],
+                        compact: compact,
                       ),
                     ),
                   ),
                 // Docked right, full height, so the selected plant stays in
                 // view while its values are read or changed -- in the field
                 // you are looking at the plant and the screen at once.
-                if (inspecting && wide)
+                if (inspecting && side)
                   Positioned(
                     top: gap,
                     right: gap,
@@ -1261,9 +1323,9 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                     width: panelWidth,
                     child: PlantInspector(plantId: selection.first),
                   ),
-                if (inspecting && !wide)
+                if (inspecting && !side)
                   Positioned(
-                    left: railInset,
+                    left: compact ? gap : railInset,
                     right: gap,
                     bottom: gap,
                     height: panelHeight,
@@ -1281,6 +1343,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
   /// selection -- a selection the map no longer shows would be one a bulk edit
   /// could still reach.
   void _setFilter(PlantColouring colouring, Set<String> hidden) {
+    ref.read(legendHintSeenProvider.notifier).seen();
     ref.read(legendFilterProvider.notifier).state = hidden.isEmpty
         ? null
         : (fieldId: colouring.fieldId, hidden: hidden);
@@ -1316,7 +1379,9 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
   }
 
   /// Things you set up rather than do: the fields and the ID format.
-  Widget _menu() {
+  /// [withCalendar] on a phone, where the top bar has no room for its own
+  /// button.
+  Widget _menu({bool withCalendar = false}) {
     return PopupMenuButton<String>(
       tooltip: 'More',
       icon: const Icon(Icons.more_vert),
@@ -1325,6 +1390,9 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
         Navigator.of(context).push(
           MaterialPageRoute<void>(
             builder: (_) => switch (choice) {
+              'calendar' when projectId != null => CalendarScreen(
+                projectId: projectId,
+              ),
               'fields' => const FieldListScreen(),
               'import' when projectId != null => ImportScreen(
                 projectId: projectId,
@@ -1340,8 +1408,16 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
           ),
         );
       },
-      itemBuilder: (context) => const [
-        PopupMenuItem(
+      itemBuilder: (context) => [
+        if (withCalendar)
+          const PopupMenuItem(
+            value: 'calendar',
+            child: ListTile(
+              leading: Icon(Icons.calendar_month_outlined),
+              title: Text('Calendar and history'),
+            ),
+          ),
+        const PopupMenuItem(
           value: 'walk',
           child: ListTile(
             leading: Icon(Icons.directions_walk),
@@ -1349,8 +1425,8 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             subtitle: Text('Enter values plant by plant, big buttons'),
           ),
         ),
-        PopupMenuDivider(),
-        PopupMenuItem(
+        const PopupMenuDivider(),
+        const PopupMenuItem(
           value: 'fields',
           child: ListTile(
             leading: Icon(Icons.list_alt),
@@ -1358,7 +1434,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             subtitle: Text('What you record and draw'),
           ),
         ),
-        PopupMenuItem(
+        const PopupMenuItem(
           value: 'template',
           child: ListTile(
             leading: Icon(Icons.tag),
@@ -1366,8 +1442,8 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             subtitle: Text('How plants are named'),
           ),
         ),
-        PopupMenuDivider(),
-        PopupMenuItem(
+        const PopupMenuDivider(),
+        const PopupMenuItem(
           value: 'log',
           child: ListTile(
             leading: Icon(Icons.manage_history),
@@ -1375,7 +1451,7 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
             subtitle: Text('Every change, newest first'),
           ),
         ),
-        PopupMenuItem(
+        const PopupMenuItem(
           value: 'import',
           child: ListTile(
             leading: Icon(Icons.upload_file),
@@ -1526,10 +1602,17 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
 
 /// The selected drawn object, and the way into what can be done to it.
 class _ObjectBar extends ConsumerWidget {
-  const _ObjectBar({required this.object, required this.fieldName});
+  const _ObjectBar({
+    required this.object,
+    required this.fieldName,
+    this.compact = false,
+  });
 
   final DrawnObject object;
   final String? fieldName;
+
+  /// A phone: shorter labels, so both buttons fit beside the name.
+  final bool compact;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1563,7 +1646,7 @@ class _ObjectBar extends ConsumerWidget {
             }
           },
           icon: const Icon(Icons.select_all),
-          label: const Text('Select plants'),
+          label: Text(compact ? 'Plants' : 'Select plants'),
         ),
         const SizedBox(width: 8),
         FilledButton.tonalIcon(
@@ -1584,7 +1667,7 @@ class _ObjectBar extends ConsumerWidget {
             );
           },
           icon: const Icon(Icons.tune),
-          label: const Text('Actions'),
+          label: Text(compact ? 'More' : 'Actions'),
         ),
       ],
       onClose: () => ref.read(selectedObjectProvider.notifier).state = null,

@@ -249,6 +249,9 @@ class _WalkScreenState extends ConsumerState<WalkScreen> {
     final total = widget.order.length;
     final done = _session.index;
     final title = widget.fields.map((f) => f.name).join(', ');
+    // A phone: the field names alone, and a smaller Undo, so the names are
+    // not cut to "Walking: He…".
+    final narrow = MediaQuery.sizeOf(context).width < 600;
 
     return Scaffold(
       appBar: AppBar(
@@ -265,7 +268,10 @@ class _WalkScreenState extends ConsumerState<WalkScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Walking: $title', overflow: TextOverflow.ellipsis),
+            Text(
+              narrow ? title : 'Walking: $title',
+              overflow: TextOverflow.ellipsis,
+            ),
             Text(
               '${groupDigits(math.min(done + 1, total))} of ${groupDigits(total)}'
               ' · ${groupDigits(_session.recordedCount)} entered',
@@ -278,7 +284,7 @@ class _WalkScreenState extends ConsumerState<WalkScreen> {
             padding: const EdgeInsets.only(right: 12),
             child: FilledButton.tonalIcon(
               style: FilledButton.styleFrom(
-                minimumSize: const Size(140, 56),
+                minimumSize: narrow ? const Size(104, 52) : const Size(140, 56),
                 textStyle: const TextStyle(fontSize: 20),
               ),
               onPressed: _session.canUndo && !_writing ? _undo : null,
