@@ -1120,6 +1120,8 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                 heat: heat?.image,
                 heatRect: heat?.rect ?? Rect.zero,
                 showPlants: !heatOn,
+                showAreaNames: ref.watch(showAreaNamesProvider),
+                showLineNames: ref.watch(showLineNamesProvider),
               ),
               tool: tool,
               onTapLayout: _onTap,
@@ -1146,7 +1148,11 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
                       subtitle: _summary(full, fieldNames),
                       undo: const UndoControls(),
                       layersActive:
-                          colouring != null || showLabels || opacity < 1,
+                          colouring != null ||
+                          showLabels ||
+                          opacity < 1 ||
+                          ref.watch(showAreaNamesProvider) ||
+                          !ref.watch(showLineNamesProvider),
                       onLayers: () => showModalBottomSheet<void>(
                         context: context,
                         isScrollControlled: true,

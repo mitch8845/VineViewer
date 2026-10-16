@@ -1106,6 +1106,22 @@ class LayersSheet extends ConsumerWidget {
               value: showIds,
               onChanged: (v) => ref.read(showLabelsProvider.notifier).state = v,
             ),
+            SwitchListTile(
+              secondary: const Icon(Icons.crop_square),
+              title: const Text('Block names'),
+              subtitle: const Text('A selected block is named either way'),
+              value: ref.watch(showAreaNamesProvider),
+              onChanged: (v) =>
+                  ref.read(showAreaNamesProvider.notifier).state = v,
+            ),
+            SwitchListTile(
+              secondary: const Icon(Icons.format_list_numbered),
+              title: const Text('Row numbers'),
+              subtitle: const Text('Shown once you zoom in a little'),
+              value: ref.watch(showLineNamesProvider),
+              onChanged: (v) =>
+                  ref.read(showLineNamesProvider.notifier).state = v,
+            ),
             ListTile(
               leading: const Icon(Icons.satellite_alt_outlined),
               title: const Text('Aerial photo'),

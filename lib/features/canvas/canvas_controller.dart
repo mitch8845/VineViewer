@@ -54,6 +54,12 @@ final reshapeDraftProvider = StateProvider<ReshapeDraft?>((ref) => null);
 /// Whether to draw `block.row.plant` labels.
 final showLabelsProvider = StateProvider<bool>((ref) => false);
 
+/// Block names on the map. Off by default: the outlines show the blocks.
+final showAreaNamesProvider = StateProvider<bool>((ref) => false);
+
+/// Row numbers along the rows.
+final showLineNamesProvider = StateProvider<bool>((ref) => true);
+
 /// How strongly the aerial photo shows, 0 to 1.
 final aerialOpacityProvider = StateProvider<double>((ref) => 1);
 

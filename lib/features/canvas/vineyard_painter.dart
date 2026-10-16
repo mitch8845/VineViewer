@@ -44,6 +44,8 @@ class VineyardScene {
     this.heat,
     this.heatRect = Rect.zero,
     this.showPlants = true,
+    this.showAreaNames = false,
+    this.showLineNames = true,
   });
 
   /// Positions by id. The index holds the same points for spatial queries.
@@ -103,6 +105,11 @@ class VineyardScene {
   /// False under a heatmap: the dots would hide the very areas it shows.
   /// Selection rings still draw, so a selected plant can be found.
   final bool showPlants;
+
+  /// Names on areas ("Block 2") and on lines (row numbers), each switched on
+  /// and off in Layers. The selected one is named either way.
+  final bool showAreaNames;
+  final bool showLineNames;
 }
 
 /// Draws the vineyard.
@@ -579,8 +586,10 @@ class VineyardPainter extends CustomPainter {
       final accent = selected ? selectionColor : colourOf(object);
       switch (object.shape) {
         case PolygonShape():
-          // Only once the area is big enough on screen for its name not to
-          // cover it.
+          // Off by default: the outlines say where the blocks are, and a
+          // name on every one was clutter over the plants. Only once it is
+          // big enough on screen not to cover it.
+          if (!selected && !scene.showAreaNames) continue;
           if (onScreen.width < 90 || onScreen.height < 50) continue;
           final name = scene.fieldNames[object.fieldDefId];
           _pill(
@@ -595,6 +604,7 @@ class VineyardPainter extends CustomPainter {
           );
 
         case final PolylineShape line:
+          if (!selected && !scene.showLineNames) continue;
           if (viewport.scale < _rowLabelVisibleScale && !selected) continue;
           final points = line.path.points;
           final start = viewport.toScreen(points.first);

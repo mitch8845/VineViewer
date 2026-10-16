@@ -258,8 +258,11 @@ Notes:
       without scrolling in landscape.
 - [ ] Choosing a tool shows a **dark banner** at the top saying what it wants
       (Plant, Insert, Move, Reshape, Split, Draw, Run, Space)
-- [ ] **Blocks** are outlined with a dark casing and named at their centre
-      ("Block 2"); the name stays visible when the block runs off screen
+- [ ] **Blocks** are outlined with a dark casing. Since 0.15.1 they are not
+      named unless **Layers → Block names** is on, or the block is selected
+      ("Block 2" at its centre, staying visible when it runs off screen)
+- [ ] **Layers → Row numbers** off hides the row numbers; a selected row still
+      shows its number
 - [ ] **Row numbers** appear at the start of each row once zoomed in a little
 - [ ] Plants are dots with a dark outline, sized with the map — rows read as
       rows of dots with ground between, not as solid bars
