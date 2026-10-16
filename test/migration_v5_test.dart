@@ -37,6 +37,7 @@ void main() {
 
     final raw = sqlite3.open(file.path);
     raw.execute('ALTER TABLE operations DROP COLUMN discarded_at');
+    raw.execute('DROP TABLE walk_orders'); // v6
     raw.execute('PRAGMA user_version = 4');
     raw.close();
     return projectId;
@@ -49,7 +50,7 @@ void main() {
     addTearDown(db.close);
 
     final version = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(version.data.values.first, 5);
+    expect(version.data.values.first, 6);
     expect(
       (await ProjectsDao(db).byId(projectId))?.name,
       'Five Sisters Vineyard',

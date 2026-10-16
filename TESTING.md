@@ -909,6 +909,43 @@ Walking (try Health on Five Sisters):
 - [ ] Date-and-time values read as local time ("2026-08-01 15:00") everywhere,
       not "2026-08-01T19:00:00.000Z"
 
+### Walk order (0.13.0)
+
+Walk orders are saved presets with names, not tied to any field: the same order
+can be used for a Health walk and a Vigour walk. Walk setup → **Order**.
+
+- [ ] ⚠ The update adds a table to the database (v6). After updating, Five
+      Sisters opens with every plant, value and the change log intact
+- [ ] Order lists **Plant ID order** plus every saved order ("2,983 plants ·
+      saved 2026-10-16"); pick one with its radio button
+- [ ] **New walk order** opens the editor on plant ID order. Leaving straight
+      away without changes doesn't ask anything
+- [ ] Three tabs: **Blocks** ("25 rows · 690 plants"), **Rows** ("Plant 1 → 42",
+      the arrow showing which way it is walked), **Plants** (every plant)
+- [ ] Scroll any tab: the item at the top of the list lights up on the map with
+      an arrow from its first plant to its last. A faint line traces the whole
+      walk; a white dot marks where it starts
+- [ ] Tick items, then **Up / Down** move them one place; **Move to…** then tap
+      an item puts them after it ("To the start" for the top)
+- [ ] Drag the ≡ handle to reorder
+- [ ] **Flip** (Rows) reverses a row; **Split** cuts a row at a chosen plant;
+      **Join** puts a split row back together
+- [ ] Switch a block/row/plant **off**: greyed in the list, grey on the map,
+      and "2,983 of 3,025 plants on the walk"
+- [ ] **Undo** (top) steps back through edits; **⋮ → Back to plant ID order**
+- [ ] First **Save** asks for a name; a name already used is refused. The new
+      order appears in setup, already picked
+- [ ] Leaving with unsaved changes asks Save / Discard / Keep editing
+- [ ] Editor **⋮ → Save as a copy…** saves under a new name and leaves the
+      original as it was; **Rename…** renames it
+- [ ] In setup, an order's ⋮: **Edit**, **Copy…**, **Rename…**, **Delete…**
+- [ ] Start a walk with an order picked: it follows that order and skips what
+      is off. Next time Walk opens, that order is picked already
+- [ ] Exit mid-walk, then **Resume**: the card names the order, and the walk
+      carries on along it even if a different order is picked below
+- [ ] Add a plant after arranging: it appears beside its neighbour, not at the
+      end
+
 Notes:
 
 ---
@@ -1088,10 +1125,6 @@ Built in the data layer with **no UI**:
 
 Not built at all:
 
-- **Walk order editor** (reorder blocks/rows/plants, flip a row, turn parts on
-  and off, saved per field, inset map lighting up the top of the list). Next
-  piece after walk mode; until then the walk uses plant ID order back and
-  forth, and "only the selected plants" for a subset.
 - **Screen stays awake during a walk** — it doesn't; the tablet's own sleep
   timeout applies.
 
@@ -1157,6 +1190,11 @@ If you only have time for a handful, these are the ones most likely to be broken
 - [ ] Walk: tap fast through a row, then Undo five times — five plants back,
       five values gone, nothing else touched
 - [ ] Walk: exit mid-row, force-stop the app, Resume — same plant
+- [ ] Update from 0.12.0 with real data: everything there, walk orders work
+- [ ] Walk order with split and flipped rows, save, walk it: Next always
+      names the plant you reach next
+- [ ] Delete the walk order an unfinished walk is following, then Resume — it
+      carries on in plant ID order
 - [ ] Start from Five Sisters **twice** on the tablet — two independent copies,
       and the original untouched
 

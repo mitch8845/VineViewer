@@ -13,6 +13,7 @@ import 'db/daos/field_events_dao.dart';
 import 'db/daos/layout_dao.dart';
 import 'db/daos/projects_dao.dart';
 import 'db/daos/plants_dao.dart';
+import 'db/daos/walk_orders_dao.dart';
 import 'db/database.dart';
 
 /// The database, opened once for the process.
@@ -88,6 +89,11 @@ final importServiceProvider = Provider(
 /// where a gesture begins or ends.
 final operationRecorderProvider = Provider(
   (ref) => OperationRecorder(ref.watch(databaseProvider)),
+);
+
+/// Saved walking orders, one per field.
+final walkOrdersDaoProvider = Provider(
+  (ref) => WalkOrdersDao(ref.watch(databaseProvider)),
 );
 
 /// Starts new vineyards from a bundled project seed.

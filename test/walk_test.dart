@@ -159,16 +159,29 @@ void main() {
         plantId: 'b',
         index: 1,
         subset: ['a', 'b'],
+        orderId: 'terrace',
       );
       await bookmarks.save('p1', mark);
       final loaded = (await bookmarks.load('p1'))!;
       expect(loaded.fieldIds, ['health']);
       expect(loaded.plantId, 'b');
       expect(loaded.subset, ['a', 'b']);
+      expect(loaded.orderId, 'terrace');
       expect(await bookmarks.load('p2'), isNull);
 
       await bookmarks.clear('p1');
       expect(await bookmarks.load('p1'), isNull);
+    });
+
+    test('the last walk order chosen is remembered', () async {
+      expect(await bookmarks.lastOrder('p1'), isNull);
+      await bookmarks.saveLastOrder('p1', 'terrace');
+      expect(await bookmarks.lastOrder('p1'), 'terrace');
+      // Finishing a walk clears the bookmark, not the choice.
+      await bookmarks.clear('p1');
+      expect(await bookmarks.lastOrder('p1'), 'terrace');
+      await bookmarks.saveLastOrder('p1', null);
+      expect(await bookmarks.lastOrder('p1'), '');
     });
 
     test('a corrupt file reads as no bookmark', () async {

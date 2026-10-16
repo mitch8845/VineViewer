@@ -99,6 +99,7 @@ class WalkBookmark {
     required this.plantId,
     required this.index,
     this.subset,
+    this.orderId,
   });
 
   final List<String> fieldIds;
@@ -113,11 +114,15 @@ class WalkBookmark {
   /// The plants the walk was limited to, or null for every plant.
   final List<String>? subset;
 
+  /// The saved walk order it followed, or null for plant ID order.
+  final String? orderId;
+
   Map<String, dynamic> toJson() => {
     'fields': fieldIds,
     'plant': plantId,
     'index': index,
     if (subset != null) 'subset': subset,
+    if (orderId != null) 'order': orderId,
   };
 
   static WalkBookmark? fromJson(Object? json) {
@@ -130,6 +135,7 @@ class WalkBookmark {
       plantId: json['plant'] as String?,
       index: (json['index'] as num?)?.toInt() ?? 0,
       subset: subset is List ? subset.map((p) => '$p').toList() : null,
+      orderId: json['order'] as String?,
     );
   }
 
@@ -168,6 +174,32 @@ class WalkBookmarks {
       final file = await _file(projectId);
       await file.parent.create(recursive: true);
       await file.writeAsString(jsonEncode(bookmark.toJson()), flush: true);
+    } catch (_) {
+      // See the class comment.
+    }
+  }
+
+  Future<File> _lastOrderFile(String projectId) async =>
+      File('${(await _directory()).path}/walks/$projectId.order');
+
+  /// The walk order chosen last time, offered first next time: an order
+  /// arranged by hand is the one you walk, walk after walk. Empty for plant
+  /// ID order, null if nothing has been chosen yet.
+  Future<String?> lastOrder(String projectId) async {
+    try {
+      final file = await _lastOrderFile(projectId);
+      if (!file.existsSync()) return null;
+      return (await file.readAsString()).trim();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> saveLastOrder(String projectId, String? orderId) async {
+    try {
+      final file = await _lastOrderFile(projectId);
+      await file.parent.create(recursive: true);
+      await file.writeAsString(orderId ?? '', flush: true);
     } catch (_) {
       // See the class comment.
     }

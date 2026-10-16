@@ -1,19 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/data/walk_order.dart';
+import '../../core/data/walk_plan.dart';
+import '../../core/db/daos/walk_orders_dao.dart';
 import '../../core/db/database.dart';
 import '../../core/format.dart';
 import '../../core/models/enums.dart';
 import '../../core/providers.dart';
 import '../canvas/canvas_controller.dart';
+import 'walk_order_screen.dart';
 import 'walk_screen.dart';
 import 'walk_session.dart';
 
 /// Device-wide, so a test can point bookmarks at a temporary directory.
 final walkBookmarksProvider = Provider((ref) => WalkBookmarks());
 
-/// Before a walk: which fields, which plants, or pick up where you stopped.
+/// Before a walk: which fields, which plants, which order -- or pick up where
+/// you stopped.
 ///
 /// Only the chosen fields appear while walking. Every field on screen is a
 /// row of buttons to look past, three thousand times.
@@ -41,6 +44,12 @@ class _WalkSetupScreenState extends ConsumerState<WalkSetupScreen> {
   bool _onlySelected = false;
   bool _starting = false;
 
+  /// Saved walk orders, refreshed after the editor.
+  List<SavedWalkOrder>? _orders;
+
+  /// The chosen order; empty for plant ID order.
+  String _orderId = '';
+
   Future<_Setup> _load() async {
     final fields = await ref
         .read(fieldDefsDaoProvider)
@@ -48,9 +57,18 @@ class _WalkSetupScreenState extends ConsumerState<WalkSetupScreen> {
     final template = await ref
         .read(labelServiceProvider)
         .templateFor(widget.projectId);
-    final bookmark = await ref
-        .read(walkBookmarksProvider)
-        .load(widget.projectId);
+    final bookmarks = ref.read(walkBookmarksProvider);
+    final bookmark = await bookmarks.load(widget.projectId);
+    final orders = await ref
+        .read(walkOrdersDaoProvider)
+        .forProject(widget.projectId);
+    final last = await bookmarks.lastOrder(widget.projectId);
+    if (mounted) {
+      setState(() {
+        _orders = orders;
+        if (last != null && orders.any((o) => o.id == last)) _orderId = last;
+      });
+    }
     return (
       fields: [
         for (final f in fields)
@@ -127,10 +145,7 @@ class _WalkSetupScreenState extends ConsumerState<WalkSetupScreen> {
                   ),
                   const SizedBox(height: 16),
                   _heading('Order'),
-                  const Text(
-                    'In plant ID order — block, then row, then plant — '
-                    'walking each row back the way the last one came.',
-                  ),
+                  ..._order(),
                   const SizedBox(height: 32),
                   FilledButton.icon(
                     style: FilledButton.styleFrom(
@@ -154,6 +169,164 @@ class _WalkSetupScreenState extends ConsumerState<WalkSetupScreen> {
         },
       ),
     );
+  }
+
+  Future<void> _reloadOrders({String? select}) async {
+    final orders = await ref
+        .read(walkOrdersDaoProvider)
+        .forProject(widget.projectId);
+    if (!mounted) return;
+    setState(() {
+      _orders = orders;
+      if (select != null) _orderId = select;
+      if (!orders.any((o) => o.id == _orderId)) _orderId = '';
+    });
+  }
+
+  Future<void> _edit(String? orderId) async {
+    final saved = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) =>
+            WalkOrderScreen(projectId: widget.projectId, orderId: orderId),
+      ),
+    );
+    await _reloadOrders(select: saved);
+  }
+
+  Set<String> _namesExcept(String? id) => {
+    for (final o in _orders ?? const <SavedWalkOrder>[])
+      if (o.id != id) o.name,
+  };
+
+  Future<void> _copy(SavedWalkOrder order) async {
+    final name = await askWalkOrderName(
+      context,
+      title: 'Copy "${order.name}" as',
+      initial: '${order.name} (copy)',
+      taken: _namesExcept(null),
+    );
+    if (name == null) return;
+    final id = await ref.read(walkOrdersDaoProvider).copy(order.id, name);
+    await _reloadOrders(select: id);
+  }
+
+  Future<void> _rename(SavedWalkOrder order) async {
+    final name = await askWalkOrderName(
+      context,
+      title: 'Rename walk order',
+      initial: order.name,
+      taken: _namesExcept(order.id),
+    );
+    if (name == null) return;
+    await ref.read(walkOrdersDaoProvider).rename(order.id, name);
+    await _reloadOrders();
+  }
+
+  Future<void> _delete(SavedWalkOrder order) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Delete "${order.name}"?'),
+        content: const Text(
+          'Only the walk order goes. Values entered on walks that used it '
+          'stay.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await ref.read(walkOrdersDaoProvider).delete(order.id);
+    await _reloadOrders();
+  }
+
+  /// Plant ID order, then each saved order, with a menu to edit, copy,
+  /// rename or delete it.
+  List<Widget> _order() {
+    final orders = _orders ?? const <SavedWalkOrder>[];
+    return [
+      RadioGroup<String>(
+        groupValue: _orderId,
+        onChanged: (v) => setState(() => _orderId = v ?? ''),
+        child: Column(
+          children: [
+            const RadioListTile<String>(
+              value: '',
+              title: Text('Plant ID order'),
+              subtitle: Text(
+                'Block, then row, then plant — each row back the way the '
+                'last one came',
+              ),
+            ),
+            for (final o in orders)
+              RadioListTile<String>(
+                value: o.id,
+                title: Text(o.name),
+                subtitle: Text(
+                  '${groupDigits(o.plan.walk.length)} plants · saved '
+                  '${isoDate(o.updatedAt)}',
+                ),
+                secondary: PopupMenuButton<String>(
+                  tooltip: 'Walk order options',
+                  onSelected: (v) => switch (v) {
+                    'edit' => _edit(o.id),
+                    'copy' => _copy(o),
+                    'rename' => _rename(o),
+                    _ => _delete(o),
+                  },
+                  itemBuilder: (context) => const [
+                    PopupMenuItem(
+                      value: 'edit',
+                      child: ListTile(
+                        leading: Icon(Icons.route),
+                        title: Text('Edit'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'copy',
+                      child: ListTile(
+                        leading: Icon(Icons.copy),
+                        title: Text('Copy…'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'rename',
+                      child: ListTile(
+                        leading: Icon(Icons.edit_outlined),
+                        title: Text('Rename…'),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'delete',
+                      child: ListTile(
+                        leading: Icon(Icons.delete_outline),
+                        title: Text('Delete…'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 8),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: OutlinedButton.icon(
+          onPressed: () => _edit(null),
+          icon: const Icon(Icons.add),
+          label: const Text('New walk order'),
+        ),
+      ),
+    ];
   }
 
   Widget _heading(String text) => Padding(
@@ -193,6 +366,9 @@ class _WalkSetupScreenState extends ConsumerState<WalkSetupScreen> {
     ];
     // Every field it walked has been deleted since: nothing to resume.
     if (fields.isEmpty) return null;
+    final orderName = bookmark.orderId == null
+        ? null
+        : _orders?.where((o) => o.id == bookmark.orderId).firstOrNull?.name;
     return Card(
       margin: const EdgeInsets.only(bottom: 24),
       child: Padding(
@@ -210,12 +386,14 @@ class _WalkSetupScreenState extends ConsumerState<WalkSetupScreen> {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                   Text(
-                    bookmark.subset == null
-                        ? 'Every plant · stopped at plant '
-                              '${groupDigits(bookmark.index + 1)}'
-                        : '${groupDigits(bookmark.subset!.length)} selected '
-                              'plants · stopped at plant '
-                              '${groupDigits(bookmark.index + 1)}',
+                    [
+                      bookmark.subset == null
+                          ? 'Every plant'
+                          : '${groupDigits(bookmark.subset!.length)} selected '
+                                'plants',
+                      ?orderName,
+                      'stopped at plant ${groupDigits(bookmark.index + 1)}',
+                    ].join(' · '),
                   ),
                 ],
               ),
@@ -247,7 +425,17 @@ class _WalkSetupScreenState extends ConsumerState<WalkSetupScreen> {
       final identifiers = await ref
           .read(labelServiceProvider)
           .identifiersForProject(widget.projectId);
-      var order = defaultWalkOrder(identifiers);
+      // A resumed walk keeps the route it started on. If that order has been
+      // deleted since, it carries on in plant ID order.
+      final orderId = bookmark == null
+          ? (_orderId.isEmpty ? null : _orderId)
+          : bookmark.orderId;
+      final saved = orderId == null
+          ? null
+          : await ref.read(walkOrdersDaoProvider).load(orderId);
+      var order =
+          (saved?.plan.reconcile(identifiers) ?? WalkPlan.standard(identifiers))
+              .walk;
       if (subset != null) {
         final keep = subset.toSet();
         order = [
@@ -258,7 +446,9 @@ class _WalkSetupScreenState extends ConsumerState<WalkSetupScreen> {
       if (order.isEmpty) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('No living plants to walk.')),
+            const SnackBar(
+              content: Text('No plants are switched on for this walk.'),
+            ),
           );
         }
         return;
@@ -267,6 +457,11 @@ class _WalkSetupScreenState extends ConsumerState<WalkSetupScreen> {
       // The map colours by the first field, so the inset fills in as you go
       // and the map shows the survey when you come back to it.
       ref.read(colorByFieldProvider.notifier).state = fieldIds.first;
+      if (bookmark == null) {
+        await ref
+            .read(walkBookmarksProvider)
+            .saveLastOrder(widget.projectId, saved?.id);
+      }
 
       if (!mounted) return;
       await Navigator.of(context).pushReplacement(
@@ -277,6 +472,7 @@ class _WalkSetupScreenState extends ConsumerState<WalkSetupScreen> {
             order: order,
             startIndex: bookmark?.resumeIndex(order) ?? 0,
             subset: subset,
+            orderId: saved?.id,
             identifiers: identifiers,
           ),
         ),

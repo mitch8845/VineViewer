@@ -16,6 +16,7 @@ import '../canvas/plant_colouring.dart';
 import '../canvas/viewport.dart';
 import '../canvas/vineyard_painter.dart';
 import 'walk_inputs.dart';
+import 'walk_labels.dart';
 import 'walk_session.dart';
 import 'walk_setup_screen.dart';
 
@@ -34,6 +35,7 @@ class WalkScreen extends ConsumerStatefulWidget {
     required this.identifiers,
     this.startIndex = 0,
     this.subset,
+    this.orderId,
   });
 
   final String projectId;
@@ -44,6 +46,9 @@ class WalkScreen extends ConsumerStatefulWidget {
 
   /// Kept for the bookmark, so a resumed walk covers the same plants.
   final List<String>? subset;
+
+  /// Kept for the bookmark, so a resumed walk follows the same route.
+  final String? orderId;
 
   @override
   ConsumerState<WalkScreen> createState() => _WalkScreenState();
@@ -83,14 +88,7 @@ class _WalkScreenState extends ConsumerState<WalkScreen> {
   }
 
   Future<void> _loadContext() async {
-    final template = await ref
-        .read(labelServiceProvider)
-        .templateFor(widget.projectId);
-    final names = {
-      for (final f
-          in await ref.read(fieldDefsDaoProvider).forProject(widget.projectId))
-        f.id: f.name,
-    };
+    final partNames = await loadPartNames(ref, widget.projectId);
     final events = ref.read(fieldEventsDaoProvider);
     final recent = <String, List<String>>{};
     for (final f in widget.fields) {
@@ -105,13 +103,7 @@ class _WalkScreenState extends ConsumerState<WalkScreen> {
     }
     if (!mounted) return;
     setState(() {
-      _partNames = [
-        for (final part in template.parts)
-          switch (part) {
-            FieldPart(:final fieldDefId) => names[fieldDefId] ?? '',
-            PlantPart() => 'Plant',
-          },
-      ];
+      _partNames = partNames;
       _recent = recent;
     });
   }
@@ -138,6 +130,7 @@ class _WalkScreenState extends ConsumerState<WalkScreen> {
         plantId: _session.current,
         index: _session.index,
         subset: widget.subset,
+        orderId: widget.orderId,
       ),
     );
   }
@@ -473,10 +466,7 @@ class _WalkScreenState extends ConsumerState<WalkScreen> {
   String _describe(String plantId) {
     final parts = widget.identifiers[plantId]?.parts ?? const [];
     if (_partNames.length != parts.length) return '';
-    return [
-      for (var i = 0; i < parts.length; i++)
-        _partNames[i].isEmpty ? parts[i] : '${_partNames[i]} ${parts[i]}',
-    ].join(' · ');
+    return describeParts(parts, _partNames);
   }
 }
 

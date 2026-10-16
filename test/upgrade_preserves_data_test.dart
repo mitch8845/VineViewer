@@ -222,6 +222,7 @@ void main() {
       // Wind it back to exactly what 0.9.0 and earlier have on disk.
       var raw = sqlite3.open(file.path);
       raw.execute('ALTER TABLE operations DROP COLUMN discarded_at');
+      raw.execute('DROP TABLE walk_orders'); // v6
       raw.execute('PRAGMA user_version = 4');
       final before = dump(raw);
       raw.close();
@@ -245,7 +246,7 @@ void main() {
       final version = raw.select('PRAGMA user_version').first.values.first;
       raw.close();
 
-      expect(version, 5);
+      expect(version, 6);
       for (final t in tables) {
         expect(after[t], before[t], reason: '$t changed in the upgrade');
       }

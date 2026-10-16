@@ -21,6 +21,7 @@ part 'database.g.dart';
     Operations,
     OperationRows,
     UndoContext,
+    WalkOrders,
   ],
 )
 class AppDatabase extends _$AppDatabase {
@@ -54,10 +55,13 @@ class AppDatabase extends _$AppDatabase {
   ///   `plant_id`. Purely a rename, but a rename of a table and a column is a
   ///   schema change like any other.
   ///
+  /// * v5 -- `operations.discarded_at`, so undone history is kept.
+  /// * v6 -- `walk_orders`, saved walking orders, chosen by name.
+  ///
   /// **v3 and v4 both wipe**, and [_wipeToV4] serves every upgrade path from
   /// v1, v2 or v3. See [migration].
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -74,11 +78,19 @@ class AppDatabase extends _$AppDatabase {
       // be building tables that the next line drops. Deleted rather than left
       // in place looking load-bearing.
       if (from < 4) {
+        // Builds every table at the current version, so nothing below
+        // applies.
         await _wipeToV4(m);
-      } else if (from < 5) {
+        return;
+      }
+      if (from < 5) {
         // v5 keeps abandoned undo history rather than deleting it. Additive:
         // a nullable column, so a v4 database upgrades with nothing lost.
         await m.addColumn(operations, operations.discardedAt);
+      }
+      if (from < 6) {
+        // A new table that nothing else refers to. Additive again.
+        await m.createTable(walkOrders);
       }
     },
     beforeOpen: (details) async {
@@ -152,6 +164,7 @@ class AppDatabase extends _$AppDatabase {
       'vine_rows',
       'blocks',
       'map_objects',
+      'walk_orders', // v6, if a half-finished upgrade left one behind
       'field_defs',
       'projects',
     ]) {

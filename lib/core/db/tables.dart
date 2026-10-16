@@ -441,3 +441,42 @@ class FieldEvents extends Table {
   @override
   Set<Column> get primaryKey => {id};
 }
+
+/// A saved walking order: a named preset, chosen when a walk is set up
+/// (schema v6).
+///
+/// Not tied to a field -- the same route serves a Health walk and a Vigour
+/// walk -- and copying one is just saving it again under another name.
+///
+/// **The whole order, as plant ids**, rather than rules like "row 12
+/// reversed": an arranged walk is rows cut and shuffled by hand, and a list
+/// is simply what was chosen. Plants added later are slotted in beside their
+/// neighbour when the order is read; plants that are gone drop out.
+///
+/// Not journaled. Arranging a walk is planning, not a change to the
+/// vineyard: it has its own undo in the editor, and it has no place in the
+/// change log or in the plant-by-plant history.
+@DataClassName('WalkOrderRow')
+class WalkOrders extends Table {
+  TextColumn get id => text()();
+
+  TextColumn get projectId =>
+      text().references(Projects, #id, onDelete: KeyAction.cascade)();
+
+  TextColumn get name => text()();
+
+  /// JSON list of plant ids, in walking order.
+  TextColumn get plantIds => text()();
+
+  /// JSON list of plant ids the walk skips.
+  TextColumn get excluded => text().withDefault(const Constant('[]'))();
+
+  /// JSON list of plant ids that begin a new section even though the plant
+  /// before them is in the same row -- where a row has been cut in two.
+  TextColumn get breaks => text().withDefault(const Constant('[]'))();
+
+  IntColumn get updatedAt => integer().map(const DateTimeMsConverter())();
+
+  @override
+  Set<Column> get primaryKey => {id};
+}
