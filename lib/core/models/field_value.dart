@@ -92,8 +92,19 @@ abstract final class FieldValueCodec {
             : (config.falseLabel ?? 'No'),
       FieldType.rating || FieldType.integer => config.labels[stored] ?? stored,
       FieldType.multiSelect => _decodeList(stored)?.join(', ') ?? stored,
+      // Stored as a UTC instant; read as the wall-clock time it was entered
+      // as. "2026-08-01T19:00:00.000Z" is storage, not something to show.
+      FieldType.datetime => _localStamp(stored) ?? stored,
       _ => stored,
     };
+  }
+
+  static String? _localStamp(String stored) {
+    final at = DateTime.tryParse(stored)?.toLocal();
+    if (at == null) return null;
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${at.year}-${two(at.month)}-${two(at.day)} '
+        '${two(at.hour)}:${two(at.minute)}';
   }
 
   /// Parses a stored multi-select value back into its options.

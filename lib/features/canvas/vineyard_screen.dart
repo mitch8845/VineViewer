@@ -30,6 +30,7 @@ import 'undo_controls.dart';
 import 'viewport.dart';
 import 'vineyard_canvas.dart';
 import 'vineyard_painter.dart';
+import '../walk/walk_setup_screen.dart';
 
 /// The map screen: canvas, toolbar, and the drawing flows.
 class VineyardScreen extends ConsumerStatefulWidget {
@@ -1295,12 +1296,24 @@ class _VineyardScreenState extends ConsumerState<VineyardScreen> {
               'log' when projectId != null => ChangeLogScreen(
                 projectId: projectId,
               ),
+              'walk' when projectId != null => WalkSetupScreen(
+                projectId: projectId,
+              ),
               _ => const IdentifierTemplateEditor(),
             },
           ),
         );
       },
       itemBuilder: (context) => const [
+        PopupMenuItem(
+          value: 'walk',
+          child: ListTile(
+            leading: Icon(Icons.directions_walk),
+            title: Text('Walk the vineyard'),
+            subtitle: Text('Enter values plant by plant, big buttons'),
+          ),
+        ),
+        PopupMenuDivider(),
         PopupMenuItem(
           value: 'fields',
           child: ListTile(

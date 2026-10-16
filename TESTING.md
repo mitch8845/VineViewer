@@ -864,6 +864,53 @@ Map → ⋮ → **Change log**.
 
 Notes:
 
+## 17g. Walk the vineyard (0.12.0)
+
+Map → ⋮ → **Walk the vineyard**.
+
+Setup:
+
+- [ ] Lists the vineyard's value fields (not Row/Block). Tick the ones to enter;
+      with several, a number shows the order they appear in
+- [ ] Fields that are part of the plant ID are greyed out, with the reason
+- [ ] **Only the selected plants** is available only when plants are selected
+      on the map (select a row or block first, then open Walk)
+- [ ] Start is disabled until a field is ticked
+
+Walking (try Health on Five Sisters):
+
+- [ ] Plant ID big at the top left, "Block 1 · Row 11 · Plant 6" under it, and
+      the next plant's ID
+- [ ] Health shows as seven big buttons in the map colours; the plant's current
+      value has a thick outline; "Last: 3 · date" on the right
+- [ ] ⚠ **One tap records and moves to the next plant.** No confirm, no Save
+- [ ] Order: row 1 plant 1 → end, then row 2 **from its far end** back, and
+      so on (back and forth). Check at a row change that "Next" names the
+      plant you are actually standing next to
+- [ ] Small map follows the plant (cyan ring) and fills in with colour as you
+      go; tap it for the whole vineyard, tap again to zoom back
+- [ ] **Undo** (top right) removes the last value and goes back to that plant;
+      press it several times to walk back through several taps
+- [ ] **Skip** moves on without recording; **Back** steps back without undoing
+- [ ] Progress reads "401 of 3,025 · 12 entered" and the bar moves
+- [ ] Several fields: each gets a band of buttons; the walk moves on only once
+      **every** field has a value here (a ✓ marks the done ones), or on
+      **Next plant**
+- [ ] Number fields with a small min–max range show buttons; others show a big
+      keypad with Enter. Date fields: **Today/Now** or **Another date…**. Text
+      fields: a box plus buttons for values already used
+- [ ] Write-once field on a plant that has a value: asks before overwriting
+- [ ] ⚠ **X (exit) mid-walk keeps every value**, and reopening Walk offers
+      **Resume** at the plant you stopped on (also after force-stopping the app)
+- [ ] The last plant shows **Walk finished**; the Resume offer is gone after
+- [ ] Each entry is an ordinary change: plant history, change log ("Set Health
+      to 4 on 1.11.6"), calendar and colour-by all show it
+- [ ] Back on the map, it is coloured by the first walked field
+- [ ] Date-and-time values read as local time ("2026-08-01 15:00") everywhere,
+      not "2026-08-01T19:00:00.000Z"
+
+Notes:
+
 ---
 
 ## 18. ID-change prompts — all four triggers
@@ -1041,6 +1088,13 @@ Built in the data layer with **no UI**:
 
 Not built at all:
 
+- **Walk order editor** (reorder blocks/rows/plants, flip a row, turn parts on
+  and off, saved per field, inset map lighting up the top of the list). Next
+  piece after walk mode; until then the walk uses plant ID order back and
+  forth, and "only the selected plants" for a subset.
+- **Screen stays awake during a walk** — it doesn't; the tablet's own sleep
+  timeout applies.
+
 - **Aerial image repositioning** (offset / scale / rotation). Schema and painter
   support it; there is no UI. Only matters when swapping in a differently-framed
   photo later.
@@ -1100,6 +1154,9 @@ If you only have time for a handful, these are the ones most likely to be broken
 - [ ] Place a free plant right next to a planted row — no duplicate ID
 - [ ] Bulk-set a write-once field with "only the ones without one"
 - [ ] Draw a block with no plants — appears immediately
+- [ ] Walk: tap fast through a row, then Undo five times — five plants back,
+      five values gone, nothing else touched
+- [ ] Walk: exit mid-row, force-stop the app, Resume — same plant
 - [ ] Start from Five Sisters **twice** on the tablet — two independent copies,
       and the original untouched
 
